@@ -4,6 +4,8 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
 from PyQt5.QtCore import Qt
 import json
 
+from kasp.utils.updater import format_bytes, is_newer_release, pick_default_asset
+
 class CompressorEditDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -174,3 +176,110 @@ class ChangelogDialog(QDialog):
         if self.checkbox.isChecked():
             self.do_not_show_again = True
         super().accept()
+
+
+class UpdateDialog(QDialog):
+    def __init__(self, releases, current_release_tag, parent=None):
+        super().__init__(parent)
+        self.releases = releases
+        self.current_release_tag = current_release_tag
+        self.selected_release = None
+        self.selected_asset = None
+        self.setWindowTitle("KASP Guncelleme Merkezi")
+        self.resize(720, 520)
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        header = QLabel(
+            f"<h3>KASP Guncellemeleri</h3>"
+            f"<p>Yuklu surum: <b>{self.current_release_tag}</b></p>"
+        )
+        header.setTextFormat(Qt.RichText)
+        layout.addWidget(header)
+
+        form = QFormLayout()
+        self.release_combo = QComboBox()
+        for release in self.releases:
+            self.release_combo.addItem(f"{release.tag_name} - {release.display_name}", release)
+        self.release_combo.currentIndexChanged.connect(self._update_release_details)
+
+        self.asset_combo = QComboBox()
+        self.status_label = QLabel("-")
+        self.published_label = QLabel("-")
+        self.url_label = QLabel("-")
+        self.url_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        form.addRow("Release:", self.release_combo)
+        form.addRow("Dosya:", self.asset_combo)
+        form.addRow("Durum:", self.status_label)
+        form.addRow("Yayin Tarihi:", self.published_label)
+        form.addRow("Baglanti:", self.url_label)
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel("Release Notlari:"))
+        self.notes_text = QTextEdit()
+        self.notes_text.setReadOnly(True)
+        layout.addWidget(self.notes_text)
+
+        buttons = QHBoxLayout()
+        self.download_button = QDialogButtonBox()
+        self.download_button.setStandardButtons(QDialogButtonBox.Close)
+        self.install_button = self.download_button.addButton(
+            "Secili Surumu Indir...", QDialogButtonBox.AcceptRole
+        )
+        self.install_button.clicked.connect(self._accept_download)
+        self.download_button.rejected.connect(self.reject)
+        buttons.addWidget(self.download_button)
+        layout.addLayout(buttons)
+
+        if self.releases:
+            self.release_combo.setCurrentIndex(0)
+            self._update_release_details()
+        else:
+            self.install_button.setEnabled(False)
+            self.notes_text.setPlainText("Release bilgisi bulunamadi.")
+
+    def _update_release_details(self):
+        release = self.release_combo.currentData()
+        if release is None:
+            self.asset_combo.clear()
+            self.install_button.setEnabled(False)
+            self.notes_text.clear()
+            return
+
+        self.selected_release = release
+        if release.tag_name == self.current_release_tag:
+            status = "Kurulu surum"
+        elif is_newer_release(release.tag_name, self.current_release_tag):
+            status = "Yeni surum mevcut"
+        else:
+            status = "Daha eski surum"
+
+        self.status_label.setText(status)
+        self.published_label.setText(release.published_at or "-")
+        self.url_label.setText(release.html_url or "-")
+        self.notes_text.setPlainText(release.body or "Release notu bulunmuyor.")
+
+        self.asset_combo.clear()
+        for asset in release.assets:
+            label = f"{asset.name} ({format_bytes(asset.size)})"
+            self.asset_combo.addItem(label, asset)
+
+        default_asset = pick_default_asset(release)
+        if default_asset is not None:
+            for index in range(self.asset_combo.count()):
+                asset = self.asset_combo.itemData(index)
+                if asset == default_asset:
+                    self.asset_combo.setCurrentIndex(index)
+                    break
+
+        self.install_button.setEnabled(self.asset_combo.count() > 0)
+
+    def _accept_download(self):
+        self.selected_release = self.release_combo.currentData()
+        self.selected_asset = self.asset_combo.currentData()
+        if self.selected_release is None or self.selected_asset is None:
+            return
+        self.accept()

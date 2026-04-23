@@ -9,6 +9,7 @@ from release_metadata import APP_VERSION
 from typing import Any, Dict
 import logging
 import copy
+from release_metadata import RELEASE_REPOSITORY_NAME, RELEASE_REPOSITORY_OWNER
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,12 @@ class ConfigManager:
             "include_charts": True,
             "decimal_separator": ",",
             "thousands_separator": "."
+        },
+        "updates": {
+            "check_on_startup": True,
+            "repo_owner": RELEASE_REPOSITORY_OWNER,
+            "repo_name": RELEASE_REPOSITORY_NAME,
+            "last_dismissed_tag": ""
         }
     }
     

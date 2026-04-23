@@ -11,12 +11,12 @@ from release_metadata import (
 
 def test_release_metadata_splits_source_and_release_versions():
     assert APP_VERSION == "4.6.2"
-    assert RELEASE_TAG == "v1.0"
+    assert RELEASE_TAG == "v1.1"
 
 
 def test_release_filenames_use_current_release_version_without_legacy_v462_tokens():
     for value in (RELEASE_SPEC_FILENAME, RELEASE_BUILD_SCRIPT, RELEASE_EXE_NAME):
-        assert "v1.0" in value
+        assert "v1.1" in value
         assert "v462" not in value.lower()
         assert "4.6.2" not in value
 

@@ -4,12 +4,12 @@ import json
 import datetime
 import logging
 import threading
-from release_metadata import APP_VERSION
+from release_metadata import APP_VERSION, RELEASES_API_URL, RELEASE_TAG
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, 
                              QLabel, QPushButton, QLineEdit, QTextEdit, QComboBox, 
                              QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox, 
                              QFormLayout, QGridLayout, QFileDialog, QMessageBox, 
-                             QProgressBar, QSlider, QSpinBox, QDoubleSpinBox, QCheckBox, QAction,
+                             QProgressBar, QProgressDialog, QSlider, QSpinBox, QDoubleSpinBox, QCheckBox, QAction,
                              QScrollArea, QSizePolicy, QRadioButton, QButtonGroup)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QIcon, QDoubleValidator
@@ -45,6 +45,8 @@ from kasp.utils.logging_handler import QLogHandler, setup_logging
 from kasp.utils.workers import CalculationWorker
 from kasp.utils.reporting import ReportGenerator
 from kasp.utils.project_manager import ProjectManager
+from kasp.utils.updater import GitHubReleaseClient, ReleaseCheckWorker, ReleaseDownloadWorker
+from kasp.ui.dialogs import UpdateDialog
 from kasp.ui.library_manager import LibraryManagerWindow
 
 # Task 2: Validation system (additive - preserves all existing functionality)
@@ -153,6 +155,11 @@ class KaspMainWindow(QMainWindow):
         self.last_report_data = {}
         self.worker_thread = None
         self.worker = None
+        self.update_check_thread = None
+        self.update_check_worker = None
+        self.update_download_thread = None
+        self.update_download_worker = None
+        self.update_progress_dialog = None
         
         # Validation manager
         if VALIDATION_AVAILABLE:
@@ -167,6 +174,7 @@ class KaspMainWindow(QMainWindow):
         
         # Sürüm notlarını göster (Ayarlara bağlı)
         self._show_changelog_if_needed()
+        self._check_for_updates(manual=False)
 
     def _show_changelog_if_needed(self):
         try:
@@ -187,6 +195,8 @@ class KaspMainWindow(QMainWindow):
             self.logger.warning(f"Changelog dialog error: {e}")
 
     def closeEvent(self, event):
+        self._cleanup_update_check_thread()
+        self._cleanup_update_download_thread()
         root_logger = logging.getLogger()
         if getattr(self, "log_handler", None) is not None:
             try:
@@ -340,6 +350,10 @@ class KaspMainWindow(QMainWindow):
         examples_action = QAction("📖 Örnekler", self)
         examples_action.triggered.connect(self.show_examples)
         help_menu.addAction(examples_action)
+
+        updates_action = QAction("Guncellemeleri Kontrol Et", self)
+        updates_action.triggered.connect(lambda: self._check_for_updates(manual=True))
+        help_menu.addAction(updates_action)
         
         about_action = QAction("ℹ️ Hakkında", self)
         about_action.triggered.connect(self.show_about_dialog)
@@ -1971,6 +1985,174 @@ class KaspMainWindow(QMainWindow):
         """Motor önbelleğini temizler"""
         self.engine.clear_cache()
         QMessageBox.information(self, "Başarılı", "✅ Termodinamik Özellik Önbelleği temizlendi.")
+
+    def _build_release_client(self):
+        return GitHubReleaseClient(api_url=RELEASES_API_URL, timeout=8.0)
+
+    def _cleanup_update_check_thread(self):
+        if self.update_check_thread is not None:
+            self.update_check_thread.quit()
+            self.update_check_thread.wait(2000)
+        self.update_check_thread = None
+        self.update_check_worker = None
+
+    def _cleanup_update_download_thread(self):
+        if self.update_download_thread is not None:
+            self.update_download_thread.quit()
+            self.update_download_thread.wait(2000)
+        self.update_download_thread = None
+        self.update_download_worker = None
+        self.update_progress_dialog = None
+
+    def _check_for_updates(self, manual=True):
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+            return
+
+        from kasp.config_manager import get_config_manager
+
+        config = get_config_manager()
+        if not manual and not config.get("updates.check_on_startup", True):
+            return
+
+        if self.update_check_thread is not None and self.update_check_thread.isRunning():
+            if manual:
+                QMessageBox.information(self, "Bilgi", "Guncelleme kontrolu zaten calisiyor.")
+            return
+
+        self.statusBar().showMessage("Guncellemeler kontrol ediliyor...", 5000)
+        self.update_check_thread = QThread(self)
+        self.update_check_worker = ReleaseCheckWorker(self._build_release_client(), RELEASE_TAG)
+        self.update_check_worker.moveToThread(self.update_check_thread)
+        self.update_check_thread.started.connect(self.update_check_worker.run)
+        self.update_check_worker.finished.connect(
+            lambda releases, newer: self._handle_update_check_finished(releases, newer, manual)
+        )
+        self.update_check_worker.error.connect(
+            lambda message: self._handle_update_check_error(message, manual)
+        )
+        self.update_check_worker.finished.connect(self.update_check_thread.quit)
+        self.update_check_worker.error.connect(self.update_check_thread.quit)
+        self.update_check_thread.finished.connect(self._cleanup_update_check_thread)
+        self.update_check_thread.start()
+
+    def _handle_update_check_finished(self, releases, newer_releases, manual):
+        self.statusBar().showMessage("Guncelleme kontrolu tamamlandi.", 3000)
+        if manual:
+            self._show_update_dialog(releases)
+            return
+
+        if not newer_releases:
+            return
+
+        latest = newer_releases[0]
+        from kasp.config_manager import get_config_manager
+
+        config = get_config_manager()
+        dismissed_tag = config.get("updates.last_dismissed_tag", "")
+        if dismissed_tag == latest.tag_name:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Yeni Surum Bulundu",
+            (
+                f"Yeni bir release bulundu: {latest.tag_name}\n\n"
+                f"{latest.display_name}\n\n"
+                "Detaylari gorup indirmek ister misiniz?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self._show_update_dialog(releases)
+        else:
+            config.set("updates.last_dismissed_tag", latest.tag_name)
+
+    def _handle_update_check_error(self, message, manual):
+        self.statusBar().showMessage("Guncelleme kontrolu basarisiz.", 5000)
+        if manual:
+            QMessageBox.warning(self, "Guncelleme Kontrolu", message)
+
+    def _show_update_dialog(self, releases):
+        if not releases:
+            QMessageBox.information(self, "Guncelleme Merkezi", "Yayinlanmis release bulunamadi.")
+            return
+
+        dialog = UpdateDialog(releases, RELEASE_TAG, self)
+        if dialog.exec_() != dialog.Accepted:
+            return
+
+        selected_release = dialog.selected_release
+        selected_asset = dialog.selected_asset
+        if selected_release is None or selected_asset is None:
+            return
+
+        default_name = selected_asset.name or f"KASP_{selected_release.tag_name}.bin"
+        target_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guncellemeyi Nereye Indirmek Istiyorsunuz?",
+            default_name,
+            "Executable Files (*.exe);;All Files (*)",
+        )
+        if not target_path:
+            return
+
+        self._start_update_download(selected_asset, target_path)
+
+    def _start_update_download(self, asset, destination_path):
+        if self.update_download_thread is not None and self.update_download_thread.isRunning():
+            QMessageBox.information(self, "Bilgi", "Baska bir indirme zaten devam ediyor.")
+            return
+
+        self.update_progress_dialog = QProgressDialog(
+            "Guncelleme indiriliyor...",
+            None,
+            0,
+            100,
+            self,
+        )
+        self.update_progress_dialog.setWindowTitle("Indirme")
+        self.update_progress_dialog.setWindowModality(Qt.WindowModal)
+        self.update_progress_dialog.setMinimumDuration(0)
+        self.update_progress_dialog.setValue(0)
+        self.update_progress_dialog.show()
+
+        self.update_download_thread = QThread(self)
+        self.update_download_worker = ReleaseDownloadWorker(
+            self._build_release_client(),
+            asset,
+            destination_path,
+        )
+        self.update_download_worker.moveToThread(self.update_download_thread)
+        self.update_download_thread.started.connect(self.update_download_worker.run)
+        self.update_download_worker.progress.connect(self._handle_update_download_progress)
+        self.update_download_worker.finished.connect(self._handle_update_download_finished)
+        self.update_download_worker.error.connect(self._handle_update_download_error)
+        self.update_download_worker.finished.connect(self.update_download_thread.quit)
+        self.update_download_worker.error.connect(self.update_download_thread.quit)
+        self.update_download_thread.finished.connect(self._cleanup_update_download_thread)
+        self.update_download_thread.start()
+
+    def _handle_update_download_progress(self, percent, message):
+        if self.update_progress_dialog is None:
+            return
+        self.update_progress_dialog.setLabelText(message)
+        self.update_progress_dialog.setValue(percent)
+
+    def _handle_update_download_finished(self, path):
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.setValue(100)
+            self.update_progress_dialog.close()
+        QMessageBox.information(
+            self,
+            "Indirme Tamamlandi",
+            f"Guncelleme dosyasi indirildi:\n{path}",
+        )
+
+    def _handle_update_download_error(self, message):
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.close()
+        QMessageBox.critical(self, "Indirme Hatasi", message)
 
     def show_about_dialog(self):
         """Hakkında penceresini gösterir"""

@@ -1,9 +1,9 @@
-# KASP Release v1.0 Analysis
+# KASP Release v1.1 Analysis
 
 ## Scope
 
 - Source/runtime baseline stays at `4.6.2`.
-- GitHub release/build naming is aligned to `v1.0`.
+- GitHub release/build naming is aligned to `v1.1`.
 - Legacy filename tokens such as `v4.6.2` and `v462` were removed from release-chain filenames.
 
 ## Streamlit Check
@@ -14,8 +14,8 @@
 
 ## Naming Cleanup
 
-- Kept one canonical release spec: `KASP_release_v1.0.spec`
-- Kept one canonical release build script: `build_release_v1.0.bat`
+- Kept one canonical release spec: `KASP_release_v1.1.spec`
+- Kept one canonical release build script: `build_release_v1.1.bat`
 - Kept one canonical local spec: `KASP_release_local.spec`
 - Kept one generic local helper: `build_release.py`
 - Added one local workspace batch helper: `build_release_local.bat`
@@ -28,9 +28,9 @@
 - To prevent rename-related breakage, release/build filenames are now driven from `release_metadata.py`.
 - The version split is explicit:
   - `APP_VERSION = 4.6.2` is the software baseline shown inside the app.
-  - `RELEASE_TAG = v1.0` is the packaging/release version used in release filenames.
-- `KASP_release_v1.0.spec` and `KASP_release_local.spec` both import shared metadata, which removes duplicated hardcoded names.
-- `build_release_v1.0.bat` now copies `release_metadata.py` into the isolated build workspace before running PyInstaller; without that step the renamed spec would fail to import metadata.
+  - `RELEASE_TAG = v1.1` is the packaging/release version used in release filenames.
+- `KASP_release_v1.1.spec` and `KASP_release_local.spec` both import shared metadata, which removes duplicated hardcoded names.
+- `build_release_v1.1.bat` now copies `release_metadata.py` into the isolated build workspace before running PyInstaller; without that step the renamed spec would fail to import metadata.
 - Local build output naming is separated from release output naming, so workspace builds no longer carry stale source-version tags.
 
 ## v4.6.2 Repair
@@ -40,7 +40,16 @@
 - The release repository has now been resynchronized against the actual `KASP V4.6` application sources for `main.py`, the active `kasp/` runtime package, and the relevant legacy regression scripts.
 - The release-specific packaging layer remains separate:
   - app/runtime version stays `4.6.2`
-  - packaging/release tag stays `v1.0`
+  - packaging/release tag moved forward to `v1.1`
+
+## Update Center
+
+- A new update option now exists under the Help menu.
+- The application can query published GitHub releases from `SLedgehammer-dev12/KASP-Main-Release`.
+- Startup can silently check for newer releases and notify the user when a newer published tag exists.
+- The update dialog lists published releases, release notes, publish date, and downloadable assets.
+- The user chooses the final download path; the app does not force a fixed directory.
+- Release asset download is performed in a background thread so the UI stays responsive during large `.exe` downloads.
 
 ## Root Causes Found
 
