@@ -1,11 +1,12 @@
 import sys
 import os
+import logging
+
+from release_metadata import APP_VERSION
+
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtCore import Qt, PYQT_VERSION_STR, QT_VERSION_STR
-import logging
-
-APP_VERSION = "4.6.2"
 
 # Security improvement: Use absolute path and insert at beginning
 current_dir = os.path.dirname(os.path.abspath(__file__))

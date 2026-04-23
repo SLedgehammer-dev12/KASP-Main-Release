@@ -9,6 +9,8 @@ from typing import Any, Dict
 import logging
 import copy
 
+from release_metadata import APP_VERSION
+
 logger = logging.getLogger(__name__)
 
 class ConfigManager:
@@ -16,7 +18,7 @@ class ConfigManager:
     
     DEFAULT_CONFIG = {
         "app": {
-            "version": "4.6.2",
+            "version": APP_VERSION,
             "language": "tr",
             "theme": "light",
             "auto_save": True,

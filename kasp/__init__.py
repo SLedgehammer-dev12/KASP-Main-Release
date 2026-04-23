@@ -1,8 +1,10 @@
 """
-KASP - Termodinamik Analiz Programı
+KASP - Termodinamik Analiz Programi
 Version: 4.6.2
 """
 
-__version__ = "4.6.2"
+from release_metadata import APP_VERSION
+
+__version__ = APP_VERSION
 __author__ = "KASP Engineering"
-__all__ = ['logging_handler', 'exception_handler', 'ui', 'database', 'thermo']
+__all__ = ["logging_handler", "exception_handler", "ui", "database", "thermo"]

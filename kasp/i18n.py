@@ -18,8 +18,7 @@ from PyQt5.QtWidgets import (
 )
 
 from kasp.config_manager import get_config_manager
-
-APP_VERSION = "4.6.2"
+from release_metadata import APP_VERSION, RELEASE_TAG
 ALL_LOGS_LABEL = "ALL LOGS"
 
 _EXACT_TRANSLATIONS = {
@@ -50,6 +49,7 @@ _EXACT_TRANSLATIONS = {
     "Örnekler": "Examples",
     "Eksik Bilgi": "Missing Information",
     "TÜM LOGLAR": ALL_LOGS_LABEL,
+    f"KASP {RELEASE_TAG}": f"KASP {RELEASE_TAG}",
 }
 
 _SUBSTRING_TRANSLATIONS = {
