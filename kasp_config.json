@@ -1,0 +1,38 @@
+{
+    "app": {
+        "version": "4.6.2",
+        "language": "tr",
+        "theme": "light",
+        "auto_save": true,
+        "auto_save_interval": 300
+    },
+    "database": {
+        "path": "kasp_data.db",
+        "backup_enabled": true,
+        "backup_interval": 86400
+    },
+    "thermodynamics": {
+        "uncertainty_analysis": true,
+        "precision": 6,
+        "default_units": "SI"
+    },
+    "ui": {
+        "window_width": 1200,
+        "window_height": 800,
+        "font_family": "Segoe UI",
+        "font_size": 9,
+        "show_tooltips": true,
+        "confirm_on_delete": true
+    },
+    "logging": {
+        "level": "INFO",
+        "max_file_size": 10485760,
+        "backup_count": 5
+    },
+    "export": {
+        "default_format": "xlsx",
+        "include_charts": true,
+        "decimal_separator": ",",
+        "thousands_separator": "."
+    }
+}

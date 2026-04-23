@@ -1,0 +1,12 @@
+PyQt5>=5.15,<5.16
+numpy>=1.26,<3
+scipy>=1.11,<2
+matplotlib>=3.8,<4
+reportlab>=4.0,<5
+CoolProp>=6.6,<7
+thermo>=0.4,<0.5
+chemicals>=1.2,<2
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+pydantic>=2.9,<3
+pytest>=8.3,<9

@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KASP V4 | Advanced Compressor Analytics</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700&display=swap');
+
+        :root {
+            --primary: #3b82f6;
+            --bg-dark: #0f172a;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-dark);
+            color: #f8fafc;
+        }
+
+        h1,
+        h2,
+        h3 {
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .glass-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .input-dark {
+            background-color: #0f172a;
+            border: 1px solid #334155;
+            color: white;
+            transition: all 0.2s;
+        }
+
+        .input-dark:focus {
+            border-color: var(--primary);
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+        }
+
+        [v-cloak] {
+            display: none;
+        }
+
+        select.input-dark option {
+            background-color: #0f172a;
+            color: white;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen">
+    <div id="app" v-cloak>
+        <nav class="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
+            <div class="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
+                        <l-icon name="zap" class="text-white w-6 h-6"></l-icon>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-bold tracking-tight">KASP <span class="text-blue-500">V4</span></h1>
+                        <p class="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">Thermo Analytics
+                            Engine</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span class="text-xs text-slate-400 bg-slate-800 px-2 py-1 rounded"
+                        :class="{'text-green-400': status === 'Connected'}">{{ status }}</span>
+                    <button @click="resetInputs" class="text-xs text-slate-400 hover:text-white flex items-center">
+                        <l-icon name="rotate-ccw" class="w-3 h-3 mr-1"></l-icon> Sıfırla
+                    </button>
+                </div>
+            </div>
+        </nav>
+
+        <main class="max-w-7xl mx-auto px-4 py-8">
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                <!-- Inputs Section -->
+                <div class="lg:col-span-4 space-y-6">
+                    <div class="glass-card rounded-2xl p-6">
+                        <div class="flex items-center mb-6">
+                            <l-icon name="settings-2" class="w-5 h-5 text-blue-500 mr-2"></l-icon>
+                            <h2 class="text-lg font-semibold">Giriş Parametreleri</h2>
+                        </div>
+
+                        <div class="space-y-4">
+                            <div>
+                                <label class="text-xs font-medium text-slate-400 block mb-1">Proje Adı</label>
+                                <input v-model="inputs.project_name" type="text"
+                                    class="w-full rounded-lg px-3 py-2 text-sm input-dark">
+                            </div>
+
+                            <div class="grid grid-cols-1 gap-4">
+                                <div>
+                                    <label class="text-xs font-medium text-slate-400 block mb-1">Giriş Basıncı</label>
+                                    <div class="flex space-x-2">
+                                        <input v-model.number="inputs.p_in" type="number" step="0.1"
+                                            class="w-2/3 rounded-lg px-3 py-2 text-sm input-dark">
+                                        <select v-model="inputs.p_in_unit"
+                                            class="w-1/3 rounded-lg px-2 py-2 text-xs input-dark">
+                                            <option v-for="u in units.pressure" :key="u" :value="u">{{ u }}</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="text-xs font-medium text-slate-400 block mb-1">Çıkış Basıncı</label>
+                                    <div class="flex space-x-2">
+                                        <input v-model.number="inputs.p_out" type="number" step="0.1"
+                                            class="w-2/3 rounded-lg px-3 py-2 text-sm input-dark">
+                                        <select v-model="inputs.p_out_unit"
+                                            class="w-1/3 rounded-lg px-2 py-2 text-xs input-dark">
+                                            <option v-for="u in units.pressure" :key="u" :value="u">{{ u }}</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 gap-4">
+                                <div>
+                                    <label class="text-xs font-medium text-slate-400 block mb-1">Giriş Sıcaklığı</label>
+                                    <div class="flex space-x-2">
+                                        <input v-model.number="inputs.t_in" type="number" step="0.1"
+                                            class="w-2/3 rounded-lg px-3 py-2 text-sm input-dark">
+                                        <select v-model="inputs.t_in_unit"
+                                            class="w-1/3 rounded-lg px-2 py-2 text-xs input-dark">
+                                            <option v-for="u in units.temperature" :key="u" :value="u">{{ u }}</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="text-xs font-medium text-slate-400 block mb-1">Debi</label>
+                                    <div class="flex space-x-2">
+                                        <input v-model.number="inputs.flow" type="number" step="0.1"
+                                            class="w-2/3 rounded-lg px-3 py-2 text-sm input-dark">
+                                        <select v-model="inputs.flow_unit"
+                                            class="w-1/3 rounded-lg px-2 py-2 text-xs input-dark">
+                                            <option v-for="u in units.flow" :key="u" :value="u">{{ u }}</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="pt-4 border-t border-slate-700/50">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-xs font-medium text-slate-400">Gaz Kompozisyonu</label>
+                                    <div class="flex space-x-2">
+                                        <select v-model="selectedGasToAdd"
+                                            class="text-[10px] bg-slate-800 text-slate-300 rounded border-none w-24">
+                                            <option v-for="(name, key) in availableGases" :key="key" :value="key">{{
+                                                name }}</option>
+                                        </select>
+                                        <button @click="addGas"
+                                            class="text-[10px] bg-blue-600 px-2 rounded hover:bg-blue-500">+</button>
+                                        <span
+                                            class="text-[10px] px-1.5 py-0.5 bg-blue-900/50 text-blue-300 rounded font-mono">{{
+                                            totalComp.toFixed(1) }}%</span>
+                                    </div>
+                                </div>
+                                <div class="space-y-2 max-h-48 overflow-auto pr-2 custom-scrollbar">
+                                    <div v-for="(val, gas) in inputs.gas_comp" :key="gas"
+                                        class="flex items-center space-x-2 group">
+                                        <button @click="removeGas(gas)"
+                                            class="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <l-icon name="x" class="w-3 h-3"></l-icon>
+                                        </button>
+                                        <span class="text-[10px] w-16 text-slate-300 font-mono truncate" :title="gas">{{
+                                            availableGases[gas] || gas }}</span>
+                                        <input v-model.number="inputs.gas_comp[gas]" type="range" min="0" max="100"
+                                            class="flex-grow h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                                        <input v-model.number="inputs.gas_comp[gas]" type="number" step="0.1"
+                                            class="w-12 text-right bg-transparent text-[10px] focus:outline-none text-slate-300">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="pt-4 border-t border-slate-700/50">
+                                <label class="text-xs font-medium text-slate-400 block mb-2">Çok Kademeli
+                                    (Multi-Stage)</label>
+                                <div class="grid grid-cols-4 gap-2">
+                                    <div class="bg-slate-800/50 p-2 rounded-lg text-center">
+                                        <p class="text-[10px] text-slate-500 mb-1">Ünite Sayısı</p>
+                                        <input v-model.number="inputs.num_units" type="number"
+                                            class="w-full bg-transparent text-center font-bold text-slate-200">
+                                    </div>
+                                    <div class="bg-slate-800/50 p-2 rounded-lg text-center">
+                                        <p class="text-[10px] text-slate-500 mb-1">Kademe</p>
+                                        <input v-model.number="inputs.num_stages" type="number"
+                                            class="w-full bg-transparent text-center font-bold text-slate-200">
+                                    </div>
+                                    <div class="bg-slate-800/50 p-2 rounded-lg text-center">
+                                        <p class="text-[10px] text-slate-500 mb-1">Ara Soğ. T</p>
+                                        <input v-model.number="inputs.intercooler_t" type="number"
+                                            class="w-full bg-transparent text-center font-bold text-slate-200">
+                                    </div>
+                                    <div class="bg-slate-800/50 p-2 rounded-lg text-center">
+                                        <p class="text-[10px] text-slate-500 mb-1">ΔP (%)</p>
+                                        <input v-model.number="inputs.intercooler_dp_pct" type="number"
+                                            class="w-full bg-transparent text-center font-bold text-slate-200">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="pt-4 border-t border-slate-700/50">
+                                <label class="text-xs font-medium text-slate-400 block mb-2">Hesaplama Ayarları</label>
+                                <div class="grid grid-cols-1 gap-4">
+                                    <div>
+                                        <label class="text-xs font-medium text-slate-500 block mb-1">Politropik Verim
+                                            (%)</label>
+                                        <input v-model.number="inputs.poly_eff" type="number" step="0.1" min="0"
+                                            max="100" class="w-full rounded-lg px-3 py-2 text-sm input-dark">
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="text-xs font-medium text-slate-500 block mb-1">EOS
+                                                Modeli</label>
+                                            <select v-model="inputs.eos_method"
+                                                class="w-full rounded-lg px-3 py-2 text-xs input-dark">
+                                                <option value="coolprop">CoolProp (High Accuracy)</option>
+                                                <option value="pr">Z-PR (Peng-Robinson)</option>
+                                                <option value="srk">Z-SRK (Soave-Redlich-Kwong)</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="text-xs font-medium text-slate-500 block mb-1">Hesaplama
+                                                Yöntemi</label>
+                                            <select v-model="inputs.method"
+                                                class="w-full rounded-lg px-3 py-2 text-xs input-dark">
+                                                <option value="Metot 1: Ortalama Özellikler">Metot 1: Ortalama</option>
+                                                <option value="Metot 2: Endpoint (Uç Nokta)">Metot 2: Endpoint</option>
+                                                <option value="Metot 3: Artımlı Basınç (Incremental)">Metot 3: Artımlı
+                                                </option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button @click="calculate" :disabled="loading"
+                                class="w-full py-3 rounded-xl btn-primary font-bold text-sm flex items-center justify-center space-x-2 mt-4 text-white">
+                                <span v-if="!loading">HESAPLA</span>
+                                <span v-else class="animate-pulse">Hesaplanıyor...</span>
+                                <l-icon v-if="!loading" name="play" class="w-4 h-4"></l-icon>
+                            </button>
+                            <button @click="runBenchmark" :disabled="loading || benchmarkLoading"
+                                class="w-full py-3 rounded-xl bg-slate-700 hover:bg-slate-600 font-bold text-sm flex items-center justify-center space-x-2 mt-2 text-slate-200 transition-colors">
+                                <span v-if="!benchmarkLoading">KARŞILAŞTIR (Tüm Metotlar)</span>
+                                <span v-else class="animate-pulse">Analiz Ediliyor...</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="lg:col-span-8 space-y-6">
+                    <div v-if="!results"
+                        class="glass-card rounded-2xl p-12 flex flex-col items-center justify-center text-slate-500 border-dashed">
+                        <l-icon name="bar-chart-3" class="w-16 h-16 mb-4 opacity-20"></l-icon>
+                        <p class="text-sm">Hesaplama sonuçlarını görmek için parametreleri girip 'HESAPLA' butonuna
+                            basın.</p>
+                    </div>
+
+                    <div v-else class="space-y-6 transition-all duration-500">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-semibold flex items-center">
+                                <l-icon name="clipboard-list" class="w-5 h-5 mr-2 text-blue-400"></l-icon>
+                                Sonuçlar
+                            </h3>
+                            <div class="flex items-center space-x-2">
+                                <label class="text-xs text-slate-400">Sonuç Birimi:</label>
+                                <select v-model="resultsUnit"
+                                    class="text-xs bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300 focus:outline-none focus:border-blue-500">
+                                    <option value="si">SI (kW, kg/h, °C)</option>
+                                    <option value="imperial">Imperial (hp, lb/h, °F)</option>
+                                    <option value="metric_large">Metric Large (MW, ton/h, °C)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                            <div class="glass-card rounded-2xl p-4">
+                                <p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Toplam Güç</p>
+                                <p class="text-2xl font-bold">{{ displayResults.power_shaft_total.toFixed(1) }} <span
+                                        class="text-sm font-normal text-slate-500">{{ displayResults.units.power
+                                        }}</span></p>
+                                <p v-if="inputs.num_units > 1" class="text-[10px] text-blue-400 mt-1">
+                                    {{ displayResults.power_shaft_per_unit.toFixed(1) }} {{ displayResults.units.power
+                                    }} / Ünite
+                                </p>
+                                <div class="mt-2 text-right">
+                                    <span
+                                        class="text-[9px] text-slate-500 bg-slate-800/50 px-2 py-0.5 rounded border border-slate-700">
+                                        v{{ results.engine_version || 'Legacy' }}
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="glass-card rounded-2xl p-4">
+                                <p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Çıkış Sıcaklığı</p>
+                                <p class="text-2xl font-bold text-orange-500">{{ displayResults.t_out.toFixed(1) }}
+                                    <span class="text-sm font-normal text-slate-500">{{ displayResults.units.temp
+                                        }}</span>
+                                </p>
+                            </div>
+                            <div class="glass-card rounded-2xl p-4">
+                                <p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Pol. Verim</p>
+                                <p class="text-2xl font-bold text-green-500">{{ (displayResults.actual_poly_efficiency *
+                                    100).toFixed(1) }} <span class="text-sm font-normal text-slate-500">%</span></p>
+                                <p class="text-[10px] text-slate-400 mt-1">
+                                    Hedef {{ (displayResults.design_poly_efficiency * 100).toFixed(1) }}%
+                                </p>
+                                <p v-if="displayResults.consistency_mode" class="text-[10px] mt-1"
+                                    :class="displayResults.consistency_converged ? 'text-emerald-400' : 'text-amber-400'">
+                                    {{ displayResults.consistency_converged ? 'Tutarlılık yakınsadı' : 'Tutarlılık yakınsamadı' }}
+                                </p>
+                            </div>
+                            <div class="glass-card rounded-2xl p-4">
+                                <p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Yakıt</p>
+                                <p class="text-2xl font-bold">{{ displayResults.fuel_total.toFixed(1) }} <span
+                                        class="text-sm font-normal text-slate-500">{{ displayResults.units.fuel
+                                        }}</span></p>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-slate-100">
+                            <div class="glass-card rounded-2xl p-6">
+                                <h3 class="text-sm font-semibold mb-4 flex items-center">
+                                    <l-icon name="thermometer" class="w-4 h-4 text-orange-500 mr-2"></l-icon> Kademeli
+                                    Sıcaklık
+                                </h3>
+                                <canvas id="tempChart" height="200"></canvas>
+                            </div>
+                            <div class="glass-card rounded-2xl p-6">
+                                <h3 class="text-sm font-semibold mb-4 flex items-center">
+                                    <l-icon name="zap" class="w-4 h-4 text-yellow-500 mr-2"></l-icon> Güç Dağılımı
+                                </h3>
+                                <canvas id="powerChart" height="200"></canvas>
+                            </div>
+                        </div>
+
+                        <div class="glass-card rounded-2xl overflow-hidden">
+                            <table class="w-full text-left text-xs text-slate-300">
+                                <thead class="bg-slate-900/50 text-slate-400 border-b border-slate-800">
+                                    <tr>
+                                        <th class="px-4 py-3">Kademe</th>
+                                        <th class="px-4 py-3">P_in</th>
+                                        <th class="px-4 py-3">P_out</th>
+                                        <th class="px-4 py-3">T_in</th>
+                                        <th class="px-4 py-3">T_out</th>
+                                        <th class="px-4 py-3">Güç (kW)</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-800">
+                                    <tr v-for="s in displayResults.stages" :key="s.stage" class="hover:bg-slate-800/30">
+                                        <td class="px-4 py-3 font-bold text-blue-400">{{ s.stage }}</td>
+                                        <td class="px-4 py-3">{{ s.p_in_disp.toFixed(2) }} {{ displayResults.units.press
+                                            }}</td>
+                                        <td class="px-4 py-3">{{ s.p_out_disp.toFixed(2) }} {{
+                                            displayResults.units.press }}</td>
+                                        <td class="px-4 py-3">{{ s.t_in_disp.toFixed(1) }} {{ displayResults.units.temp
+                                            }}</td>
+                                        <td class="px-4 py-3"
+                                            :class="s.t_out_disp > (displayResults.units.temp === '°F' ? 300 : 150) ? 'text-red-400' : 'text-orange-300'">
+                                            {{
+                                            s.t_out_disp.toFixed(1) }} {{ displayResults.units.temp }}</td>
+                                        <td class="px-4 py-3">{{ s.power_disp.toFixed(1) }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Benchmark Modal -->
+            <div v-if="benchmarkResults"
+                class="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                <div
+                    class="glass-card w-full max-w-5xl max-h-[90vh] overflow-auto rounded-2xl p-6 relative flex flex-col">
+                    <button @click="benchmarkResults = null"
+                        class="absolute top-4 right-4 p-2 rounded-full bg-slate-800 text-slate-400 hover:text-white hover:bg-red-500/20 transition-all">
+                        <l-icon name="x" class="w-6 h-6"></l-icon>
+                    </button>
+
+                    <h2 class="text-xl font-bold text-slate-100 mb-6 flex items-center">
+                        <l-icon name="bar-chart-2" class="w-6 h-6 mr-3 text-blue-400"></l-icon>
+                        Detaylı Karşılaştırma Analizi
+                    </h2>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm text-slate-300">
+                            <thead class="bg-slate-900/50 text-slate-400 border-b border-slate-700 uppercase text-xs">
+                                <tr>
+                                    <th class="px-4 py-3">EOS</th>
+                                    <th class="px-4 py-3">Metot</th>
+                                    <th class="px-4 py-3 text-right">Güç (kW)</th>
+                                    <th class="px-4 py-3 text-right">Head (kJ/kg)</th>
+                                    <th class="px-4 py-3 text-right">Verim (%)</th>
+                                    <th class="px-4 py-3 text-right">T_out (°C)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-800">
+                                <tr v-for="(res, idx) in benchmarkResults" :key="idx"
+                                    class="hover:bg-slate-800/30 transition-colors">
+                                    <td class="px-4 py-3 font-bold text-blue-400">{{ res.eos.toUpperCase() }}</td>
+                                    <td class="px-4 py-3 text-slate-400">{{ res.method }}</td>
+                                    <td class="px-4 py-3 text-right font-mono text-slate-200">{{ res.status ===
+                                        'success' ? res.power_kw.toFixed(1) : '-' }}</td>
+                                    <td class="px-4 py-3 text-right font-mono text-slate-400">{{ res.status ===
+                                        'success' ? res.head_kj_kg.toFixed(1) : '-' }}</td>
+                                    <td class="px-4 py-3 text-right font-mono"
+                                        :class="res.eff > 0.8 ? 'text-green-400' : 'text-slate-200'">{{ res.status ===
+                                        'success' ? (res.eff * 100).toFixed(1) : '-' }}</td>
+                                    <td class="px-4 py-3 text-right font-mono text-orange-300">{{ res.status ===
+                                        'success' ? res.t_out.toFixed(1) : '-' }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, watch, onMounted, nextTick } = Vue;
+
+        // Custom Icon Component to solve properties of null error
+        const LucideIcon = {
+            props: ['name'],
+            template: `<span class="inline-flex items-center justify-center"></span>`,
+            mounted() {
+                this.renderIcon();
+            },
+            updated() {
+                this.renderIcon();
+            },
+            methods: {
+                renderIcon() {
+                    const iconName = this.name;
+                    // Clear previous content
+                    this.$el.innerHTML = '';
+
+                    // Create a temporary element for Lucide to replace
+                    const i = document.createElement('i');
+                    i.setAttribute('data-lucide', iconName);
+
+                    // Add any classes from the parent to the icon
+                    // Note: In Vue 3, classes on the component tag fall through to the root span automatically.
+                    // We want the SVG to inherit size/color if possible, or just sit inside the span.
+                    // Lucide replaces the <i> with <svg>.
+
+                    this.$el.appendChild(i);
+
+                    lucide.createIcons({
+                        root: this.$el,
+                        nameAttr: 'data-lucide',
+                        attrs: {
+                            class: "w-full h-full" // Ensure SVG fills the span
+                        }
+                    });
+                }
+            }
+        };
+
+        createApp({
+            components: { 'l-icon': LucideIcon },
+            setup() {
+                const status = ref('Attempting to connect...');
+                const loading = ref(false);
+                const results = ref(null);
+                const availableGases = ref({});
+                const units = ref({ pressure: [], temperature: [], flow: [] });
+                const selectedGasToAdd = ref('CO2');
+                const charts = { temp: null, power: null };
+                const resultsUnit = ref('si'); // si, imperial, metric_large
+                const benchmarkResults = ref(null);
+                const benchmarkLoading = ref(false);
+
+                const inputs = ref({
+                    project_name: 'Yeni Kompresör Projesi',
+                    p_in: 49.65, p_in_unit: 'bar(g)',
+                    p_out: 75.0, p_out_unit: 'bar(a)',
+                    t_in: 19.0, t_in_unit: '°C',
+                    flow: 1985000, flow_unit: 'Sm³/h',
+                    gas_comp: {}, // Will be populated from default_composition API
+                    poly_eff: 78.0,
+                    num_stages: 2,
+                    num_units: 1,
+                    intercooler_t: 40.0,
+                    intercooler_dp_pct: 2.0,
+                    eos_method: 'coolprop',
+                    method: 'Metot 1: Ortalama Özellikler',
+                    consistency_check: true
+                });
+
+                const totalComp = computed(() => Object.values(inputs.value.gas_comp).reduce((a, b) => a + b, 0));
+
+                const displayResults = computed(() => {
+                    if (!results.value) return null;
+                    const u = resultsUnit.value;
+                    const r = results.value;
+
+                    let conv = {
+                        units: { power: 'kW', temp: '°C', fuel: 'kg/h', press: 'bar' },
+                        power_shaft_total: r.power_shaft_total_kw,
+                        power_shaft_per_unit: r.power_shaft_per_unit_kw,
+                        t_out: r.t_out, // Already C from backend
+                        fuel_total: r.fuel_total_kgh,
+                        actual_poly_efficiency: r.actual_poly_efficiency,
+                        design_poly_efficiency: r.design_poly_efficiency ?? (inputs.value.poly_eff / 100.0),
+                        consistency_mode: Boolean(r.consistency_mode),
+                        consistency_converged: Boolean(r.consistency_converged),
+                        stages: r.stages.map(s => ({
+                            ...s,
+                            p_in_disp: s.p_in / 100000,
+                            p_out_disp: s.p_out / 100000,
+                            t_in_disp: s.t_in - 273.15,
+                            t_out_disp: s.t_out - 273.15,
+                            power_disp: s.power_gas_kw
+                        }))
+                    };
+
+                    if (u === 'imperial') {
+                        conv.units = { power: 'hp', temp: '°F', fuel: 'lb/h', press: 'psi' };
+                        conv.power_shaft_total *= 1.34102;
+                        conv.power_shaft_per_unit *= 1.34102;
+                        conv.t_out = (conv.t_out * 1.8) + 32;
+                        conv.fuel_total *= 2.20462;
+                        conv.stages = r.stages.map(s => ({
+                            ...s,
+                            p_in_disp: s.p_in * 0.000145038, // Pa to psi
+                            p_out_disp: s.p_out * 0.000145038,
+                            t_in_disp: ((s.t_in - 273.15) * 1.8) + 32,
+                            t_out_disp: ((s.t_out - 273.15) * 1.8) + 32,
+                            power_disp: s.power_gas_kw * 1.34102
+                        }));
+                    } else if (u === 'metric_large') {
+                        conv.units = { power: 'MW', temp: '°C', fuel: 'ton/h', press: 'bar' };
+                        conv.power_shaft_total /= 1000.0;
+                        conv.power_shaft_per_unit /= 1000.0;
+                        conv.fuel_total /= 1000.0;
+                        // Stages usually kept in kW even for large machines, or we can convert? 
+                        // Let's keep stages in kW for now or consistency? use MW for consistency
+                        conv.stages = r.stages.map(s => ({
+                            ...s,
+                            p_in_disp: s.p_in / 100000,
+                            p_out_disp: s.p_out / 100000,
+                            t_in_disp: s.t_in - 273.15,
+                            t_out_disp: s.t_out - 273.15,
+                            power_disp: s.power_gas_kw / 1000.0
+                        }));
+                    }
+                    return conv;
+                });
+
+                watch(resultsUnit, () => {
+                    nextTick(() => { renderCharts(); });
+                });
+
+                const fetchConstants = async () => {
+                    try {
+                        const res = await fetch('/api/constants');
+                        const data = await res.json();
+                        availableGases.value = data.gases;
+                        units.value = data.units;
+                        // Preserve user inputs if already set, otherwise sync
+                        if (Object.keys(inputs.value.gas_comp).length === 0) inputs.value.gas_comp = data.default_composition;
+                        status.value = 'Connected';
+                    } catch (e) {
+                        status.value = 'Offline';
+                        console.error(e);
+                    }
+                };
+
+                const addGas = () => {
+                    if (!inputs.value.gas_comp[selectedGasToAdd.value]) {
+                        inputs.value.gas_comp[selectedGasToAdd.value] = 0.0;
+                    }
+                };
+                const removeGas = (key) => delete inputs.value.gas_comp[key];
+
+                const calculate = async () => {
+                    loading.value = true;
+                    try {
+                        const response = await fetch('/api/calculate/design', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(inputs.value)
+                        });
+                        if (!response.ok) throw new Error(await response.text());
+                        results.value = await response.json();
+                        await nextTick();
+                        renderCharts();
+                    } catch (err) {
+                        alert("Hata: " + err.message);
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const runBenchmark = async () => {
+                    benchmarkLoading.value = true;
+                    try {
+                        const response = await fetch('/api/calculate/benchmark', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(inputs.value)
+                        });
+                        if (!response.ok) throw new Error(await response.text());
+                        benchmarkResults.value = await response.json();
+                    } catch (err) {
+                        alert("Benchmark Hatası: " + err.message);
+                    } finally {
+                        benchmarkLoading.value = false;
+                    }
+                };
+
+                const renderCharts = () => {
+                    if (!results.value) return;
+                    const ctxTemp = document.getElementById('tempChart');
+                    const ctxPower = document.getElementById('powerChart');
+                    if (charts.temp) charts.temp.destroy();
+                    if (charts.power) charts.power.destroy();
+
+                    const labels = displayResults.value.stages.map(s => `Stage ${s.stage}`);
+                    const temps = displayResults.value.stages.map(s => s.t_out_disp);
+                    const powers = displayResults.value.stages.map(s => s.power_disp);
+                    const u = displayResults.value.units;
+
+                    charts.temp = new Chart(ctxTemp, {
+                        type: 'line',
+                        data: {
+                            labels,
+                            datasets: [{
+                                label: `T_out (${u.temp})`,
+                                data: temps,
+                                borderColor: '#f97316',
+                                backgroundColor: 'rgba(249, 115, 22, 0.1)',
+                                tension: 0.3,
+                                fill: true
+                            }]
+                        },
+                        options: { plugins: { legend: { display: false } }, scales: { y: { grid: { color: '#334155' } } } }
+                    });
+
+                    charts.power = new Chart(ctxPower, {
+                        type: 'bar',
+                        data: {
+                            labels,
+                            datasets: [{ label: `Power (${u.power === 'MW' ? 'MW' : (u.power === 'hp' ? 'hp' : 'kW')})`, data: powers, backgroundColor: '#3b82f6', borderRadius: 6 }]
+                        },
+                        options: { plugins: { legend: { display: false } }, scales: { y: { grid: { color: '#334155' } } } }
+                    });
+                };
+
+                const resetInputs = () => window.location.reload();
+
+                onMounted(() => {
+                    fetchConstants();
+                });
+
+                return { inputs, units, availableGases, selectedGasToAdd, totalComp, calculate, results, displayResults, resultsUnit, loading, status, resetInputs, addGas, removeGas, runBenchmark, benchmarkResults, benchmarkLoading };
+            }
+        }).mount('#app');
+    </script>
+</body>
+
+</html>

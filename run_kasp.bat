@@ -1,0 +1,3 @@
+@echo off
+echo KASP V4.6 Baslatiliyor...
+".\venv\Scripts\python.exe" main.py

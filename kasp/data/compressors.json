@@ -1,0 +1,50 @@
+[
+    {
+        "manufacturer": "Siemens Energy",
+        "model": "STC-SV",
+        "max_pressure_ratio": 1.8,
+        "min_flow_kgs": 5,
+        "max_flow_kgs": 100,
+        "performance_map_data": {}
+    },
+    {
+        "manufacturer": "Baker Hughes (GE)",
+        "model": "BCL",
+        "max_pressure_ratio": 10,
+        "min_flow_kgs": 3,
+        "max_flow_kgs": 90,
+        "performance_map_data": {}
+    },
+    {
+        "manufacturer": "MAN Energy Solutions",
+        "model": "RB-Series",
+        "max_pressure_ratio": 7,
+        "min_flow_kgs": 4,
+        "max_flow_kgs": 120,
+        "performance_map_data": {}
+    },
+    {
+        "manufacturer": "Dresser-Rand",
+        "model": "DATUM",
+        "max_pressure_ratio": 5,
+        "min_flow_kgs": 2,
+        "max_flow_kgs": 80,
+        "performance_map_data": {}
+    },
+    {
+        "manufacturer": "Elliott Group",
+        "model": "YRT",
+        "max_pressure_ratio": 8,
+        "min_flow_kgs": 3,
+        "max_flow_kgs": 110,
+        "performance_map_data": {}
+    },
+    {
+        "manufacturer": "Atlas Copco",
+        "model": "ZH",
+        "max_pressure_ratio": 6,
+        "min_flow_kgs": 1,
+        "max_flow_kgs": 50,
+        "performance_map_data": {}
+    }
+]
