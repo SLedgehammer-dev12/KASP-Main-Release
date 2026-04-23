@@ -190,9 +190,8 @@ class CalculationWorker(QObject):
                 'altitude':         self.inputs['altitude'],
                 # V4.3 Fix 4: Birim kPa — 1013 mbar değil, 101.325 kPa!
                 # UI'dan kPa olarak geldiğinden emin olun.
-                'ambient_pressure': self.inputs.get('ambient_pressure', self.inputs.get('ambient_press', 101.325)),  # kPa
-                'humidity':         self.inputs.get('humidity', 60),
-                'flow':             results_raw.get('mass_flow_per_unit_kgs', 0.0)
+                'ambient_pressure': self.inputs.get('ambient_pressure', 101.325),  # kPa
+                'humidity':         self.inputs.get('humidity', 60)
             }
             
             self.emit_progress(70, "Searching for suitable turbines...")

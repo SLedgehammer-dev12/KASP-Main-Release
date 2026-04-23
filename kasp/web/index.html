@@ -323,13 +323,6 @@
                                 <p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Pol. Verim</p>
                                 <p class="text-2xl font-bold text-green-500">{{ (displayResults.actual_poly_efficiency *
                                     100).toFixed(1) }} <span class="text-sm font-normal text-slate-500">%</span></p>
-                                <p class="text-[10px] text-slate-400 mt-1">
-                                    Hedef {{ (displayResults.design_poly_efficiency * 100).toFixed(1) }}%
-                                </p>
-                                <p v-if="displayResults.consistency_mode" class="text-[10px] mt-1"
-                                    :class="displayResults.consistency_converged ? 'text-emerald-400' : 'text-amber-400'">
-                                    {{ displayResults.consistency_converged ? 'Tutarlılık yakınsadı' : 'Tutarlılık yakınsamadı' }}
-                                </p>
                             </div>
                             <div class="glass-card rounded-2xl p-4">
                                 <p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Yakıt</p>
@@ -524,9 +517,6 @@
                         t_out: r.t_out, // Already C from backend
                         fuel_total: r.fuel_total_kgh,
                         actual_poly_efficiency: r.actual_poly_efficiency,
-                        design_poly_efficiency: r.design_poly_efficiency ?? (inputs.value.poly_eff / 100.0),
-                        consistency_mode: Boolean(r.consistency_mode),
-                        consistency_converged: Boolean(r.consistency_converged),
                         stages: r.stages.map(s => ({
                             ...s,
                             p_in_disp: s.p_in / 100000,

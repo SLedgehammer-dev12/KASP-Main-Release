@@ -5,11 +5,10 @@ Centralized configuration management with validation
 
 import json
 import os
+from release_metadata import APP_VERSION
 from typing import Any, Dict
 import logging
 import copy
-
-from release_metadata import APP_VERSION
 
 logger = logging.getLogger(__name__)
 

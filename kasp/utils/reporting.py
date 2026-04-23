@@ -2,7 +2,7 @@ import logging
 import datetime
 import os
 import io  # Task 5: For graph embedding
-from dataclasses import asdict, is_dataclass
+from release_metadata import APP_VERSION
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -52,27 +52,6 @@ class ReportGenerator:
         else:
             self.uncertainty_analyzer = None
             self.logger.warning("Uncertainty analysis not available (uncertainty.py not found)")
-
-    @staticmethod
-    def _get_unit_value(unit, *keys, default=None):
-        if isinstance(unit, dict):
-            for key in keys:
-                if key in unit:
-                    return unit[key]
-            return default
-
-        for key in keys:
-            if hasattr(unit, key):
-                return getattr(unit, key)
-        return default
-
-    @staticmethod
-    def _serialize_unit(unit):
-        if isinstance(unit, dict):
-            return unit
-        if is_dataclass(unit):
-            return asdict(unit)
-        return {'repr': str(unit)}
         
     def generate_design_report(self, inputs, results, selected_units, report_units):
         """Tasarım raporu oluşturur - GELİŞMİŞ VERSİYON"""
@@ -85,13 +64,13 @@ class ReportGenerator:
             styles = getSampleStyleSheet()
             
             # Başlık
-            title = Paragraph(f"KASP v4.2 DEEP - Kompresör Tasarım Raporu<br/>{inputs['project_name']}", styles['Title'])
+            title = Paragraph(f"KASP v{APP_VERSION} - Kompresor Tasarim Raporu<br/>{inputs['project_name']}", styles['Title'])
             story.append(title)
             story.append(Spacer(1, 12))
             
             # Tarih ve versiyon
             date_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-            version_info = Paragraph(f"Rapor Tarihi: {date_str} | KASP v4.2 DEEP | Gelişmiş Termodinamik Motor", styles['Normal'])
+            version_info = Paragraph(f"Rapor Tarihi: {date_str} | KASP v{APP_VERSION} | Gelismis Termodinamik Motor", styles['Normal'])
             story.append(version_info)
             story.append(Spacer(1, 20))
             
@@ -105,7 +84,7 @@ class ReportGenerator:
                 ['EOS Metodu', self._get_eos_display_name(inputs['eos_method']), ''],
                 ['Hesaplama Metodu', inputs['method'], ''],
                 ['Ortam Sıcaklığı', f"{inputs['ambient_temp']:.1f}", '°C'],
-                ['Ortam Basıncı', f"{inputs.get('ambient_pressure', inputs.get('ambient_press', 101.325)):.3f}", 'kPa'],
+                ['Ortam Basıncı', f"{inputs.get('ambient_pressure', 1013):.1f}", 'mbar'],
                 ['Rakım', f"{inputs.get('altitude', 0):.0f}", 'm']
             ]
             
@@ -342,13 +321,12 @@ class ReportGenerator:
             for i, unit in enumerate(selected_units[:5], 1):
                 unit_data.append([
                     str(i),
-                    f"{self._get_unit_value(unit, 'manufacturer', default='Bilinmiyor')} "
-                    f"{self._get_unit_value(unit, 'model', default='Bilinmiyor')}",
-                    f"{self._get_unit_value(unit, 'available_power_kw', default=0.0):.0f}",
-                    f"{self._get_unit_value(unit, 'site_heat_rate', default=0.0):.0f}",
-                    self._get_unit_value(unit, 'efficiency_rating', default='-'),
-                    f"{self._get_unit_value(unit, 'selection_score', default=0.0):.0f}",
-                    self._get_unit_value(unit, 'recommendation_level', default='-')
+                    f"{unit['manufacturer']} {unit['model']}",
+                    f"{unit['available_power_kw']:.0f}",
+                    f"{unit['site_heat_rate']:.0f}",
+                    unit['efficiency_rating'],
+                    f"{unit['selection_score']:.0f}",
+                    unit['recommendation_level']
                 ])
             
             unit_table = Table(unit_data, colWidths=[30, 160, 70, 70, 70, 60, 80])
@@ -683,13 +661,13 @@ class ReportGenerator:
             styles = getSampleStyleSheet()
             
             # Başlık
-            title = Paragraph(f"KASP v4.2 DEEP - Performans Değerlendirme Raporu<br/>{inputs['unit_name']}", styles['Title'])
+            title = Paragraph(f"KASP v{APP_VERSION} - Performans Degerlendirme Raporu<br/>{inputs['unit_name']}", styles['Title'])
             story.append(title)
             story.append(Spacer(1, 12))
             
             # Tarih
             date_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-            date_para = Paragraph(f"Rapor Tarihi: {date_str} | KASP v4.2 DEEP", styles['Normal'])
+            date_para = Paragraph(f"Rapor Tarihi: {date_str} | KASP v{APP_VERSION}", styles['Normal'])
             story.append(date_para)
             story.append(Spacer(1, 20))
             
@@ -705,7 +683,7 @@ class ReportGenerator:
                 ['Gaz Debisi', f"{inputs['flow']}", inputs['flow_unit']],
                 ['Yakıt Tüketimi', f"{inputs['fuel_flow']}", inputs['fuel_flow_unit']],
                 ['Ortam Sıcaklığı', f"{inputs['ambient_temp']:.1f}", '°C'],
-                ['Ortam Basıncı', f"{inputs.get('ambient_pressure', inputs.get('ambient_press', 101.325)):.3f}", 'kPa'],
+                ['Ortam Basıncı', f"{inputs['ambient_press']:.1f}", 'mbar'],
                 ['Nem Oranı', f"{inputs.get('humidity', 60):.1f}", '%'],
                 ['Rakım', f"{inputs.get('altitude', 0):.0f}", 'm']
             ]
@@ -842,8 +820,8 @@ class ReportGenerator:
             ['Faktör', 'Değer', 'Etki'],
             ['Sıcaklık', f"{results['corrected_values']['correction_factors']['temperature']}°C", 
              f"{(results['corrected_values']['correction_factors']['temperature']/15 - 1)*100:.1f}%"],
-            ['Basınç', f"{results['corrected_values']['correction_factors']['pressure']} kPa", 
-             f"{(results['corrected_values']['correction_factors']['pressure']/101.325 - 1)*100:.1f}%"],
+            ['Basınç', f"{results['corrected_values']['correction_factors']['pressure']} mbar", 
+             f"{(results['corrected_values']['correction_factors']['pressure']/1013 - 1)*100:.1f}%"],
             ['Nem', f"{results['corrected_values']['correction_factors']['humidity']}%", 
              f"{(results['corrected_values']['correction_factors']['humidity']/60 - 1)*100:.1f}%"],
             ['Rakım', f"{results['corrected_values']['correction_factors']['altitude']} m", 
@@ -915,10 +893,10 @@ class ReportGenerator:
                 'recommended_turbines': [
                     {
                         'rank': i + 1,
-                        'turbine': self._get_unit_value(unit, 'turbine_name', 'turbine', default='Bilinmiyor'),
-                        'power': self._get_unit_value(unit, 'available_power_kw', default=0.0),
-                        'efficiency': self._get_unit_value(unit, 'efficiency_rating', default='-'),
-                        'score': self._get_unit_value(unit, 'selection_score', default=0.0)
+                        'turbine': unit['turbine'],
+                        'power': unit['available_power_kw'],
+                        'efficiency': unit['efficiency_rating'],
+                        'score': unit['selection_score']
                     }
                     for i, unit in enumerate(selected_units[:3])
                 ] if selected_units else [],

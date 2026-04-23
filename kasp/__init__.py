@@ -1,5 +1,5 @@
 """
-KASP - Termodinamik Analiz Programi
+KASP - Thermodynamic Analysis Program
 Version: 4.6.2
 """
 

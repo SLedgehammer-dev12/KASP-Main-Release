@@ -1,85 +1,48 @@
-import os
 import sys
 from unittest.mock import patch
 
 import pytest
+from PyQt5.QtWidgets import QApplication
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-QtWidgets = pytest.importorskip("PyQt5.QtWidgets")
-QtCore = pytest.importorskip("PyQt5.QtCore")
-
-QApplication = QtWidgets.QApplication
-QScrollArea = QtWidgets.QScrollArea
+from kasp.ui.main_window import KaspMainWindow
 
 
 @pytest.fixture(scope="module")
 def app():
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
-    yield app
+    qt_app = QApplication.instance()
+    if qt_app is None:
+        qt_app = QApplication(sys.argv)
+    return qt_app
 
 
-def _cleanup_window(window, app):
-    window.close()
-    window.deleteLater()
-    app.processEvents()
-
-
-@patch("kasp.ui.responsive.get_screen_geometry")
-def test_ui_responsive_large_screen(mock_get_screen_geometry, app):
-    mock_get_screen_geometry.return_value = (1920, 1080)
-
-    from kasp.ui.main_window import KaspMainWindow
-
+@patch("kasp.ui.responsive.get_screen_geometry", return_value=(1920, 1080))
+def test_ui_responsive_large_screen(_, app):
     window = KaspMainWindow()
     try:
         geom = window.geometry()
-        assert geom.width() <= 1920
-        assert geom.height() <= 1080
+        assert geom.width() <= 1700
+        assert geom.height() <= 950
         assert window.minimumWidth() == 900
         assert window.minimumHeight() == 550
     finally:
-        _cleanup_window(window, app)
+        window.close()
 
 
-@patch("kasp.ui.responsive.get_screen_geometry")
-def test_ui_responsive_small_screen(mock_get_screen_geometry, app):
-    mock_get_screen_geometry.return_value = (1366, 768)
-
-    from kasp.ui.main_window import KaspMainWindow
-
+@patch("kasp.ui.responsive.get_screen_geometry", return_value=(1366, 768))
+def test_ui_responsive_small_screen(_, app):
     window = KaspMainWindow()
     try:
         geom = window.geometry()
         assert geom.width() <= int(1366 * 0.93) + 1
         assert geom.height() <= int(768 * 0.93) + 1
     finally:
-        _cleanup_window(window, app)
+        window.close()
 
 
-def test_left_panel_scroll_area(app):
-    from kasp.ui.main_window import KaspMainWindow
-
+def test_status_bar_indicator_exists(app):
     window = KaspMainWindow()
     try:
-        design_layout = window.design_tab.layout()
-        left_panel_widget = design_layout.itemAt(0).widget()
-
-        assert isinstance(left_panel_widget, QScrollArea)
-        assert left_panel_widget.widgetResizable() is True
-    finally:
-        _cleanup_window(window, app)
-
-
-def test_status_bar_has_validation_indicator(app):
-    from kasp.ui.main_window import KaspMainWindow
-
-    window = KaspMainWindow()
-    try:
-        status_bar = window.statusBar()
-        assert status_bar is not None
+        assert window.statusBar() is not None
         assert getattr(window, "status_validation_indicator", None) is not None
     finally:
-        _cleanup_window(window, app)
+        window.close()

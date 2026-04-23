@@ -1,12 +1,10 @@
 import sys
 import os
-import logging
-
 from release_metadata import APP_VERSION
-
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtCore import Qt, PYQT_VERSION_STR, QT_VERSION_STR
+import logging
 
 # Security improvement: Use absolute path and insert at beginning
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -120,7 +118,7 @@ def main():
         app.setApplicationVersion(APP_VERSION)
         app.setOrganizationName("KASP Engineering")
         app.setOrganizationDomain("kasp.engineering")
-        app.setApplicationDisplayName(f"KASP v{APP_VERSION} - Thermodynamic Analysis")
+        app.setApplicationDisplayName(f"KASP v{APP_VERSION} - Termodinamik Analiz")
         logger.info("✓ Application metadata set")
         
         # Set application style

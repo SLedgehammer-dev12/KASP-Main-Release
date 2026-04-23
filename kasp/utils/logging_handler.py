@@ -1,5 +1,6 @@
 import logging
 import sys
+from release_metadata import APP_VERSION
 from PyQt5.QtCore import QObject, pyqtSignal
 
 # Custom log level for iteration details
@@ -14,12 +15,18 @@ def iteration(self, message, *args, **kwargs):
 # Add iteration method to Logger class
 logging.Logger.iteration = iteration
 
-class QLogHandler(logging.Handler, QObject):
+class LogEmitter(QObject):
     log_signal = pyqtSignal(str)
 
     def __init__(self, parent=None):
+        super().__init__(parent)
+
+
+class QLogHandler(logging.Handler):
+    def __init__(self, parent=None):
         super().__init__()
-        QObject.__init__(self, parent)
+        self.emitter = LogEmitter(parent)
+        self.log_signal = self.emitter.log_signal
         self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
     def emit(self, record):
@@ -30,6 +37,13 @@ def setup_logging(log_widget_handler):
     """Logging yapılandırması"""
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
+
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
     
     # File handler - detaylı hata kaydı
     file_handler = logging.FileHandler('kasp_error.log', mode='w', encoding='utf-8')
@@ -49,4 +63,4 @@ def setup_logging(log_widget_handler):
     console_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
     root_logger.addHandler(console_handler)
     
-    logging.info("KASP v4.2 DEEP başlatıldı. Logging yapılandırması tamamlandı.")
+    logging.info("KASP v%s baslatildi. Logging yapilandirmasi tamamlandi.", APP_VERSION)

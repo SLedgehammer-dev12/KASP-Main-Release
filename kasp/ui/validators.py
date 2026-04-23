@@ -115,25 +115,6 @@ class ValidatedLineEdit(QLineEdit):
         """Handle text change event."""
         self.has_been_edited = True
         self._validate_current_text()
-
-    def _evaluate_text(self, text, allow_pristine_empty):
-        """Evaluate text validity without forcing a visual state change."""
-        if not self.validation_func:
-            return True, ""
-
-        if not text and allow_pristine_empty and not self.has_been_edited:
-            return True, ""
-
-        return self.validation_func(text, self.validation_context)
-
-    def current_validation_state(self):
-        """Return the actual validation state for the current text."""
-        text = self.text().strip()
-        try:
-            return self._evaluate_text(text, allow_pristine_empty=False)
-        except Exception as e:
-            self.logger.error(f"Validation error: {e}")
-            return False, str(e)
     
     def _validate_current_text(self):
         """Validate current text and update visual state."""
@@ -152,7 +133,7 @@ class ValidatedLineEdit(QLineEdit):
             return
         
         try:
-            is_valid, error_msg = self._evaluate_text(text, allow_pristine_empty=True)
+            is_valid, error_msg = self.validation_func(text, self.validation_context)
             
             self.is_valid = is_valid
             self.error_message = error_msg
@@ -186,7 +167,6 @@ class ValidatedLineEdit(QLineEdit):
         self.error_message = ""
         self.setStyleSheet(self.STYLE_NEUTRAL)
         self.setToolTip("")
-        self.validation_changed.emit(*self.current_validation_state())
 
 
 # Validation Functions
@@ -319,7 +299,7 @@ class ValidationManager:
             validated_input: ValidatedLineEdit instance
         """
         self.inputs[field_name] = validated_input
-        self.validation_states[field_name] = validated_input.current_validation_state()
+        self.validation_states[field_name] = (True, "")
         
         # Connect to validation change signal
         validated_input.validation_changed.connect(

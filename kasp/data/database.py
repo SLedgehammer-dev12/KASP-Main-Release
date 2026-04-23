@@ -4,18 +4,6 @@ import threading
 import logging
 import os
 
-COMPRESSOR_FLOW_DISPLAY_FACTOR = 3600.0
-
-
-def compressor_flow_kgh_to_kgs(value):
-    """Convert compressor library flow values from kg/h to kg/s for storage."""
-    return float(value) / COMPRESSOR_FLOW_DISPLAY_FACTOR
-
-
-def compressor_flow_kgs_to_kgh(value):
-    """Convert compressor library flow values from stored kg/s to UI-friendly kg/h."""
-    return float(value) * COMPRESSOR_FLOW_DISPLAY_FACTOR
-
 class UnitDatabase:
     def __init__(self, db_name="kasp_database.db"):
         self.db_name = db_name

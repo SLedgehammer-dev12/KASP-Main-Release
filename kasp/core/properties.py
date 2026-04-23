@@ -47,42 +47,6 @@ class ThermodynamicSolver:
         
         # Cache for thermo packages to avoid expensive instantiation
         self._package_cache = {}
-
-    def _extract_thermo_composition(self, gas_obj):
-        """Support both legacy and current thermo mixture dict formats."""
-        if not isinstance(gas_obj, dict):
-            return [], []
-
-        ids = gas_obj.get('ids', gas_obj.get('IDs', [])) or []
-        zs = gas_obj.get('mol_fractions', gas_obj.get('zs', [])) or []
-        return ids, zs
-
-    def _get_thermo_package(self, ids):
-        """Reuse thermo constant/property packages across calls."""
-        pkg_key = tuple(ids)
-        if pkg_key not in self._package_cache:
-            constants, properties = ChemicalConstantsPackage.from_IDs(ids)
-            self._package_cache[pkg_key] = (constants, properties)
-        return self._package_cache[pkg_key]
-
-    def infer_mw_g_mol(self, gas_obj):
-        """Infer mixture molecular weight in g/mol when available."""
-        try:
-            if isinstance(gas_obj, str) and COOLPROP_LOADED:
-                return CP.PropsSI('M', gas_obj) * 1000.0
-
-            if isinstance(gas_obj, dict):
-                if 'MW' in gas_obj:
-                    return gas_obj['MW']
-
-                ids, zs = self._extract_thermo_composition(gas_obj)
-                if THERMO_LOADED and ids and zs and len(ids) == len(zs):
-                    constants, _ = self._get_thermo_package(ids)
-                    return sum(zs[i] * constants.MWs[i] for i in range(len(zs)))
-        except Exception as exc:
-            logger.debug(f"MW inference failed: {exc}")
-
-        return None
         
     def get_properties(self, P_pa: float, T_k: float, gas_obj, eos_method: str) -> ThermodynamicState:
         """
@@ -94,12 +58,8 @@ class ThermodynamicSolver:
             gas_hash = hash(gas_obj)
         elif isinstance(gas_obj, dict):
             # Dict -> Sortlanmış tuple listesi ile hashleme
-            ids, zs = self._extract_thermo_composition(gas_obj)
-            if ids and zs:
-                components_tuple = tuple(sorted(zip(ids, zs)))
-                gas_hash = hash(components_tuple)
-            else:
-                gas_hash = hash(str(sorted(gas_obj.items())))
+            components_tuple = tuple(sorted(zip(gas_obj.get('IDs', []), gas_obj.get('zs', []))))
+            gas_hash = hash(components_tuple)
         else:
             gas_hash = hash(str(gas_obj))
             
@@ -174,14 +134,16 @@ class ThermodynamicSolver:
              
         # Support both old format with pre-built objects and new format with just ids/fractions
         zs = gas_data.get('zs', gas_data.get('mol_fractions', []))
-        ids = gas_data.get('ids', gas_data.get('IDs', []))
-        if not ids or not zs or len(ids) != len(zs):
-            raise ThermodynamicError("Thermo mixture data is incomplete or inconsistent")
-
-        constants, properties = self._get_thermo_package(ids)
+        ids = gas_data.get('ids', [])
+        
+        pkg_key = tuple(ids)
+        if pkg_key not in self._package_cache:
+            constants, properties = ChemicalConstantsPackage.from_IDs(ids)
+            self._package_cache[pkg_key] = (constants, properties)
+            
+        constants, properties = self._package_cache[pkg_key]
         
         MW_g_mol = sum(zs[i] * constants.MWs[i] for i in range(len(zs)))
-        gas_data['MW'] = MW_g_mol
         molar_mass = MW_g_mol / 1000.0  # kg/mol
         
         EOS_CLASS = PRMIX if eos_method == 'pr' else SRKMIX
@@ -216,14 +178,8 @@ class ThermodynamicSolver:
         )
         Cv_ig_molar = Cp_ig_molar - 8.314462
         
-        dep_suffix = 'l' if phase_str == 'liquid' else 'g'
-        cp_dep = getattr(eos, f'Cp_dep_{dep_suffix}', getattr(eos, 'Cp_dep_g', 0.0))
-        cv_dep = getattr(eos, f'Cv_dep_{dep_suffix}', getattr(eos, 'Cv_dep_g', 0.0))
-        h_dep = getattr(eos, f'H_dep_{dep_suffix}', getattr(eos, 'H_dep_g', 0.0))
-        s_dep = getattr(eos, f'S_dep_{dep_suffix}', getattr(eos, 'S_dep_g', 0.0))
-
-        Cp_real = (Cp_ig_molar + cp_dep) / molar_mass
-        Cv_real = (Cv_ig_molar + cv_dep) / molar_mass
+        Cp_real = (Cp_ig_molar + eos.Cp_dep_g) / molar_mass
+        Cv_real = (Cv_ig_molar + eos.Cv_dep_g) / molar_mass
         k = Cp_real / Cv_real if Cv_real > 0 else 1.4
         
         # Enthalpy & Entropy
@@ -237,8 +193,8 @@ class ThermodynamicSolver:
             for i in range(len(zs))
         ) - 8.314462 * math.log(P_pa / 101325.0)
         
-        H = (H_ig_molar + h_dep) / molar_mass
-        S = (S_ig_molar + s_dep) / molar_mass
+        H = (H_ig_molar + eos.H_dep_g) / molar_mass
+        S = (S_ig_molar + eos.S_dep_g) / molar_mass
 
         return ThermodynamicState(
             P=P_pa, T=T_k, H=H, S=S, Z=Z, k=k,
@@ -249,8 +205,9 @@ class ThermodynamicSolver:
     def _solve_fallback(self, P_pa: float, T_k: float, gas_obj, eos: str) -> ThermodynamicState:
         """Kütüphane başarısız olduğunda ideal gaz yaklaşımı."""
         # Mix MW hesabını yap/çek
-        inferred_mw = self.infer_mw_g_mol(gas_obj)
-        M_kg_mol = (inferred_mw / 1000.0) if inferred_mw else 0.02896
+        M_kg_mol = 0.02896 # HAVA varsayımı
+        if isinstance(gas_obj, dict) and 'MW' in gas_obj:
+             M_kg_mol = gas_obj['MW'] / 1000.0
         
         R_specific = R_UNIVERSAL_J_MOL_K / M_kg_mol
         Cp_ideal = 1000 + 0.1 * (T_k - 273.15)
