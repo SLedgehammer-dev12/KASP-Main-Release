@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from kasp.i18n import APP_VERSION, tr
+from release_metadata import RELEASE_TAG
 
 
 def get_window_setup_config():
@@ -30,7 +31,7 @@ def get_ui_initialization_method_names():
 
 
 def get_changelog_setting_key():
-    return "ui.skip_changelog_v46"
+    return "updates.last_seen_release_notes_tag"
 
 
 def build_populate_ui_error_message(error):
@@ -74,14 +75,13 @@ class MainWindowStartupController:
 
             config = get_config_manager()
             setting_key = get_changelog_setting_key()
-            skip_v46 = config.get(setting_key, False)
-            if not skip_v46:
+            last_seen_tag = config.get(setting_key, "")
+            if last_seen_tag != RELEASE_TAG:
                 from kasp.ui.dialogs import ChangelogDialog
 
-                dialog = ChangelogDialog(self.window)
+                dialog = ChangelogDialog(current_release_tag=RELEASE_TAG, parent=self.window)
                 dialog.exec_()
-                if dialog.do_not_show_again:
-                    config.set(setting_key, True)
+                config.set(setting_key, RELEASE_TAG)
         except Exception as error:
             self.window.logger.warning(f"Changelog dialog error: {error}")
 

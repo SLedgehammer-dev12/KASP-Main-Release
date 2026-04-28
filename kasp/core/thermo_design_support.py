@@ -38,6 +38,8 @@ def build_stage_result(
     delta_h_kj_kg,
     z_avg,
     method_history,
+    fallback_used=False,
+    fallback_sources=None,
 ):
     return {
         "stage": stage,
@@ -53,6 +55,8 @@ def build_stage_result(
         "delta_h_kj_kg": delta_h_kj_kg,
         "z_avg": z_avg,
         "method_history": method_history,
+        "fallback_used": bool(fallback_used),
+        "fallback_sources": list(fallback_sources or []),
     }
 
 
@@ -62,6 +66,25 @@ def calculate_total_actual_poly_efficiency(staged_results, total_poly_head_kj_kg
         return total_poly_head_kj_kg / total_actual_delta_h_kj_kg
     last_stage = staged_results[-1] if staged_results else {}
     return last_stage.get("poly_eff_diagnostic", poly_eff_tgt)
+
+
+def summarize_method_convergence(staged_results):
+    summaries = []
+    for stage in staged_results:
+        history = stage.get("method_history") or {}
+        iterations = history.get("iteration") or history.get("step") or []
+        iteration_count = max(len(iterations) - 1, 0) if isinstance(iterations, list) else 0
+        summaries.append(
+            {
+                "stage": stage.get("stage"),
+                "method_used": history.get("method_used", "unknown"),
+                "converged": bool(history.get("converged", False)),
+                "termination_reason": history.get("termination_reason"),
+                "iteration_count": iteration_count,
+                "iteration_limit": history.get("iteration_limit") or history.get("step_count"),
+            }
+        )
+    return summaries
 
 
 def build_design_results_payload(
@@ -96,6 +119,16 @@ def build_design_results_payload(
         total_poly_head_kj_kg,
         poly_eff_tgt,
     )
+    method_convergence = summarize_method_convergence(staged_results)
+    method_converged = all(item["converged"] for item in method_convergence) if method_convergence else False
+    warnings = []
+    if method_convergence and not method_converged:
+        failed_stages = ", ".join(
+            str(item["stage"]) for item in method_convergence if not item["converged"]
+        )
+        warnings.append(
+            f"Hesaplama metodu tum kademelerde yakinsamadi; son tahmin kullanildi. Kademeler: {failed_stages}."
+        )
     return {
         "t_out": final_t_out_k - 273.15,
         "head_kj_kg": total_poly_head_kj_kg,
@@ -125,8 +158,15 @@ def build_design_results_payload(
         "num_units": num_units,
         "num_stages": num_stages,
         "stages": staged_results,
+        "method_convergence": method_convergence,
+        "method_converged": method_converged,
         "calculation_method": method,
-        "warnings": [],
+        "warnings": warnings,
+        "fallback_used": False,
+        "fallback_call_count": 0,
+        "fallback_state_count": 0,
+        "fallback_states": [],
+        "fallback_stage_numbers": [],
         "engine_version": ENGINE_VERSION,
     }
 
@@ -151,3 +191,32 @@ def build_uncertainty_payload(uncertainty_result, actual_poly_efficiency):
         },
         "asme_ptc10_compliant": True,
     }
+
+
+def apply_fallback_tracking(results, fallback_tracking, staged_results, inlet_properties, outlet_properties):
+    fallback_stage_numbers = [
+        stage.get("stage")
+        for stage in staged_results
+        if stage.get("fallback_used", False)
+    ]
+    results["fallback_call_count"] = fallback_tracking.get("fallback_call_count", 0)
+    results["fallback_state_count"] = fallback_tracking.get("fallback_state_count", 0)
+    results["fallback_states"] = fallback_tracking.get("fallback_states", [])
+    results["fallback_stage_numbers"] = fallback_stage_numbers
+    results["fallback_used"] = bool(
+        fallback_tracking.get("fallback_used", False)
+        or fallback_stage_numbers
+        or inlet_properties.get("fallback_used", False)
+        or outlet_properties.get("fallback_used", False)
+    )
+
+    if results["fallback_used"]:
+        warning_text = "Termodinamik kutuphane en az bir noktada fallback (ideal gaz) ile sonuc uretti."
+        if results["fallback_stage_numbers"]:
+            stage_text = ", ".join(str(stage) for stage in results["fallback_stage_numbers"])
+            warning_text += f" Etkilenen kademeler: {stage_text}."
+        if results["fallback_state_count"]:
+            warning_text += f" Benzersiz fallback durum sayisi: {results['fallback_state_count']}."
+        results.setdefault("warnings", []).append(warning_text)
+
+    return results

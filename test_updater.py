@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 
 from kasp.utils.updater import (
+    build_release_notes_html,
+    default_download_filename,
     GitHubReleaseClient,
     format_bytes,
     is_newer_release,
     newer_releases,
     parse_release_tag,
+    sanitize_asset_filename,
+    unseen_releases,
 )
 
 
@@ -112,3 +116,169 @@ def test_download_asset_writes_file(monkeypatch, tmp_path):
 
     assert target.read_bytes() == b"hello world"
     assert format_bytes(11) == "11 B"
+
+
+def test_download_asset_accepts_directory_destination(monkeypatch, tmp_path):
+    client = GitHubReleaseClient(api_url="https://example/api/releases")
+    asset = client._parse_release(
+        {
+            "tag_name": "v1.1",
+            "assets": [
+                {
+                    "name": "KASP.v1.1.exe",
+                    "browser_download_url": "https://example/assets/v1.1.exe",
+                    "size": 5,
+                }
+            ],
+        }
+    ).assets[0]
+
+    def fake_urlopen(request, timeout=0):
+        return _FakeResponse(b"hello", headers={"Content-Length": "5"})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    target = client.download_asset(asset, tmp_path)
+
+    assert target == tmp_path / "KASP.v1.1.exe"
+    assert target.read_bytes() == b"hello"
+
+
+def test_fetch_releases_accepts_single_release_object(monkeypatch):
+    payload = {
+        "tag_name": "v1.2",
+        "name": "KASP v1.2",
+        "body": "Single object response",
+        "html_url": "https://example/releases/v1.2",
+        "published_at": "2026-04-25T00:00:00Z",
+        "prerelease": False,
+        "draft": False,
+        "assets": [],
+    }
+
+    def fake_urlopen(request, timeout=0):
+        return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    releases = GitHubReleaseClient(api_url="https://example/api/releases/latest").fetch_releases()
+
+    assert [release.tag_name for release in releases] == ["v1.2"]
+
+
+def test_asset_filename_is_sanitized_and_can_fallback_to_url():
+    client = GitHubReleaseClient(api_url="https://example/api/releases")
+    release = client._parse_release(
+        {
+            "tag_name": "v1.2",
+            "assets": [
+                {
+                    "name": "../unsafe/KASP.exe",
+                    "browser_download_url": "https://example/assets/KASP.exe",
+                },
+                {
+                    "name": "",
+                    "browser_download_url": "https://example/assets/KASP%20Portable.exe",
+                },
+            ],
+        }
+    )
+
+    assert sanitize_asset_filename("../unsafe/KASP.exe") == "KASP.exe"
+    assert release.assets[0].name == "KASP.exe"
+    assert release.assets[1].name == "KASP Portable.exe"
+
+
+def test_default_download_filename_prefers_sanitized_asset_name():
+    client = GitHubReleaseClient(api_url="https://example/api/releases")
+    asset = client._parse_release(
+        {
+            "tag_name": "v1.2",
+            "assets": [{"name": "../KASP.exe", "browser_download_url": "https://example/KASP.exe"}],
+        }
+    ).assets[0]
+
+    assert default_download_filename("v1.2", asset) == "KASP.exe"
+    assert default_download_filename("v1.2", None) == "KASP_v1.2.bin"
+
+
+def test_unseen_releases_stops_at_last_seen_tag():
+    client = GitHubReleaseClient(api_url="https://example/api/releases")
+    releases = [
+        client._parse_release(
+            {
+                "tag_name": "v1.2",
+                "name": "KASP v1.2",
+                "body": "Latest notes",
+                "html_url": "https://example/releases/v1.2",
+                "published_at": "2026-04-25T00:00:00Z",
+                "prerelease": False,
+                "draft": False,
+                "assets": [],
+            }
+        ),
+        client._parse_release(
+            {
+                "tag_name": "v1.1",
+                "name": "KASP v1.1",
+                "body": "Old notes",
+                "html_url": "https://example/releases/v1.1",
+                "published_at": "2026-04-24T00:00:00Z",
+                "prerelease": False,
+                "draft": False,
+                "assets": [],
+            }
+        ),
+        client._parse_release(
+            {
+                "tag_name": "v1.0",
+                "name": "KASP v1.0",
+                "body": "Very old notes",
+                "html_url": "https://example/releases/v1.0",
+                "published_at": "2026-04-23T00:00:00Z",
+                "prerelease": False,
+                "draft": False,
+                "assets": [],
+            }
+        ),
+    ]
+
+    assert [release.tag_name for release in unseen_releases("v1.0", releases)] == ["v1.2", "v1.1"]
+    assert [release.tag_name for release in unseen_releases("v1.2", releases)] == []
+
+
+def test_build_release_notes_html_contains_all_visible_releases():
+    client = GitHubReleaseClient(api_url="https://example/api/releases")
+    releases = [
+        client._parse_release(
+            {
+                "tag_name": "v1.2",
+                "name": "KASP v1.2",
+                "body": "Line 1\nLine 2",
+                "html_url": "https://example/releases/v1.2",
+                "published_at": "2026-04-25T00:00:00Z",
+                "prerelease": False,
+                "draft": False,
+                "assets": [],
+            }
+        ),
+        client._parse_release(
+            {
+                "tag_name": "v1.1",
+                "name": "KASP v1.1",
+                "body": "Previous release",
+                "html_url": "https://example/releases/v1.1",
+                "published_at": "2026-04-24T00:00:00Z",
+                "prerelease": False,
+                "draft": False,
+                "assets": [],
+            }
+        ),
+    ]
+
+    html = build_release_notes_html(releases, "v1.1")
+
+    assert "KASP v1.2" in html
+    assert "KASP v1.1" in html
+    assert "Yeni surum" in html
+    assert "Kurulu surum" in html

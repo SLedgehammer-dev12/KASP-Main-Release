@@ -12,6 +12,17 @@ if str(ROOT) not in sys.path:
 
 from release_metadata import LOCAL_EXE_STEM
 
+
+def include_runtime_submodule(name):
+    parts = name.split(".")
+    if name.startswith("scipy._lib.array_api_compat.") and not name.startswith(
+        ("scipy._lib.array_api_compat.common", "scipy._lib.array_api_compat.numpy")
+    ):
+        return False
+    if any(part in parts for part in ("tests", "testing", "torch", "dask", "cupy", "conftest")):
+        return False
+    return not parts[-1].startswith(("test_", "_test"))
+
 thermo_datas = collect_data_files("thermo")
 chemicals_datas = collect_data_files("chemicals")
 scipy_datas = collect_data_files("scipy")
@@ -22,9 +33,9 @@ all_datas.extend(chemicals_datas)
 all_datas.extend(scipy_datas)
 
 all_hidden = []
-all_hidden.extend(collect_submodules("thermo"))
-all_hidden.extend(collect_submodules("chemicals"))
-all_hidden.extend(collect_submodules("scipy"))
+all_hidden.extend(collect_submodules("thermo", filter=include_runtime_submodule))
+all_hidden.extend(collect_submodules("chemicals", filter=include_runtime_submodule))
+all_hidden.extend(collect_submodules("scipy", filter=include_runtime_submodule))
 
 a = Analysis(
     ["main.py"],
@@ -35,7 +46,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["pytest", "unittest", "doctest", "torch"],
     noarchive=False,
     optimize=0,
 )
@@ -51,7 +62,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

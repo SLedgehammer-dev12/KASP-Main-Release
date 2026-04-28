@@ -30,16 +30,78 @@ def build_consistency_info_html(results):
 
     if not results.get("consistency_converged", False):
         info_text += "<br><span style='color:orange;'>⚠️ Maksimum iter aşıldı!</span>"
+    if results.get("fallback_used", False):
+        info_text += "<br><span style='color:#b45309;'><b>Fallback:</b> Termodinamik kütüphane bazı noktalarda ideal gaz fallback kullandı.</span>"
     return info_text
+
+
+def build_fallback_summary_lines(results):
+    if not results.get("fallback_used", False):
+        return []
+
+    lines = ["Fallback Uyarısı: Termodinamik kütüphane bazı noktalarda ideal gaz fallback kullandı."]
+    if results.get("fallback_stage_numbers"):
+        stage_text = ", ".join(str(stage) for stage in results["fallback_stage_numbers"])
+        lines.append(f"Etkilenen Kademeler: {stage_text}")
+    if results.get("fallback_state_count"):
+        lines.append(f"Benzersiz Fallback Durumu: {results['fallback_state_count']}")
+    return lines
+
+
+def build_method_convergence_summary_lines(results):
+    convergence = results.get("method_convergence") or []
+    if not convergence or results.get("method_converged", True):
+        return []
+
+    failed = [item for item in convergence if not item.get("converged", False)]
+    if not failed:
+        return []
+
+    stage_text = ", ".join(str(item.get("stage")) for item in failed)
+    reason_text = ", ".join(
+        sorted({str(item.get("termination_reason") or "bilinmiyor") for item in failed})
+    )
+    return [
+        "Metot Yakinsama Uyarisi: En az bir kademede son tahmin kullanildi.",
+        f"Yakinsamayan Kademeler: {stage_text}",
+        f"Neden: {reason_text}",
+    ]
+
+
+def build_fallback_info_html(results):
+    if not results.get("fallback_used", False):
+        return None
+
+    html_lines = [
+        "<b>Fallback Uyarısı:</b> Termodinamik kütüphane bazı noktalarda ideal gaz fallback kullandı."
+    ]
+    if results.get("fallback_stage_numbers"):
+        stage_text = ", ".join(str(stage) for stage in results["fallback_stage_numbers"])
+        html_lines.append(f"<b>Etkilenen Kademeler:</b> {stage_text}")
+    if results.get("fallback_state_count"):
+        html_lines.append(f"<b>Benzersiz Fallback Durumu:</b> {results['fallback_state_count']}")
+
+    preview_states = results.get("fallback_states") or []
+    if preview_states:
+        preview_parts = []
+        for state in preview_states[:3]:
+            preview_parts.append(
+                f"{state['pressure_bar_a']:.2f} bar(a) / {state['temperature_c']:.1f}°C"
+            )
+        html_lines.append(f"<b>Örnek Durumlar:</b> {'; '.join(preview_parts)}")
+
+    return "<br>".join(html_lines)
 
 
 def build_design_summary_text(summary, results):
     recommended_turbines = summary.get("recommended_turbines") or []
     recommended_turbine = recommended_turbines[0]["turbine"] if recommended_turbines else "Yok"
+    fallback_lines = build_fallback_summary_lines(results)
+    method_lines = build_method_convergence_summary_lines(results)
 
     if results.get("consistency_mode", False):
         converged_text = "✓ Yakınsadı" if results.get("consistency_converged") else "⚠️ Max iter aşıldı"
-        return (
+        summary_text = (
             "🔄 Mod: Tutarlı (Self-Consistent)\n"
             f"Proje: {summary['project_name']}\n"
             f"Hedef Verim: {results['poly_eff_target']:.1f}% → "
@@ -50,8 +112,12 @@ def build_design_summary_text(summary, results):
             f"({summary['basic_parameters']['num_units']} Ünite)\n"
             f"Önerilen Türbin: {recommended_turbine}"
         )
+        extra_lines = fallback_lines + method_lines
+        if extra_lines:
+            summary_text += "\n" + "\n".join(extra_lines)
+        return summary_text
 
-    return (
+    summary_text = (
         "⚡ Mod: Hızlı\n"
         f"Proje: {summary['project_name']}\n"
         f"Sıkıştırma Oranı: {summary['basic_parameters']['compression_ratio']:.2f}\n"
@@ -60,6 +126,10 @@ def build_design_summary_text(summary, results):
         f"({summary['basic_parameters']['num_units']} Ünite)\n"
         f"Önerilen Türbin: {recommended_turbine}"
     )
+    extra_lines = fallback_lines + method_lines
+    if extra_lines:
+        summary_text += "\n" + "\n".join(extra_lines)
+    return summary_text
 
 
 def get_selected_unit_value(unit, *keys, default=None):
@@ -150,6 +220,16 @@ class DesignResultsPresenter:
         else:
             self.window.consistency_info_group.setVisible(False)
 
+        fallback_html = build_fallback_info_html(results)
+        fallback_group = getattr(self.window, "fallback_info_group", None)
+        fallback_label = getattr(self.window, "fallback_info_label", None)
+        if fallback_group is not None and fallback_label is not None:
+            if fallback_html:
+                fallback_group.setVisible(True)
+                fallback_label.setText(fallback_html)
+            else:
+                fallback_group.setVisible(False)
+
         for key, label in self.window.result_labels.items():
             if key not in results:
                 continue
@@ -181,40 +261,48 @@ class DesignResultsPresenter:
         if key in ["power_unit_kw", "power_unit_total_kw"]:
             converted = self.engine.convert_result_value(value, "kW", new_unit, "power")
             self.window.result_labels[key].setText(f"{converted:.0f}")
-        elif key == "head_kj_kg":
+            return
+
+        if key == "head_kj_kg":
             converted = self.engine.convert_result_value(value, "kJ/kg", new_unit, "head")
             self.window.result_labels[key].setText(f"{converted:.2f}")
-        elif key == "heat_rate":
+            return
+
+        if key == "heat_rate":
             converted = self.engine.convert_result_value(value, "kJ/kWh", new_unit, "heat_rate")
             self.window.result_labels[key].setText(f"{converted:.0f}")
-        elif key == "t_out":
+            return
+
+        if key == "t_out":
             converted = self.engine.convert_result_value(value, "°C", new_unit, "temperature")
             self.window.result_labels[key].setText(f"{converted:.1f}")
-        elif key in ["fuel_total_kgh", "fuel_unit_kgh"]:
-            if new_unit == "lb/h":
-                converted = value / 0.45359237
-                self.window.result_labels[key].setText(f"{converted:.0f}")
-            elif new_unit == "Sm³/h":
-                fuel_gas_density_std = results.get("fuel_gas_density_std")
-                if fuel_gas_density_std and fuel_gas_density_std > 0:
-                    converted = value / fuel_gas_density_std
+            return
+
+        if key in ["fuel_total_kgh", "fuel_unit_kgh"]:
+            try:
+                gas_comp = (self.window.last_design_inputs or {}).get("gas_comp")
+                eos_method = (self.window.last_design_inputs or {}).get("eos_method")
+                fuel_gas_obj = None
+                if gas_comp and eos_method:
+                    fuel_gas_obj = self.engine._create_gas_object(gas_comp, eos_method)
+
+                converted = self.engine.convert_result_value(
+                    value,
+                    "kg/h",
+                    new_unit,
+                    "fuel_flow",
+                    fuel_gas_obj,
+                    eos_method,
+                    results.get("lhv"),
+                )
+                if new_unit in {"J/h", "cal/h"}:
+                    self.window.result_labels[key].setText(f"{converted:.2e}")
+                elif new_unit in {"Sm³/h", "Nm³/h"}:
                     self.window.result_labels[key].setText(f"{converted:.1f}")
                 else:
-                    converted = value / 0.75
-                    self.window.result_labels[key].setText(f"{converted:.1f} (est)")
-            elif new_unit in {"cal/h", "J/h"}:
-                lhv_kj_kg = results.get("lhv")
-                if lhv_kj_kg and lhv_kj_kg > 0:
-                    energy_kj_h = value * lhv_kj_kg
-                    if new_unit == "cal/h":
-                        converted = energy_kj_h * 239.006
-                    else:
-                        converted = energy_kj_h * 1000
-                    self.window.result_labels[key].setText(f"{converted:.2e}")
-                else:
-                    self.window.result_labels[key].setText("LHV Yok")
-            else:
-                self.window.result_labels[key].setText(f"{value:.0f}")
+                    self.window.result_labels[key].setText(f"{converted:.0f}")
+            except Exception:
+                self.window.result_labels[key].setText("N/A")
 
     def populate_turbine_table(self, selected_units):
         QTableWidgetItem = self._qt_table_widget_item()

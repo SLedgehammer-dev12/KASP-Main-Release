@@ -5,7 +5,9 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from typing import Callable
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -34,6 +36,23 @@ def format_bytes(size: int) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024.0
     return f"{int(size)} B"
+
+
+def sanitize_asset_filename(name: str, *, default: str = "KASP_Update.bin") -> str:
+    safe_name = Path((name or "").replace("\\", "/")).name.strip()
+    return safe_name or default
+
+
+def filename_from_download_url(download_url: str, *, default: str = "KASP_Update.bin") -> str:
+    parsed = urlparse(download_url or "")
+    return sanitize_asset_filename(unquote(Path(parsed.path).name), default=default)
+
+
+def default_download_filename(release_tag: str, asset: "ReleaseAsset | None" = None) -> str:
+    if asset is not None and asset.name:
+        return sanitize_asset_filename(asset.name)
+    tag = (release_tag or "unknown").strip() or "unknown"
+    return sanitize_asset_filename(f"KASP_{tag}.bin")
 
 
 @dataclass(frozen=True)
@@ -77,6 +96,11 @@ class GitHubReleaseClient:
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Release listesi alinamadi: {exc}") from exc
 
+        if isinstance(payload, dict):
+            payload = [payload]
+        if not isinstance(payload, list):
+            raise RuntimeError("Release listesi beklenen formatta degil.")
+
         releases = [self._parse_release(item) for item in payload]
         releases = [release for release in releases if not release.draft]
         if not include_prereleases:
@@ -91,6 +115,10 @@ class GitHubReleaseClient:
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> Path:
         destination_path = Path(destination)
+        if destination_path.exists() and destination_path.is_dir():
+            destination_path = destination_path / sanitize_asset_filename(asset.name)
+        elif destination_path.suffix == "":
+            destination_path = destination_path / sanitize_asset_filename(asset.name)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
 
         request = urllib.request.Request(asset.download_url, headers=self.headers)
@@ -116,7 +144,9 @@ class GitHubReleaseClient:
     def _parse_release(item: dict) -> ReleaseInfo:
         assets = tuple(
             ReleaseAsset(
-                name=asset.get("name") or "asset",
+                name=sanitize_asset_filename(
+                    asset.get("name") or filename_from_download_url(asset.get("browser_download_url") or "")
+                ),
                 download_url=asset.get("browser_download_url") or "",
                 size=int(asset.get("size") or 0),
                 content_type=asset.get("content_type") or "application/octet-stream",
@@ -138,6 +168,66 @@ class GitHubReleaseClient:
 
 def newer_releases(current_tag: str, releases: list[ReleaseInfo]) -> list[ReleaseInfo]:
     return [release for release in releases if is_newer_release(release.tag_name, current_tag)]
+
+
+def unseen_releases(last_seen_tag: str, releases: list[ReleaseInfo]) -> list[ReleaseInfo]:
+    if not releases:
+        return []
+
+    visible = []
+    for release in releases:
+        if last_seen_tag and release.tag_name == last_seen_tag:
+            break
+        visible.append(release)
+    return visible
+
+
+def release_status_label(release_tag: str, current_tag: str) -> str:
+    if not current_tag:
+        return ""
+    if release_tag == current_tag:
+        return "Kurulu surum"
+    if is_newer_release(release_tag, current_tag):
+        return "Yeni surum"
+    return "Eski surum"
+
+
+def build_release_notes_html(
+    releases: list[ReleaseInfo],
+    current_tag: str = "",
+    *,
+    heading: str = "KASP Surum Notlari",
+) -> str:
+    parts = [f"<h3>{escape(heading)}</h3>"]
+    if current_tag:
+        parts.append(f"<p>Yuklu surum: <b>{escape(current_tag)}</b></p>")
+
+    if not releases:
+        parts.append("<p>Release notu bulunamadi.</p>")
+        return "".join(parts)
+
+    for release in releases:
+        status = release_status_label(release.tag_name, current_tag)
+        published_at = escape(release.published_at or "-")
+        body = escape(release.body or "Release notu bulunmuyor.")
+        title = escape(release.display_name)
+        tag = escape(release.tag_name or "-")
+        url = escape(release.html_url or "")
+
+        parts.append("<hr>")
+        parts.append(f"<h4>{title} <small>({tag})</small></h4>")
+        parts.append(f"<p><b>Durum:</b> {escape(status or '-')}<br>")
+        parts.append(f"<b>Yayin Tarihi:</b> {published_at}")
+        if url:
+            parts.append(f"<br><b>Baglanti:</b> <a href=\"{url}\">{url}</a>")
+        parts.append("</p>")
+        parts.append(
+            "<pre style=\"white-space: pre-wrap; font-family: Consolas, 'Courier New', monospace;\">"
+            f"{body}"
+            "</pre>"
+        )
+
+    return "".join(parts)
 
 
 def pick_default_asset(release: ReleaseInfo) -> ReleaseAsset | None:

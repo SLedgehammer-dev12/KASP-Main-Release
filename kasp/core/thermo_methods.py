@@ -12,11 +12,50 @@ from kasp.core.constants import R_UNIVERSAL_J_MOL_K
 
 
 class ThermoMethodSuite:
+    MAX_METHOD_ITERATIONS = 200
+    MAX_INCREMENTAL_STEPS = 500
+
     def __init__(self, *, thermo_solver, logger):
         self.thermo_solver = thermo_solver
         self.logger = logger
 
+    def _coerce_iteration_limit(self, value, *, default=100):
+        try:
+            limit = int(value)
+        except (TypeError, ValueError):
+            limit = default
+        return max(1, min(self.MAX_METHOD_ITERATIONS, limit))
+
+    @staticmethod
+    def _coerce_tolerance(value, *, default=0.01):
+        try:
+            tolerance = float(value)
+        except (TypeError, ValueError):
+            tolerance = default
+        return max(1e-6, tolerance)
+
+    def _coerce_step_count(self, value, *, default=10):
+        try:
+            step_count = int(value)
+        except (TypeError, ValueError):
+            step_count = default
+        return max(2, min(self.MAX_INCREMENTAL_STEPS, step_count))
+
+    @staticmethod
+    def _calculate_polytropic_head(z_factor, r_specific, t_in, pressure_ratio, exponent):
+        if abs(exponent) < 1e-10:
+            return 0.0
+        return (
+            z_factor
+            * r_specific
+            * t_in
+            * (1.0 / exponent)
+            * (math.pow(pressure_ratio, exponent) - 1.0)
+        ) / 1000.0
+
     def method_average_properties(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
+        max_iter = self._coerce_iteration_limit(max_iter)
+        tolerance = self._coerce_tolerance(tolerance)
         pr = p_out / p_in
         use_integral = pr > EngineSettings.PR_INTEGRATION_THRESHOLD
 
@@ -43,6 +82,10 @@ class ThermoMethodSuite:
             "k_value": [k1],
             "iteration": [0],
             "method_used": "integral" if use_integral else "averaging",
+            "iteration_limit": max_iter,
+            "tolerance": tolerance,
+            "converged": False,
+            "termination_reason": None,
         }
         integral_analysis = None
         use_integral_local = use_integral
@@ -102,15 +145,17 @@ class ThermoMethodSuite:
                     mw = state_in.MW
 
                 r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
-                poly_head = (
-                    z_avg
-                    * r_specific
-                    * t_in
-                    * (1.0 / n_minus_1_over_n)
-                    * (math.pow(p_out / p_in, n_minus_1_over_n) - 1.0)
-                ) / 1000.0
+                poly_head = self._calculate_polytropic_head(
+                    z_avg,
+                    r_specific,
+                    t_in,
+                    p_out / p_in,
+                    n_minus_1_over_n,
+                )
 
                 self.logger.debug(f"✓ Metot 1 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K")
+                history["converged"] = True
+                history["termination_reason"] = "converged"
                 return t2_guess, poly_head, z_avg, history
 
         self.logger.warning(f"⚠ Metot 1: Maks. iterasyon ({max_iter}) aşıldı, son tahmin kullanılıyor.")
@@ -126,21 +171,19 @@ class ThermoMethodSuite:
 
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
         n_final = (k_final - 1) / (k_final * poly_eff)
-        poly_head = (
-            (
-                z_avg_final
-                * r_specific
-                * t_in
-                * (1.0 / n_final)
-                * (math.pow(p_out / p_in, n_final) - 1.0)
-            )
-            / 1000.0
-            if abs(n_final) > 1e-10
-            else 0.0
+        poly_head = self._calculate_polytropic_head(
+            z_avg_final,
+            r_specific,
+            t_in,
+            p_out / p_in,
+            n_final,
         )
+        history["termination_reason"] = history["termination_reason"] or "max_iterations"
         return t2_guess, poly_head, z_avg_final, history
 
     def method_endpoint(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
+        max_iter = self._coerce_iteration_limit(max_iter)
+        tolerance = self._coerce_tolerance(tolerance)
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
             k1, Z1 = state_in.k, state_in.Z
@@ -159,6 +202,10 @@ class ThermoMethodSuite:
             "k_value": [k1],
             "iteration": [0],
             "method_used": "endpoint",
+            "iteration_limit": max_iter,
+            "tolerance": tolerance,
+            "converged": False,
+            "termination_reason": None,
         }
 
         for iteration in range(max_iter):
@@ -172,6 +219,7 @@ class ThermoMethodSuite:
 
             n_minus_1_over_n = (k2 - 1) / (k2 * poly_eff)
             if abs(n_minus_1_over_n) < 1e-10:
+                history["termination_reason"] = "near_zero_exponent"
                 break
 
             t2_new = t_in * (p_out / p_in) ** n_minus_1_over_n
@@ -190,38 +238,35 @@ class ThermoMethodSuite:
                 z2_final = state_out_final.Z
                 z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, z2_final)
                 r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
-                poly_head = (
-                    z_avg
-                    * r_specific
-                    * t_in
-                    * (1.0 / n_minus_1_over_n)
-                    * (math.pow(p_out / p_in, n_minus_1_over_n) - 1.0)
-                ) / 1000.0
+                poly_head = self._calculate_polytropic_head(
+                    z_avg,
+                    r_specific,
+                    t_in,
+                    p_out / p_in,
+                    n_minus_1_over_n,
+                )
 
                 self.logger.debug(f"✓ Metot 2 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K")
+                history["converged"] = True
+                history["termination_reason"] = "converged"
                 return t2_guess, poly_head, z_avg, history
 
         self.logger.warning(f"⚠ Metot 2: Yakınsama sağlanamadı ({max_iter} iter).")
         z_avg_final = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, Z2)
         r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
         n_final = (k2 - 1) / (k2 * poly_eff)
-        poly_head = (
-            (
-                z_avg_final
-                * r_specific
-                * t_in
-                * (1.0 / n_final)
-                * (math.pow(p_out / p_in, n_final) - 1.0)
-            )
-            / 1000.0
-            if abs(n_final) > 1e-10
-            else 0.0
+        poly_head = self._calculate_polytropic_head(
+            z_avg_final,
+            r_specific,
+            t_in,
+            p_out / p_in,
+            n_final,
         )
+        history["termination_reason"] = history["termination_reason"] or "max_iterations"
         return t2_guess, poly_head, z_avg_final, history
 
     def method_incremental_pressure(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, step_count=10):
-        if step_count < 2:
-            step_count = 10
+        step_count = self._coerce_step_count(step_count)
 
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
@@ -239,6 +284,8 @@ class ThermoMethodSuite:
             "head_incremental": [0.0],
             "step": [0],
             "method_used": "incremental_pressure",
+            "step_count": step_count,
+            "converged": True,
         }
 
         pressures = np.geomspace(p_in, p_out, step_count + 1)
@@ -261,13 +308,13 @@ class ThermoMethodSuite:
             if abs(n_step) < 1e-10:
                 raise RuntimeError(f"n_step sıfıra çok yakın (adım {index}).")
 
-            head_step = (
-                z_step
-                * r_specific
-                * t_current
-                * (1.0 / n_step)
-                * (math.pow(p_end / p_start, n_step) - 1.0)
-            ) / 1000.0
+            head_step = self._calculate_polytropic_head(
+                z_step,
+                r_specific,
+                t_current,
+                p_end / p_start,
+                n_step,
+            )
             total_head += head_step
             t_current = t_current * (p_end / p_start) ** n_step
 
@@ -325,6 +372,7 @@ class ThermoMethodSuite:
         t2_guess = t_isen * (1.0 + (1.0 - poly_eff) * 0.3)
         iterations_hs = []
         outer_iterations = 3
+        hs_converged = False
 
         for outer in range(outer_iterations):
             exponent_isen = (k_avg - 1) / k_avg
@@ -342,7 +390,7 @@ class ThermoMethodSuite:
             delta_h_actual = delta_h_isen / eta_isen
             h_target = h1 + delta_h_actual
 
-            max_iter = 30
+            max_iter = self._coerce_iteration_limit(30)
             tol_h = 100.0
 
             for iteration in range(max_iter):
@@ -370,6 +418,7 @@ class ThermoMethodSuite:
                 )
 
                 if abs(d_h) < tol_h:
+                    hs_converged = True
                     self.logger.debug(
                         f"✓ Metot 4 iç döngü yakınsadı: outer={outer}, iter={iteration + 1}, "
                         f"T_out={t2_guess:.1f} K, ΔH_err={d_h:.1f} J/kg, k_avg={k_avg:.4f}"
@@ -428,13 +477,13 @@ class ThermoMethodSuite:
             if abs(sigma) < 1e-10:
                 poly_head = (z_avg * r_specific * t_in * ln_pr) / 1000.0
             else:
-                poly_head = (
-                    z_avg
-                    * r_specific
-                    * t_in
-                    * (1.0 / sigma)
-                    * (math.pow(p_out / p_in, sigma) - 1.0)
-                ) / 1000.0
+                poly_head = self._calculate_polytropic_head(
+                    z_avg,
+                    r_specific,
+                    t_in,
+                    p_out / p_in,
+                    sigma,
+                )
 
         history = {
             "method_used": "direct_hs",
@@ -448,6 +497,9 @@ class ThermoMethodSuite:
             "eta_isentropic_derived": eta_isen,
             "sigma_backcomputed": ln_tr / ln_pr if abs(ln_pr) > 1e-10 else 0,
             "iterations_detail": iterations_hs,
+            "inner_iteration_limit": max_iter,
+            "outer_iteration_limit": outer_iterations,
+            "converged": hs_converged,
         }
 
         self.logger.info(
@@ -474,7 +526,8 @@ class ThermoMethodSuite:
         n_isen = (k - 1) / k
         t_guess = t_in * math.pow(p_out / p_in, n_isen)
 
-        for iteration in range(25):
+        max_iter = self._coerce_iteration_limit(25)
+        for iteration in range(max_iter):
             try:
                 state_try = self.thermo_solver.get_properties(p_out, t_guess, gas_obj, eos)
                 s_try = state_try.S

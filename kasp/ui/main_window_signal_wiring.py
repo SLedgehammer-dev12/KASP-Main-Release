@@ -67,3 +67,4 @@ class MainWindowSignalController:
 
         window.generate_report_btn.clicked.connect(window.handle_design_report)
         window.export_results_btn.clicked.connect(window.export_results)
+        window.save_project_btn.clicked.connect(window.save_project)

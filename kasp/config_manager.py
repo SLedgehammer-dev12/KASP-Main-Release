@@ -57,7 +57,8 @@ class ConfigManager:
             "check_on_startup": True,
             "repo_owner": RELEASE_REPOSITORY_OWNER,
             "repo_name": RELEASE_REPOSITORY_NAME,
-            "last_dismissed_tag": ""
+            "last_dismissed_tag": "",
+            "last_seen_release_notes_tag": ""
         }
     }
     

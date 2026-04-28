@@ -12,11 +12,10 @@ from collections import OrderedDict
 
 # V4.4 Data Models
 from kasp.core.models import ThermodynamicState
-from kasp.core.exceptions import ThermodynamicError
 
 # Sabitler (GasMixtureBuilder veya API 617)
 from kasp.core.constants import (
-    R_UNIVERSAL_J_MOL_K, STD_PRESS_PA
+    MOLAR_MASSES, R_UNIVERSAL_J_MOL_K, STD_PRESS_PA, normalize_component
 )
 
 # Kütüphane Yüklemeleri (Lazy/Optional Imports)
@@ -28,7 +27,7 @@ except ImportError:
 
 try:
     from thermo.eos_mix import PRMIX, SRKMIX
-    from thermo import ChemicalConstantsPackage, PropertyPackage
+    from thermo import ChemicalConstantsPackage
     THERMO_LOADED = True
 except ImportError:
     THERMO_LOADED = False
@@ -40,39 +39,167 @@ class ThermodynamicSolver:
     
     def __init__(self, max_cache_size=2000):
         self._property_cache = OrderedDict()
-        self._max_cache_size = max_cache_size
+        self._max_cache_size = self._coerce_cache_size(max_cache_size)
         self._cache_hits = 0
         self._cache_misses = 0
         self._cache_lock = threading.Lock()
         
         # Cache for thermo packages to avoid expensive instantiation
         self._package_cache = {}
+        self._run_tracking = threading.local()
+
+    @staticmethod
+    def _coerce_cache_size(value, default=2000):
+        try:
+            cache_size = int(value)
+        except (TypeError, ValueError):
+            cache_size = default
+        return max(1, cache_size)
+
+    @staticmethod
+    def _build_gas_hash(gas_obj):
+        if isinstance(gas_obj, str):
+            return hash(gas_obj)
+        if isinstance(gas_obj, dict):
+            ids = gas_obj.get("ids", gas_obj.get("IDs", []))
+            fractions = gas_obj.get("mol_fractions", gas_obj.get("zs", []))
+            components_tuple = tuple(sorted(zip(ids, fractions)))
+            return hash(components_tuple)
+        return hash(str(gas_obj))
+
+    def _build_cache_key(self, P_pa: float, T_k: float, gas_obj, eos_method: str):
+        return (
+            round(P_pa, 1),
+            round(T_k, 2),
+            self._build_gas_hash(gas_obj),
+            eos_method,
+        )
+
+    def _get_cached_state(self, cache_key, P_pa: float, T_k: float, eos_method: str):
+        with self._cache_lock:
+            if cache_key not in self._property_cache:
+                return None
+
+            self._cache_hits += 1
+            state = self._property_cache.pop(cache_key)
+            self._property_cache[cache_key] = state
+            self._record_run_tracking(P_pa, T_k, eos_method, state)
+            return state
+
+    def _store_cached_state(self, cache_key, state):
+        with self._cache_lock:
+            if len(self._property_cache) >= self._max_cache_size:
+                self._property_cache.popitem(last=False)
+            self._property_cache[cache_key] = state
+
+    def _record_cache_miss(self):
+        with self._cache_lock:
+            self._cache_misses += 1
+
+    @staticmethod
+    def _speed_of_sound(k_value, pressure_pa, density):
+        if density <= 0:
+            return 0.0
+        return math.sqrt(max(k_value * pressure_pa / density, 0.0))
+
+    @staticmethod
+    def _build_state(
+        *,
+        P_pa,
+        T_k,
+        H,
+        S,
+        Z,
+        k,
+        MW,
+        Cp,
+        Cv,
+        density,
+        phase,
+        fallback=False,
+        mu=1.1e-5,
+        speed_of_sound=None,
+    ):
+        if speed_of_sound is None:
+            speed_of_sound = ThermodynamicSolver._speed_of_sound(k, P_pa, density)
+        return ThermodynamicState(
+            P=P_pa,
+            T=T_k,
+            H=H,
+            S=S,
+            Z=Z,
+            k=k,
+            MW=MW,
+            Cp=Cp,
+            Cv=Cv,
+            density=density,
+            phase=phase,
+            raw_props={
+                "fallback": bool(fallback),
+                "mu": mu,
+                "speed_of_sound": speed_of_sound,
+            },
+        )
+
+    def begin_run_tracking(self):
+        self._run_tracking.context = {
+            "calls": 0,
+            "fallback_calls": 0,
+            "fallback_events": OrderedDict(),
+        }
+
+    def end_run_tracking(self):
+        context = getattr(self._run_tracking, "context", None)
+        self._run_tracking.context = None
+
+        if not context:
+            return {
+                "fallback_used": False,
+                "fallback_call_count": 0,
+                "fallback_state_count": 0,
+                "fallback_states": [],
+            }
+
+        return {
+            "fallback_used": context["fallback_calls"] > 0,
+            "fallback_call_count": context["fallback_calls"],
+            "fallback_state_count": len(context["fallback_events"]),
+            "fallback_states": list(context["fallback_events"].values()),
+        }
+
+    def _record_run_tracking(self, P_pa: float, T_k: float, eos_method: str, state: ThermodynamicState):
+        context = getattr(self._run_tracking, "context", None)
+        if context is None:
+            return
+
+        context["calls"] += 1
+        if not state.raw_props.get("fallback", False):
+            return
+
+        context["fallback_calls"] += 1
+        event_key = (round(P_pa, 1), round(T_k, 2), eos_method, state.phase)
+        if event_key in context["fallback_events"] or len(context["fallback_events"]) >= 12:
+            return
+
+        context["fallback_events"][event_key] = {
+            "pressure_bar_a": P_pa / 1e5,
+            "temperature_c": T_k - 273.15,
+            "eos_method": eos_method,
+            "phase": state.phase,
+        }
         
     def get_properties(self, P_pa: float, T_k: float, gas_obj, eos_method: str) -> ThermodynamicState:
         """
         Giriş basınç ve sıcaklığına bağli olarak durumu çözer. Cache mimarisi kullanir.
         gas_obj: Eğer coolprop ise string, thermo ise dict objesidir (mixture.py tarafindan uretilir)
         """
-        # 1. Cache Key Oluştur (Tuple olarak daha hızlı)
-        if isinstance(gas_obj, str):
-            gas_hash = hash(gas_obj)
-        elif isinstance(gas_obj, dict):
-            # Dict -> Sortlanmış tuple listesi ile hashleme
-            components_tuple = tuple(sorted(zip(gas_obj.get('IDs', []), gas_obj.get('zs', []))))
-            gas_hash = hash(components_tuple)
-        else:
-            gas_hash = hash(str(gas_obj))
-            
-        cache_key = (round(P_pa, 1), round(T_k, 2), gas_hash, eos_method)
+        cache_key = self._build_cache_key(P_pa, T_k, gas_obj, eos_method)
 
-        with self._cache_lock:
-            if cache_key in self._property_cache:
-                self._cache_hits += 1
-                state = self._property_cache.pop(cache_key)
-                self._property_cache[cache_key] = state # Sona taşı (LRU)
-                return state
+        cached_state = self._get_cached_state(cache_key, P_pa, T_k, eos_method)
+        if cached_state is not None:
+            return cached_state
                 
-        self._cache_misses += 1
+        self._record_cache_miss()
         
         # 2. Ana Hesaplama Döngüsü
         try:
@@ -91,13 +218,54 @@ class ThermodynamicSolver:
         if state.Z < 0.5 or state.Z > 1.5:
              logger.warning(f"⚠️ Olağandışı Z faktörü: {state.Z:.4f} (P={P_pa/1e5:.1f} bar, T={T_k-273.15:.1f}°C)")
              
-        # Cache'e Ekle
-        with self._cache_lock:
-            if len(self._property_cache) >= self._max_cache_size:
-                 self._property_cache.popitem(last=False)
-            self._property_cache[cache_key] = state
+        self._store_cached_state(cache_key, state)
+        self._record_run_tracking(P_pa, T_k, eos_method, state)
             
         return state
+
+    def infer_mw_g_mol(self, gas_obj) -> float | None:
+        if isinstance(gas_obj, dict):
+            mw = gas_obj.get("MW")
+            if mw is not None:
+                try:
+                    return float(mw)
+                except (TypeError, ValueError):
+                    pass
+
+            ids = gas_obj.get("ids", gas_obj.get("IDs", []))
+            zs = gas_obj.get("mol_fractions", gas_obj.get("zs", []))
+            if ids and zs and len(ids) == len(zs):
+                try:
+                    from kasp.core.mixture import GasMixtureBuilder
+
+                    reverse_map = {
+                        thermo_id.lower(): component
+                        for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
+                    }
+                    return sum(
+                        float(fraction)
+                        * MOLAR_MASSES[reverse_map.get(str(component_id).lower(), normalize_component(str(component_id)))]
+                        for component_id, fraction in zip(ids, zs)
+                    )
+                except Exception:
+                    return None
+
+        return None
+
+    @staticmethod
+    def _extract_thermo_components(gas_data: dict):
+        zs = gas_data.get('zs', gas_data.get('mol_fractions', []))
+        ids = gas_data.get('ids', gas_data.get('IDs', []))
+        if not ids or not zs or len(ids) != len(zs):
+            raise ValueError("Thermo EOS icin ids/zs veya ids/mol_fractions eksik ya da uyumsuz.")
+        return ids, zs
+
+    def _get_thermo_package(self, ids):
+        pkg_key = tuple(ids)
+        if pkg_key not in self._package_cache:
+            constants, properties = ChemicalConstantsPackage.from_IDs(ids)
+            self._package_cache[pkg_key] = (constants, properties)
+        return self._package_cache[pkg_key]
 
     def _solve_coolprop(self, P_pa: float, T_k: float, mixture_string: str) -> ThermodynamicState:
         """CoolProp HEOS motorunu kullanarak özellikleri çözer."""
@@ -108,6 +276,7 @@ class ThermodynamicSolver:
         S = CP.PropsSI('Smass', 'P', P_pa, 'T', T_k, mixture_string)
         Z = CP.PropsSI('Z', 'P', P_pa, 'T', T_k, mixture_string)
         D = CP.PropsSI('Dmass', 'P', P_pa, 'T', T_k, mixture_string)
+        a = CP.PropsSI('A', 'P', P_pa, 'T', T_k, mixture_string)
         Cp = CP.PropsSI('Cpmass', 'P', P_pa, 'T', T_k, mixture_string)
         Cv = CP.PropsSI('Cvmass', 'P', P_pa, 'T', T_k, mixture_string)
         k = Cp / Cv if Cv != 0 else 1.667
@@ -120,11 +289,21 @@ class ThermodynamicSolver:
             phase_str = 'gas'
             if Z < 0.2: phase_str = 'liquid'
         
-        return ThermodynamicState(
-            P=P_pa, T=T_k, H=H, S=S, Z=Z, k=k,
-            MW=MW_kg_mol * 1000.0, # g/mol
-            Cp=Cp, Cv=Cv, density=D, phase=phase_str,
-            raw_props={'fallback': False, 'mu': CP.PropsSI('V', 'P', P_pa, 'T', T_k, mixture_string)}
+        return self._build_state(
+            P_pa=P_pa,
+            T_k=T_k,
+            H=H,
+            S=S,
+            Z=Z,
+            k=k,
+            MW=MW_kg_mol * 1000.0,
+            Cp=Cp,
+            Cv=Cv,
+            density=D,
+            phase=phase_str,
+            fallback=False,
+            mu=CP.PropsSI('V', 'P', P_pa, 'T', T_k, mixture_string),
+            speed_of_sound=a,
         )
         
     def _solve_thermo_eos(self, P_pa: float, T_k: float, gas_data: dict, eos_method: str) -> ThermodynamicState:
@@ -132,16 +311,8 @@ class ThermodynamicSolver:
         if not THERMO_LOADED:
              raise ImportError("Thermo kütüphanesi aktif değil.")
              
-        # Support both old format with pre-built objects and new format with just ids/fractions
-        zs = gas_data.get('zs', gas_data.get('mol_fractions', []))
-        ids = gas_data.get('ids', [])
-        
-        pkg_key = tuple(ids)
-        if pkg_key not in self._package_cache:
-            constants, properties = ChemicalConstantsPackage.from_IDs(ids)
-            self._package_cache[pkg_key] = (constants, properties)
-            
-        constants, properties = self._package_cache[pkg_key]
+        ids, zs = self._extract_thermo_components(gas_data)
+        constants, properties = self._get_thermo_package(ids)
         
         MW_g_mol = sum(zs[i] * constants.MWs[i] for i in range(len(zs)))
         molar_mass = MW_g_mol / 1000.0  # kg/mol
@@ -196,18 +367,25 @@ class ThermodynamicSolver:
         H = (H_ig_molar + eos.H_dep_g) / molar_mass
         S = (S_ig_molar + eos.S_dep_g) / molar_mass
 
-        return ThermodynamicState(
-            P=P_pa, T=T_k, H=H, S=S, Z=Z, k=k,
-            MW=MW_g_mol, Cp=Cp_real, Cv=Cv_real, density=D, phase=phase_str,
-            raw_props={'fallback': False, 'mu': 1.1e-5} # Fixed viscosity for now
+        return self._build_state(
+            P_pa=P_pa,
+            T_k=T_k,
+            H=H,
+            S=S,
+            Z=Z,
+            k=k,
+            MW=MW_g_mol,
+            Cp=Cp_real,
+            Cv=Cv_real,
+            density=D,
+            phase=phase_str,
+            fallback=False,
         )
 
     def _solve_fallback(self, P_pa: float, T_k: float, gas_obj, eos: str) -> ThermodynamicState:
         """Kütüphane başarısız olduğunda ideal gaz yaklaşımı."""
-        # Mix MW hesabını yap/çek
-        M_kg_mol = 0.02896 # HAVA varsayımı
-        if isinstance(gas_obj, dict) and 'MW' in gas_obj:
-             M_kg_mol = gas_obj['MW'] / 1000.0
+        mw_g_mol = self.infer_mw_g_mol(gas_obj)
+        M_kg_mol = (mw_g_mol / 1000.0) if mw_g_mol else 0.02896
         
         R_specific = R_UNIVERSAL_J_MOL_K / M_kg_mol
         Cp_ideal = 1000 + 0.1 * (T_k - 273.15)
@@ -220,10 +398,20 @@ class ThermodynamicSolver:
         H_ideal = Cp_ideal * (T_k - 273.15)
         S_ideal = Cp_ideal * math.log(T_k / 273.15) if T_k > 0 else 0
         
-        return ThermodynamicState(
-            P=P_pa, T=T_k, H=H_ideal, S=S_ideal, Z=Z_ideal, k=max(1.2, min(1.67, k_ideal)),
-            MW=M_kg_mol*1000, Cp=Cp_ideal, Cv=Cv_ideal, density=max(0.1, rho_ideal),
-            phase='ideal_fallback', raw_props={'fallback': True}
+        return self._build_state(
+            P_pa=P_pa,
+            T_k=T_k,
+            H=H_ideal,
+            S=S_ideal,
+            Z=Z_ideal,
+            k=max(1.2, min(1.67, k_ideal)),
+            MW=M_kg_mol * 1000,
+            Cp=Cp_ideal,
+            Cv=Cv_ideal,
+            density=max(0.1, rho_ideal),
+            phase='ideal_fallback',
+            fallback=True,
+            speed_of_sound=self._speed_of_sound(k_ideal, P_pa, max(rho_ideal, 0.1)),
         )
         
     def get_cache_stats(self):

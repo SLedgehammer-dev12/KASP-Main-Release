@@ -91,6 +91,11 @@ class ThermoDesignOrchestrator:
 
             state_in = self.thermo_solver.get_properties(curr_p_in, curr_t_in, gas_obj, eos)
             state_out = self.thermo_solver.get_properties(curr_p_out, t_out_k, gas_obj, eos)
+            fallback_sources = []
+            if state_in.raw_props.get("fallback", False):
+                fallback_sources.append("stage_inlet")
+            if state_out.raw_props.get("fallback", False):
+                fallback_sources.append("stage_outlet")
 
             stage_gas_power_kw = mass_flow_per_unit * (poly_head / poly_eff_tgt)
             stage_delta_h_kj = (state_out.H - state_in.H) / 1000.0
@@ -117,6 +122,8 @@ class ThermoDesignOrchestrator:
                     delta_h_kj_kg=stage_delta_h_kj,
                     z_avg=z_avg,
                     method_history=history,
+                    fallback_used=bool(fallback_sources),
+                    fallback_sources=fallback_sources,
                 )
             )
 

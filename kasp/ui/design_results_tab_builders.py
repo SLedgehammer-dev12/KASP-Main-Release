@@ -49,6 +49,18 @@ def build_basic_results_tab(window):
     window.consistency_info_group.setVisible(False)
     layout.addWidget(window.consistency_info_group)
 
+    window.fallback_info_group = QGroupBox("⚠️ Termodinamik Fallback Uyarısı")
+    fallback_info_layout = QVBoxLayout()
+    window.fallback_info_label = QLabel("Fallback kullanılmadı.")
+    window.fallback_info_label.setWordWrap(True)
+    window.fallback_info_label.setStyleSheet(
+        "font-size: 10pt; padding: 6px; color: #92400e; background-color: #fffbeb;"
+    )
+    fallback_info_layout.addWidget(window.fallback_info_label)
+    window.fallback_info_group.setLayout(fallback_info_layout)
+    window.fallback_info_group.setVisible(False)
+    layout.addWidget(window.fallback_info_group)
+
     results_group = QGroupBox("🎯 Hesaplama Sonuçları")
     results_layout = QGridLayout()
 

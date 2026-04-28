@@ -2,6 +2,7 @@ import logging
 import datetime
 import os
 import io  # Task 5: For graph embedding
+from html import escape
 from release_metadata import APP_VERSION
 
 try:
@@ -319,14 +320,15 @@ class ReportGenerator:
             ]
             
             for i, unit in enumerate(selected_units[:5], 1):
+                unit_details = self._describe_report_unit(unit)
                 unit_data.append([
                     str(i),
-                    f"{unit['manufacturer']} {unit['model']}",
-                    f"{unit['available_power_kw']:.0f}",
-                    f"{unit['site_heat_rate']:.0f}",
-                    unit['efficiency_rating'],
-                    f"{unit['selection_score']:.0f}",
-                    unit['recommendation_level']
+                    unit_details['name'],
+                    f"{unit_details['available_power_kw']:.0f}",
+                    f"{unit_details['site_heat_rate']:.0f}",
+                    unit_details['efficiency_rating'],
+                    f"{unit_details['selection_score']:.0f}",
+                    unit_details['recommendation_level']
                 ])
             
             unit_table = Table(unit_data, colWidths=[30, 160, 70, 70, 70, 60, 80])
@@ -346,39 +348,7 @@ class ReportGenerator:
         story.append(Spacer(1, 20))
         story.append(Paragraph("7. DETAYLI TERMODİNAMİK ÖZELLİKLER", styles['Heading2']))
         
-        detailed_thermo_data = [
-            ['Özellik', 'Giriş', 'Çıkış', 'Birim', 'Değişim (%)'],
-            ['Sıkıştırılabilirlik (Z)', 
-             f"{results['inlet_properties']['Z']:.4f}", 
-             f"{results['outlet_properties']['Z']:.4f}", 
-             '', 
-             f"{((results['outlet_properties']['Z'] - results['inlet_properties']['Z']) / results['inlet_properties']['Z'] * 100):+.1f}"],
-            ['Yoğunluk', 
-             f"{results['inlet_properties']['rho']:.3f}", 
-             f"{results['outlet_properties']['rho']:.3f}", 
-             'kg/m³',
-             f"{((results['outlet_properties']['rho'] - results['inlet_properties']['rho']) / results['inlet_properties']['rho'] * 100):+.1f}"],
-            ['İzentropik Üs (k)', 
-             f"{results['inlet_properties']['k']:.3f}", 
-             f"{results['outlet_properties']['k']:.3f}", 
-             '',
-             f"{((results['outlet_properties']['k'] - results['inlet_properties']['k']) / results['inlet_properties']['k'] * 100):+.1f}"],
-            ['Spesifik Isı (Cp)', 
-             f"{results['inlet_properties']['Cp']/1000:.3f}", 
-             f"{results['outlet_properties']['Cp']/1000:.3f}", 
-             'kJ/kg-K',
-             f"{((results['outlet_properties']['Cp'] - results['inlet_properties']['Cp']) / results['inlet_properties']['Cp'] * 100):+.1f}"],
-            ['Viskozite', 
-             f"{results['inlet_properties']['mu']*1e6:.2f}", 
-             f"{results['outlet_properties']['mu']*1e6:.2f}", 
-             'μPa·s',
-             f"{((results['outlet_properties']['mu'] - results['inlet_properties']['mu']) / results['inlet_properties']['mu'] * 100):+.1f}"],
-            ['Ses Hızı', 
-             f"{results['inlet_properties']['a']:.1f}", 
-             f"{results['outlet_properties']['a']:.1f}", 
-             'm/s',
-             f"{((results['outlet_properties']['a'] - results['inlet_properties']['a']) / results['inlet_properties']['a'] * 100):+.1f}"]
-        ]
+        detailed_thermo_data = self._build_detailed_thermo_data(results)
         
         detailed_thermo_table = Table(detailed_thermo_data, colWidths=[120, 60, 60, 50, 60])
         detailed_thermo_table.setStyle(TableStyle([
@@ -421,16 +391,12 @@ class ReportGenerator:
         story.append(stats_table)
         
         # 9. UYARI ve NOTLAR
-        if results.get('warnings'):
+        warning_lines = self._build_design_warning_lines(results)
+        if warning_lines:
             story.append(Spacer(1, 20))
             story.append(Paragraph("9. UYARILAR ve ÖNERİLER", styles['Heading2']))
             
-            warnings_text = "<b>Dikkat Edilmesi Gereken Noktalar:</b><br/>"
-            for warning in results['warnings']:
-                warnings_text += f"• {warning}<br/>"
-            
-            warnings_para = Paragraph(warnings_text, styles['Normal'])
-            story.append(warnings_para)
+            story.append(Paragraph(self._build_design_warnings_html(warning_lines), styles['Normal']))
         
         # 10. STANDART UYUMLULUK
         story.append(Spacer(1, 20))
@@ -846,6 +812,128 @@ class ReportGenerator:
             if frac > 0.01:  # Sadece %1'den büyük bileşenler
                 components.append(f"{comp}: {frac:.1f}%")
         return ", ".join(components) if components else "Karışım"
+
+    @staticmethod
+    def _build_design_warning_lines(results):
+        warning_lines = list(results.get('warnings') or [])
+        convergence = results.get('method_convergence') or []
+        if convergence and not results.get('method_converged', True):
+            failed_stages = ", ".join(
+                str(item.get('stage')) for item in convergence if not item.get('converged', False)
+            )
+            if failed_stages:
+                warning_lines.append(
+                    f"Hesaplama metodu yakinsamadi; son tahmin kullanildi. Kademeler: {failed_stages}"
+                )
+        if results.get('fallback_used'):
+            if not any("fallback" in str(warning).lower() for warning in warning_lines):
+                warning_lines.append(
+                    "Termodinamik kutuphane en az bir noktada ideal gaz fallback kullandi."
+                )
+            warning_lines.append(f"Fallback durum sayisi: {results.get('fallback_state_count', 0)}")
+            if results.get('fallback_stage_numbers'):
+                stage_text = ", ".join(str(stage) for stage in results['fallback_stage_numbers'])
+                warning_lines.append(f"Etkilenen kademeler: {stage_text}")
+        return warning_lines
+
+    @staticmethod
+    def _build_design_warnings_html(warning_lines):
+        lines = [str(warning) for warning in warning_lines if warning is not None]
+        if not lines:
+            return ""
+
+        warning_items = "".join(f"&bull; {escape(line)}<br/>" for line in lines)
+        return f"<b>Dikkat Edilmesi Gereken Noktalar:</b><br/>{warning_items}"
+
+    @staticmethod
+    def _percent_change_text(inlet_value, outlet_value):
+        try:
+            inlet = float(inlet_value)
+            outlet = float(outlet_value)
+        except (TypeError, ValueError):
+            return "-"
+
+        if inlet == 0:
+            return "-"
+        return f"{((outlet - inlet) / inlet * 100):+.1f}"
+
+    @classmethod
+    def _build_detailed_thermo_data(cls, results):
+        inlet = results['inlet_properties']
+        outlet = results['outlet_properties']
+        return [
+            ['Özellik', 'Giriş', 'Çıkış', 'Birim', 'Değişim (%)'],
+            [
+                'Sıkıştırılabilirlik (Z)',
+                f"{inlet['Z']:.4f}",
+                f"{outlet['Z']:.4f}",
+                '',
+                cls._percent_change_text(inlet['Z'], outlet['Z']),
+            ],
+            [
+                'Yoğunluk',
+                f"{inlet['rho']:.3f}",
+                f"{outlet['rho']:.3f}",
+                'kg/m³',
+                cls._percent_change_text(inlet['rho'], outlet['rho']),
+            ],
+            [
+                'İzentropik Üs (k)',
+                f"{inlet['k']:.3f}",
+                f"{outlet['k']:.3f}",
+                '',
+                cls._percent_change_text(inlet['k'], outlet['k']),
+            ],
+            [
+                'Spesifik Isı (Cp)',
+                f"{inlet['Cp'] / 1000:.3f}",
+                f"{outlet['Cp'] / 1000:.3f}",
+                'kJ/kg-K',
+                cls._percent_change_text(inlet['Cp'], outlet['Cp']),
+            ],
+            [
+                'Viskozite',
+                f"{inlet['mu'] * 1e6:.2f}",
+                f"{outlet['mu'] * 1e6:.2f}",
+                'μPa·s',
+                cls._percent_change_text(inlet['mu'], outlet['mu']),
+            ],
+            [
+                'Ses Hızı',
+                f"{inlet['a']:.1f}",
+                f"{outlet['a']:.1f}",
+                'm/s',
+                cls._percent_change_text(inlet['a'], outlet['a']),
+            ],
+        ]
+
+    @staticmethod
+    def _get_unit_value(unit, *keys, default=None):
+        if isinstance(unit, dict):
+            for key in keys:
+                if key in unit:
+                    return unit[key]
+            return default
+
+        for key in keys:
+            if hasattr(unit, key):
+                return getattr(unit, key)
+        return default
+
+    @classmethod
+    def _describe_report_unit(cls, unit):
+        manufacturer = cls._get_unit_value(unit, 'manufacturer', default='')
+        model = cls._get_unit_value(unit, 'model', default='')
+        fallback_name = cls._get_unit_value(unit, 'turbine_name', 'turbine', default='Bilinmiyor')
+        name = f"{manufacturer} {model}".strip() or fallback_name
+        return {
+            'name': name,
+            'available_power_kw': float(cls._get_unit_value(unit, 'available_power_kw', default=0.0) or 0.0),
+            'site_heat_rate': float(cls._get_unit_value(unit, 'site_heat_rate', default=0.0) or 0.0),
+            'efficiency_rating': cls._get_unit_value(unit, 'efficiency_rating', default='-'),
+            'selection_score': float(cls._get_unit_value(unit, 'selection_score', default=0.0) or 0.0),
+            'recommendation_level': cls._get_unit_value(unit, 'recommendation_level', default='-'),
+        }
 
     def _get_eos_display_name(self, eos_method):
         """EOS metodunun görünen adını getir"""

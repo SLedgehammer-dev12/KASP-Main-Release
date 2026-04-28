@@ -28,6 +28,7 @@ def get_main_menu_specs():
         ],
         "❓ Yardım": [
             ("📖 Örnekler", None, "show_examples"),
+            ("Guncellemeleri Kontrol Et", None, "_check_for_updates_manual"),
             ("ℹ️ Hakkında", None, "show_about_dialog"),
         ],
     }
@@ -48,7 +49,10 @@ def build_main_menu(window):
             action = QAction(label, window)
             if shortcut:
                 action.setShortcut(shortcut)
-            action.triggered.connect(getattr(window, handler_name))
+            if handler_name == "_check_for_updates_manual":
+                action.triggered.connect(lambda _checked=False: window._check_for_updates(manual=True))
+            else:
+                action.triggered.connect(getattr(window, handler_name))
             menu.addAction(action)
 
 
