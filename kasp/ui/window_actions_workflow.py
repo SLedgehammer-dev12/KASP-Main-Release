@@ -24,6 +24,25 @@ def build_about_dialog_text(version=APP_VERSION):
     )
 
 
+def build_examples_dialog_text():
+    return tr(
+        "KASP Ornek Senaryolari\n\n"
+        "1) Dogal gaz kompresor tasarimi\n"
+        "- Gaz: Natural Gas standard kompozisyonu veya kullanici karisimi\n"
+        "- P1: 49.65 bar(g), T1: 19 C, P2: 75 bar(a)\n"
+        "- Debi: 1,985,000 Sm3/h, Metot 4: Dogrudan H-S\n"
+        "- Beklenen cikti: kademe sicakliklari, politropik head, motor gucu ve yakit tuketimi.\n\n"
+        "2) Saha performans degerlendirmesi\n"
+        "- Performans sekmesinde olculen P1/T1/P2/T2/debi girilir.\n"
+        "- Saha duzeltmeleri: ortam sicakligi, ortam basinci, nem, rakim, giris ve egzoz basinc kayiplari.\n"
+        "- OEM egri verisi varsa guc ve isi orani manuel faktorleri ile uygulanir.\n\n"
+        "3) Fallback ve yakinsama kontrolu\n"
+        "- Sonuc ozetinde fallback veya metot yakinsamama uyarisi varsa rapora da eklenir.\n"
+        "- Grafikler sekmesinde T-s, P-v, guc dagilimi ve yakinsama grafikleri incelenir.\n\n"
+        "Referanslar: ASME PTC 10 kompresor performans testi, ASME PTC 22 gaz turbini testi, ISO 2314 gaz turbini kabul testi."
+    )
+
+
 class WindowActionController:
     """Handle general window actions outside the main window class."""
 
@@ -66,7 +85,7 @@ class WindowActionController:
 
     def show_examples(self):
         QMessageBox = self._qt_message_box()
-        QMessageBox.information(self.window, tr("Örnekler"), tr("Örnek projeler ilerleyen versiyonlarda eklenecektir."))
+        QMessageBox.information(self.window, tr("Örnekler"), build_examples_dialog_text())
 
     def clear_logs(self):
         self.window.log_text.clear()

@@ -2,13 +2,35 @@
 
 from __future__ import annotations
 
+from kasp.ui.design_left_panel_builders import (
+    get_design_flow_units,
+    get_pressure_unit_options,
+    get_temperature_unit_options,
+)
+
 
 def get_log_level_options():
     return ["TÜM LOGLAR", "DEBUG", "ITERATION", "INFO", "WARNING", "ERROR"]
 
 
 def get_performance_flow_units():
-    return ["Sm³/h", "Nm³/h", "kg/h", "kg/s"]
+    return get_design_flow_units()
+
+
+def get_performance_standard_options():
+    return ["ASME PTC 10", "ASME PTC 22", "ISO 2314"]
+
+
+def build_unit_input_row(edit_widget, unit_items, default_unit):
+    from PyQt5.QtWidgets import QComboBox, QHBoxLayout
+
+    layout = QHBoxLayout()
+    combo = QComboBox()
+    combo.addItems(unit_items)
+    combo.setCurrentText(default_unit)
+    layout.addWidget(edit_widget)
+    layout.addWidget(combo)
+    return layout, combo
 
 
 def get_performance_lhv_source_items(thermo_loaded):
@@ -72,6 +94,12 @@ def build_performance_tab(window, *, thermo_loaded):
     input_panel = QWidget()
     input_layout = QVBoxLayout(input_panel)
 
+    window.perf_standard_combo = QComboBox()
+    window.perf_standard_combo.addItems(get_performance_standard_options())
+    window.perf_standard_combo.setCurrentText("ASME PTC 10")
+    input_layout.addWidget(QLabel("Performans Standardı:"))
+    input_layout.addWidget(window.perf_standard_combo)
+
     field_group = QGroupBox("📍 Saha Ölçümleri (ASME PTC 10)")
     field_layout = QFormLayout()
 
@@ -80,26 +108,70 @@ def build_performance_tab(window, *, thermo_loaded):
     window.perf_p2_edit = QLineEdit("75.0")
     window.perf_t2_edit = QLineEdit("60.0")
 
-    flow_layout = QHBoxLayout()
+    pressure_units = get_pressure_unit_options()
+    temperature_units = get_temperature_unit_options()
+    window.perf_p1_layout, window.perf_p1_unit_combo = build_unit_input_row(window.perf_p1_edit, pressure_units, "bar(g)")
+    window.perf_t1_layout, window.perf_t1_unit_combo = build_unit_input_row(window.perf_t1_edit, temperature_units, "°C")
+    window.perf_p2_layout, window.perf_p2_unit_combo = build_unit_input_row(window.perf_p2_edit, pressure_units, "bar(g)")
+    window.perf_t2_layout, window.perf_t2_unit_combo = build_unit_input_row(window.perf_t2_edit, temperature_units, "°C")
+
     window.perf_flow_edit = QLineEdit("1985000")
-    window.perf_flow_unit_combo = QComboBox()
-    window.perf_flow_unit_combo.addItems(get_performance_flow_units())
-    flow_layout.addWidget(window.perf_flow_edit)
-    flow_layout.addWidget(window.perf_flow_unit_combo)
+    window.perf_flow_layout, window.perf_flow_unit_combo = build_unit_input_row(
+        window.perf_flow_edit, get_performance_flow_units(), "Sm³/h"
+    )
 
     window.perf_rpm_edit = QLineEdit("10000")
     window.perf_mech_eff_edit = QLineEdit("98.0")
 
-    field_layout.addRow("Giriş Basıncı (P1) [bar(g)]:", window.perf_p1_edit)
-    field_layout.addRow("Giriş Sıcaklığı (T1) [°C]:", window.perf_t1_edit)
-    field_layout.addRow("Çıkış Basıncı (P2) [bar(g)]:", window.perf_p2_edit)
-    field_layout.addRow("Çıkış Sıcaklığı (T2) [°C]:", window.perf_t2_edit)
+    field_layout.addRow("Giriş Basıncı (P1):", window.perf_p1_layout)
+    field_layout.addRow("Giriş Sıcaklığı (T1):", window.perf_t1_layout)
+    field_layout.addRow("Çıkış Basıncı (P2):", window.perf_p2_layout)
+    field_layout.addRow("Çıkış Sıcaklığı (T2):", window.perf_t2_layout)
     field_layout.addRow("Devir [RPM] (Opsiyonel):", window.perf_rpm_edit)
-    field_layout.addRow("Debi:", flow_layout)
+    field_layout.addRow("Debi:", window.perf_flow_layout)
     field_layout.addRow("Mekanik Verim [%]:", window.perf_mech_eff_edit)
 
     field_group.setLayout(field_layout)
     input_layout.addWidget(field_group)
+
+    correction_group = QGroupBox("Saha Duzeltme Faktorleri (ISO 2314 / ASME PTC 22)")
+    correction_layout = QFormLayout()
+
+    window.perf_ambient_temp_edit = QLineEdit("15.0")
+    window.perf_ambient_pressure_edit = QLineEdit("101.325")
+    window.perf_humidity_edit = QLineEdit("60.0")
+    window.perf_altitude_edit = QLineEdit("0.0")
+    window.perf_inlet_loss_edit = QLineEdit("0.0")
+    window.perf_exhaust_loss_edit = QLineEdit("0.0")
+    window.perf_manual_power_factor_edit = QLineEdit("1.0")
+    window.perf_manual_heat_rate_factor_edit = QLineEdit("1.0")
+
+    window.perf_ambient_temp_layout, window.perf_ambient_temp_unit_combo = build_unit_input_row(
+        window.perf_ambient_temp_edit, temperature_units, "°C"
+    )
+    window.perf_ambient_pressure_layout, window.perf_ambient_pressure_unit_combo = build_unit_input_row(
+        window.perf_ambient_pressure_edit, pressure_units, "kPa"
+    )
+    window.perf_inlet_loss_layout, window.perf_inlet_loss_unit_combo = build_unit_input_row(
+        window.perf_inlet_loss_edit, pressure_units, "kPa"
+    )
+    window.perf_exhaust_loss_layout, window.perf_exhaust_loss_unit_combo = build_unit_input_row(
+        window.perf_exhaust_loss_edit, pressure_units, "kPa"
+    )
+
+    correction_layout.addRow("Ortam Sicakligi:", window.perf_ambient_temp_layout)
+    correction_layout.addRow("Ortam Basinci:", window.perf_ambient_pressure_layout)
+    correction_layout.addRow("Bagil Nem [%]:", window.perf_humidity_edit)
+    correction_layout.addRow("Rakim [m]:", window.perf_altitude_edit)
+    correction_layout.addRow("Giris Havasi Basinc Kaybi:", window.perf_inlet_loss_layout)
+    correction_layout.addRow("Egzoz Cikis Basinc Kaybi:", window.perf_exhaust_loss_layout)
+    correction_layout.addRow("OEM Guc Faktoru [carpan]:", window.perf_manual_power_factor_edit)
+    correction_layout.addRow("OEM Isi Orani Faktoru [carpan]:", window.perf_manual_heat_rate_factor_edit)
+    correction_group.setToolTip(
+        "Referans sartlar: 15 C, 101.325 kPa, %60 RH. OEM egrileri varsa manuel carpanlara girilebilir."
+    )
+    correction_group.setLayout(correction_layout)
+    input_layout.addWidget(correction_group)
 
     driver_group = QGroupBox("⚙️ Sürücü Verileri")
     driver_layout = QVBoxLayout()
@@ -162,6 +234,7 @@ def build_performance_tab(window, *, thermo_loaded):
     window.perf_res_head = QLabel("-")
     window.perf_res_power_gas = QLabel("-")
     window.perf_res_power_shaft = QLabel("-")
+    window.perf_res_corrected = QLabel("-")
     window.perf_res_fuel_or_eff = QLabel("-")
 
     for label in [
@@ -169,6 +242,7 @@ def build_performance_tab(window, *, thermo_loaded):
         window.perf_res_isen_eff,
         window.perf_res_power_gas,
         window.perf_res_power_shaft,
+        window.perf_res_corrected,
         window.perf_res_fuel_or_eff,
         window.perf_res_head,
     ]:
@@ -179,6 +253,7 @@ def build_performance_tab(window, *, thermo_loaded):
     result_layout.addRow("Politropik Head (Hp) [kJ/kg]:", window.perf_res_head)
     result_layout.addRow("Gaz Gücü (kW):", window.perf_res_power_gas)
     result_layout.addRow("Şaft Gücü (kW):", window.perf_res_power_shaft)
+    result_layout.addRow("ISO'ya Duzeltilmis:", window.perf_res_corrected)
 
     window.perf_res_fuel_lbl = QLabel("Yakıt Tüketimi / Verim:")
     result_layout.addRow(window.perf_res_fuel_lbl, window.perf_res_fuel_or_eff)

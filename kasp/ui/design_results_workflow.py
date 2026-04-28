@@ -373,25 +373,31 @@ class DesignResultsPresenter:
         for index in reversed(range(self.window.graph_layout.count())):
             item = self.window.graph_layout.takeAt(index)
             widget = item.widget()
-            if widget and widget is not self.window.default_graph_label:
+            if widget:
                 widget.setParent(None)
 
+        self.window.default_graph_label.setParent(self.window.graph_widget)
         self.window.default_graph_label.setVisible(True)
 
         if self.window.last_design_results_raw and self.graph_manager.current_graphs:
-            self.window.default_graph_label.setVisible(False)
-
             graph_key = GRAPH_KEY_BY_LABEL.get(current_graph_name)
             canvas = self.graph_manager.current_graphs.get(graph_key)
 
             if canvas:
+                canvas.setParent(self.window.graph_widget)
                 self.window.default_graph_label.setVisible(False)
                 self.window.graph_layout.addWidget(canvas)
+                if hasattr(canvas, "draw_idle"):
+                    canvas.draw_idle()
+                canvas.show()
             else:
                 self.window.default_graph_label.setText(
                     f"Grafik verisi mevcut değil veya kütüphane ({current_graph_name}) yüklü değil."
                 )
+                self.window.graph_layout.addWidget(self.window.default_graph_label)
                 self.window.default_graph_label.setVisible(True)
+        else:
+            self.window.graph_layout.addWidget(self.window.default_graph_label)
 
     def apply_selected_turbine_selection(self, selected_rows, selected_units):
         if not selected_rows or not selected_units:

@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Release spec for GitHub release v1.2 (source baseline 4.6.2).
+# Release spec for GitHub release v1.3.
 
 import sys
 from pathlib import Path

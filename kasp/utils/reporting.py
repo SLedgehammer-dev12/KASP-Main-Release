@@ -782,16 +782,19 @@ class ReportGenerator:
         story.append(Spacer(1, 20))
         story.append(Paragraph("5. DÜZELTME FAKTÖRLERİ", styles['Heading2']))
         
+        factors = results.get('corrected_values', {}).get('correction_factors', {})
+        factor_inputs = factors.get('inputs', {})
         correction_data = [
             ['Faktör', 'Değer', 'Etki'],
-            ['Sıcaklık', f"{results['corrected_values']['correction_factors']['temperature']}°C", 
-             f"{(results['corrected_values']['correction_factors']['temperature']/15 - 1)*100:.1f}%"],
-            ['Basınç', f"{results['corrected_values']['correction_factors']['pressure']} mbar", 
-             f"{(results['corrected_values']['correction_factors']['pressure']/1013 - 1)*100:.1f}%"],
-            ['Nem', f"{results['corrected_values']['correction_factors']['humidity']}%", 
-             f"{(results['corrected_values']['correction_factors']['humidity']/60 - 1)*100:.1f}%"],
-            ['Rakım', f"{results['corrected_values']['correction_factors']['altitude']} m", 
-             f"{(results['corrected_values']['correction_factors']['altitude']/1000)*3:.1f}%"]
+            ['Sıcaklık', f"{factor_inputs.get('ambient_temp_c', 15.0):.1f} °C", f"{(factors.get('temperature_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Basınç', f"{factor_inputs.get('ambient_pressure_kpa', 101.325):.3f} kPa", f"{(factors.get('pressure_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Nem', f"{factor_inputs.get('relative_humidity_pct', 60.0):.1f}%", f"{(factors.get('humidity_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Rakım', f"{factor_inputs.get('altitude_m', 0.0):.0f} m", f"{(factors.get('altitude_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Giriş Kaybı', f"{factor_inputs.get('inlet_pressure_loss_kpa', 0.0):.3f} kPa", f"{(factors.get('inlet_loss_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Egzoz Kaybı', f"{factor_inputs.get('exhaust_pressure_loss_kpa', 0.0):.3f} kPa", f"{(factors.get('exhaust_loss_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Toplam Güç Faktörü', f"{factors.get('power_factor', 1.0):.4f}", ''],
+            ['Düzeltilmiş Güç', f"{results.get('corrected_power', 0.0):.0f} kW", 'ISO/PTC'],
+            ['Düzeltilmiş Isı Oranı', f"{results.get('corrected_heat_rate', 0.0):.0f} kJ/kWh", 'ISO/PTC'],
         ]
         
         correction_table = Table(correction_data, colWidths=[100, 80, 80])

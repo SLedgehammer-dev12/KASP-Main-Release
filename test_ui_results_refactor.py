@@ -1,9 +1,11 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from kasp.ui.main_window import KaspMainWindow
+from kasp.ui.design_results_workflow import DesignResultsPresenter
 
 
 @pytest.fixture(scope="module")
@@ -82,3 +84,38 @@ def test_main_window_results_methods_delegate_to_presenters(app, monkeypatch):
     assert ("save_current_graph",) in calls
     assert ("serialize_selected_units", [{"unit": "GT"}]) in calls
     assert serialized_units == [{"unit": "GT"}]
+
+
+def test_refresh_current_graph_readds_canvas_and_draws(app):
+    graph_widget = QWidget()
+    graph_layout = QVBoxLayout(graph_widget)
+    default_label = QLabel("default")
+    graph_layout.addWidget(default_label)
+
+    class DummyCanvas(QLabel):
+        def __init__(self):
+            super().__init__("canvas")
+            self.drawn = False
+
+        def draw_idle(self):
+            self.drawn = True
+
+    canvas = DummyCanvas()
+    window = SimpleNamespace(
+        graph_combo=SimpleNamespace(currentText=lambda: "T-s Diyagramı"),
+        graph_layout=graph_layout,
+        graph_widget=graph_widget,
+        default_graph_label=default_label,
+        last_design_results_raw={"ok": True},
+    )
+    presenter = DesignResultsPresenter(
+        window,
+        engine=None,
+        graph_manager=SimpleNamespace(current_graphs={"ts_diagram": canvas}),
+    )
+
+    presenter.refresh_current_graph()
+
+    assert graph_layout.indexOf(canvas) >= 0
+    assert canvas.drawn is True
+    assert default_label.isVisible() is False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from kasp.core.performance_corrections import calculate_site_correction_factors
 from kasp.ui.design_input_binding import eos_method_from_ui_text, lhv_source_from_ui_text
 
 
@@ -28,19 +29,36 @@ def performance_pct_deviation(actual, expected):
     return ((actual - expected) / expected) * 100.0
 
 
+def convert_pressure_delta_to_kpa(value, unit):
+    value = performance_ui_float(value, 0.0)
+    normalized = str(unit or "kPa").lower()
+    if normalized == "pa":
+        return value / 1000.0
+    if normalized == "kpa":
+        return value
+    if normalized == "mpa":
+        return value * 1000.0
+    if normalized in {"bar", "bar(a)", "bar(g)"}:
+        return value * 100.0
+    if normalized in {"psia", "psig"}:
+        return value * 6.89476
+    return value
+
+
 def build_performance_report_inputs(ui_context, inputs, results, *, design_inputs=None):
     design_inputs = design_inputs or {}
+    site_corrections = inputs.get("site_correction_inputs", {})
 
     return {
         "unit_name": ui_context.get("unit_name") or "Performans Testi",
         "p_in": performance_ui_float(ui_context.get("p_in"), 0.0),
-        "p_in_unit": "bar(g)",
+        "p_in_unit": ui_context.get("p_in_unit", "bar(g)"),
         "t_in": performance_ui_float(ui_context.get("t_in"), 0.0),
-        "t_in_unit": "°C",
+        "t_in_unit": ui_context.get("t_in_unit", "degC"),
         "p_out": performance_ui_float(ui_context.get("p_out"), 0.0),
-        "p_out_unit": "bar(g)",
+        "p_out_unit": ui_context.get("p_out_unit", "bar(g)"),
         "t_out": performance_ui_float(ui_context.get("t_out"), 0.0),
-        "t_out_unit": "°C",
+        "t_out_unit": ui_context.get("t_out_unit", "degC"),
         "flow": performance_ui_float(ui_context.get("flow"), 0.0),
         "flow_unit": ui_context.get("flow_unit", "kg/s"),
         "flow_kgs": inputs["flow_kgs"],
@@ -48,10 +66,16 @@ def build_performance_report_inputs(ui_context, inputs, results, *, design_input
         "p2_pa": inputs["p2_pa"],
         "fuel_flow": results.get("fuel_cons_kg_h", 0.0),
         "fuel_flow_unit": "kg/h",
-        "ambient_temp": design_inputs.get("ambient_temp", performance_ui_float(ui_context.get("t_in"), 0.0)),
-        "ambient_pressure": design_inputs.get("ambient_pressure", 101.325),
-        "humidity": design_inputs.get("humidity", 60.0),
-        "altitude": design_inputs.get("altitude", 0.0),
+        "ambient_temp": site_corrections.get(
+            "ambient_temp_c", design_inputs.get("ambient_temp", performance_ui_float(ui_context.get("t_in"), 0.0))
+        ),
+        "ambient_pressure": site_corrections.get(
+            "ambient_pressure_kpa", design_inputs.get("ambient_pressure", 101.325)
+        ),
+        "humidity": site_corrections.get("relative_humidity_pct", design_inputs.get("humidity", 60.0)),
+        "altitude": site_corrections.get("altitude_m", design_inputs.get("altitude", 0.0)),
+        "performance_standard": site_corrections.get("standard", ui_context.get("performance_standard", "ASME PTC 10")),
+        "site_correction_inputs": site_corrections,
     }
 
 
@@ -72,6 +96,11 @@ def build_performance_report_payload(
     )
     actual_heat_rate = raw_results.get("actual_heat_rate", 0.0)
     actual_power = raw_results.get("shaft_power_kw", 0.0)
+    correction_factors = raw_results.get("correction_factors") or calculate_site_correction_factors(
+        report_inputs.get("site_correction_inputs", {})
+    )
+    corrected_power = raw_results.get("corrected_power_kw", actual_power)
+    corrected_heat_rate = raw_results.get("corrected_heat_rate", actual_heat_rate)
 
     design_poly_eff = performance_eff_to_decimal(
         design_results.get(
@@ -107,6 +136,10 @@ def build_performance_report_payload(
         "actual_power": actual_power,
         "expected_power": expected_power,
         "deviation_power": performance_pct_deviation(actual_power, expected_power),
+        "corrected_power": corrected_power,
+        "corrected_heat_rate": corrected_heat_rate,
+        "deviation_corrected_power": performance_pct_deviation(corrected_power, expected_power),
+        "deviation_corrected_heat_rate": performance_pct_deviation(corrected_heat_rate, expected_heat_rate),
         "test_conditions": {
             "mass_flow": test_mass_flow,
             "fuel_flow": fuel_flow_kgh,
@@ -114,12 +147,9 @@ def build_performance_report_payload(
             "head": poly_head,
         },
         "corrected_values": {
-            "correction_factors": {
-                "temperature": performance_ui_float(report_inputs.get("ambient_temp", 15.0), 15.0),
-                "pressure": performance_ui_float(report_inputs.get("ambient_pressure", 101.325), 101.325),
-                "humidity": performance_ui_float(report_inputs.get("humidity", 60.0), 60.0),
-                "altitude": performance_ui_float(report_inputs.get("altitude", 0.0), 0.0),
-            }
+            "power": corrected_power,
+            "heat_rate": corrected_heat_rate,
+            "correction_factors": correction_factors,
         },
     }
 
@@ -171,10 +201,10 @@ class PerformanceInputBinder:
             QMessageBox = self._message_box_factory()
             reply = QMessageBox.warning(
                 self.window,
-                "Uyarı",
+                "Uyari",
                 (
-                    f"Gaz kompozisyonları toplamı %100 değil (Şu anki: %{total_percentage:.2f}).\n"
-                    "Normalizasyon yapılsın mı?"
+                    f"Gaz kompozisyonlari toplami %100 degil (su anki: %{total_percentage:.2f}).\n"
+                    "Normalizasyon yapilsin mi?"
                 ),
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.Yes,
@@ -186,13 +216,33 @@ class PerformanceInputBinder:
                 return None, None
 
         gas_obj = self.engine._create_gas_object(gas_comp, eos_method)
+        p1_unit = self.window.perf_p1_unit_combo.currentText()
+        t1_unit = self.window.perf_t1_unit_combo.currentText()
+        p2_unit = self.window.perf_p2_unit_combo.currentText()
+        t2_unit = self.window.perf_t2_unit_combo.currentText()
         flow_unit = self.window.perf_flow_unit_combo.currentText()
+        ambient_temp_unit = self.window.perf_ambient_temp_unit_combo.currentText()
+        ambient_pressure_unit = self.window.perf_ambient_pressure_unit_combo.currentText()
+        inlet_loss_unit = self.window.perf_inlet_loss_unit_combo.currentText()
+        exhaust_loss_unit = self.window.perf_exhaust_loss_unit_combo.currentText()
+
+        ambient_temp_k = self.engine.convert_temperature_to_k(
+            performance_ui_float(self.window.perf_ambient_temp_edit.text(), 15.0),
+            ambient_temp_unit,
+        )
+        ambient_pressure_kpa = (
+            self.engine.convert_pressure_to_pa(
+                performance_ui_float(self.window.perf_ambient_pressure_edit.text(), 101.325),
+                ambient_pressure_unit,
+            )
+            / 1000.0
+        )
 
         inputs = {
-            "p1_pa": self.engine.convert_pressure_to_pa(float(self.window.perf_p1_edit.text()), "bar(g)"),
-            "t1_k": self.engine.convert_temperature_to_k(float(self.window.perf_t1_edit.text()), "°C"),
-            "p2_pa": self.engine.convert_pressure_to_pa(float(self.window.perf_p2_edit.text()), "bar(g)"),
-            "t2_k": self.engine.convert_temperature_to_k(float(self.window.perf_t2_edit.text()), "°C"),
+            "p1_pa": self.engine.convert_pressure_to_pa(float(self.window.perf_p1_edit.text()), p1_unit),
+            "t1_k": self.engine.convert_temperature_to_k(float(self.window.perf_t1_edit.text()), t1_unit),
+            "p2_pa": self.engine.convert_pressure_to_pa(float(self.window.perf_p2_edit.text()), p2_unit),
+            "t2_k": self.engine.convert_temperature_to_k(float(self.window.perf_t2_edit.text()), t2_unit),
             "flow_kgs": self.engine.convert_flow_to_kgs(
                 float(self.window.perf_flow_edit.text()),
                 flow_unit,
@@ -210,6 +260,23 @@ class PerformanceInputBinder:
             "gas_comp": gas_comp,
             "eos_method": eos_method,
             "lhv_source": lhv_source_from_ui_text(self.window.perf_lhv_source_combo.currentText()),
+            "site_correction_inputs": {
+                "standard": self.window.perf_standard_combo.currentText(),
+                "ambient_temp_c": ambient_temp_k - 273.15,
+                "ambient_pressure_kpa": ambient_pressure_kpa,
+                "relative_humidity_pct": performance_ui_float(self.window.perf_humidity_edit.text(), 60.0),
+                "altitude_m": performance_ui_float(self.window.perf_altitude_edit.text(), 0.0),
+                "inlet_pressure_loss_kpa": convert_pressure_delta_to_kpa(
+                    self.window.perf_inlet_loss_edit.text(), inlet_loss_unit
+                ),
+                "exhaust_pressure_loss_kpa": convert_pressure_delta_to_kpa(
+                    self.window.perf_exhaust_loss_edit.text(), exhaust_loss_unit
+                ),
+                "manual_power_factor": performance_ui_float(self.window.perf_manual_power_factor_edit.text(), 1.0),
+                "manual_heat_rate_factor": performance_ui_float(
+                    self.window.perf_manual_heat_rate_factor_edit.text(), 1.0
+                ),
+            },
         }
         return inputs, flow_unit
 
@@ -226,14 +293,19 @@ class PerformanceResultsPresenter:
         self.window.perf_res_head.setText(f"{results['poly_head_kj_kg']:.1f}")
         self.window.perf_res_power_gas.setText(f"{results['gas_power_kw']:.0f}")
         self.window.perf_res_power_shaft.setText(
-            f"Motor: {results['motor_power_kw']:.0f} | Şaft: {results['shaft_power_kw']:.0f}"
+            f"Motor: {results['motor_power_kw']:.0f} | Saft: {results['shaft_power_kw']:.0f}"
         )
+        if hasattr(self.window, "perf_res_corrected"):
+            self.window.perf_res_corrected.setText(
+                f"Guc: {results.get('corrected_power_kw', 0.0):.0f} kW | "
+                f"Isi Orani: {results.get('corrected_heat_rate', 0.0):.0f} kJ/kWh"
+            )
 
         if self.window.radio_turb_eff.isChecked():
-            self.window.perf_res_fuel_lbl.setText("Hesaplanan Yakıt [kg/h]:")
+            self.window.perf_res_fuel_lbl.setText("Hesaplanan Yakit [kg/h]:")
             self.window.perf_res_fuel_or_eff.setText(f"{results['fuel_cons_kg_h']:.1f}")
         else:
-            self.window.perf_res_fuel_lbl.setText("Hesaplanan Türbin Verimi:")
+            self.window.perf_res_fuel_lbl.setText("Hesaplanan Turbin Verimi:")
             self.window.perf_res_fuel_or_eff.setText(f"%{results['turb_eff']:.1f}")
 
 
@@ -264,11 +336,16 @@ class PerformanceEvaluationController:
         return {
             "unit_name": self.window.project_name_edit.text() or "Performans Testi",
             "p_in": self.window.perf_p1_edit.text(),
+            "p_in_unit": self.window.perf_p1_unit_combo.currentText(),
             "t_in": self.window.perf_t1_edit.text(),
+            "t_in_unit": self.window.perf_t1_unit_combo.currentText(),
             "p_out": self.window.perf_p2_edit.text(),
+            "p_out_unit": self.window.perf_p2_unit_combo.currentText(),
             "t_out": self.window.perf_t2_edit.text(),
+            "t_out_unit": self.window.perf_t2_unit_combo.currentText(),
             "flow": self.window.perf_flow_edit.text(),
             "flow_unit": flow_unit,
+            "performance_standard": self.window.perf_standard_combo.currentText(),
         }
 
     def build_report_payload(self, report_inputs, raw_results):
@@ -286,7 +363,8 @@ class PerformanceEvaluationController:
             if inputs is None:
                 return
 
-            self.window.append_log("[INFO] Performans değerlendirmesi başlatıldı (ASME PTC 10).")
+            standard = inputs["site_correction_inputs"].get("standard", "ASME PTC 10")
+            self.window.append_log(f"[INFO] Performans degerlendirmesi baslatildi ({standard}).")
             results = self.engine.evaluate_performance(inputs)
 
             report_inputs = build_performance_report_inputs(
@@ -300,12 +378,12 @@ class PerformanceEvaluationController:
             )
 
             self.results_presenter.apply(results)
-            self.window.append_log("[SUCCESS] Performans değerlendirmesi başarıyla tamamlandı.")
+            self.window.append_log("[SUCCESS] Performans degerlendirmesi basariyla tamamlandi.")
 
         except Exception as exc:
-            self.logger.error("Performans değerlendirme UI hatası: %s", exc)
+            self.logger.error("Performans degerlendirme UI hatasi: %s", exc)
             self._qt_message_box().critical(
                 self.window,
                 "Hata",
-                f"Değerlendirme sırasında hata oluştu:\n{exc}",
+                f"Degerlendirme sirasinda hata olustu:\n{exc}",
             )

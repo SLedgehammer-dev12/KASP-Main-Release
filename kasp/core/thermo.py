@@ -18,6 +18,7 @@ from kasp.core.mixture import GasMixtureBuilder
 from kasp.core.properties import ThermodynamicSolver
 from kasp.core.aerodynamics import CompressorAerodynamics
 from kasp.core.selection import TurbineSelector
+from kasp.core.performance_corrections import apply_site_corrections
 from kasp.core.thermo_design_orchestration import ThermoDesignOrchestrator
 from kasp.core.thermo_design_support import (
     apply_fallback_tracking,
@@ -390,7 +391,18 @@ class ThermoEngine:
                 if fuel_cons_kg_h > 0:
                     fuel_kw = (fuel_cons_kg_h * lhv_kj_kg) / 3600.0
                     turb_eff = motor_power_kw / fuel_kw if fuel_kw > 0 else 0.0
-                
+
+            actual_heat_rate = (
+                fuel_cons_kg_h * lhv_kj_kg / max(shaft_power_kw, 1e-9)
+                if fuel_cons_kg_h > 0
+                else 0.0
+            )
+            corrected = apply_site_corrections(
+                shaft_power_kw,
+                actual_heat_rate,
+                inputs.get("site_correction_inputs", {}),
+            )
+
             return {
                 'poly_eff': poly_eff * 100.0,
                 'isen_eff': isen_eff * 100.0,
@@ -399,7 +411,11 @@ class ThermoEngine:
                 'shaft_power_kw': shaft_power_kw,
                 'motor_power_kw': motor_power_kw,
                 'turb_eff': turb_eff * 100.0,
-                'fuel_cons_kg_h': fuel_cons_kg_h
+                'fuel_cons_kg_h': fuel_cons_kg_h,
+                'actual_heat_rate': actual_heat_rate,
+                'corrected_power_kw': corrected["corrected_power_kw"],
+                'corrected_heat_rate': corrected["corrected_heat_rate_kj_kwh"],
+                'correction_factors': corrected["correction_factors"],
             }
         except Exception as e:
             self.logger.error(f"Performans değerlendirme hatası: {e}")

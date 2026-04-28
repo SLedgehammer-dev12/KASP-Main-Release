@@ -477,8 +477,8 @@ class GraphManager:
             cache_stats = self.generator.engine.thermo_solver.get_cache_stats()
             graphs['cache_performance'] = self.generator.create_cache_performance_chart(cache_stats)
             
-            self.current_graphs = graphs
-            self.logger.info(f"{len(graphs)} grafik başarıyla oluşturuldu")
+            self.current_graphs = {name: graph for name, graph in graphs.items() if graph is not None}
+            self.logger.info(f"{len(self.current_graphs)} grafik başarıyla oluşturuldu")
             
         except Exception as e:
             self.logger.error(f"Grafik oluşturma hatası: {e}")

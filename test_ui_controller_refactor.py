@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("KASP_SKIP_CHANGELOG_DIALOG", "1")
 
 from kasp.ui.main_window import KaspMainWindow
+from kasp.ui.window_actions_workflow import build_examples_dialog_text
 
 
 @pytest.fixture(scope="module")
@@ -149,6 +150,50 @@ def test_main_window_action_and_performance_methods_delegate(app, monkeypatch):
     assert ("filter_logs", "INFO") in calls
     assert ("run_evaluation",) in calls
     assert ("toggle_driver_inputs",) in calls
+
+
+def test_examples_dialog_contains_actionable_scenarios():
+    text = build_examples_dialog_text()
+
+    assert "Dogal gaz kompresor tasarimi" in text
+    assert "Saha performans degerlendirmesi" in text
+    assert "ASME PTC 22" in text
+
+
+def test_performance_tab_contains_site_correction_inputs(app):
+    window = KaspMainWindow()
+    try:
+        for attr in [
+            "perf_standard_combo",
+            "perf_p1_unit_combo",
+            "perf_t1_unit_combo",
+            "perf_p2_unit_combo",
+            "perf_t2_unit_combo",
+            "perf_flow_unit_combo",
+            "perf_ambient_temp_edit",
+            "perf_ambient_temp_unit_combo",
+            "perf_ambient_pressure_edit",
+            "perf_ambient_pressure_unit_combo",
+            "perf_humidity_edit",
+            "perf_altitude_edit",
+            "perf_inlet_loss_edit",
+            "perf_inlet_loss_unit_combo",
+            "perf_exhaust_loss_edit",
+            "perf_exhaust_loss_unit_combo",
+            "perf_manual_power_factor_edit",
+            "perf_manual_heat_rate_factor_edit",
+            "perf_res_corrected",
+        ]:
+            assert hasattr(window, attr)
+
+        standards = [window.perf_standard_combo.itemText(i) for i in range(window.perf_standard_combo.count())]
+        assert standards == ["ASME PTC 10", "ASME PTC 22", "ISO 2314"]
+        assert "API 617" not in standards
+        flow_units = [window.perf_flow_unit_combo.itemText(i) for i in range(window.perf_flow_unit_combo.count())]
+        assert "kg/s" in flow_units
+        assert "Sm³/h" in flow_units
+    finally:
+        window.close()
 
 
 def test_main_window_gas_composition_methods_delegate(app, monkeypatch):
