@@ -4,8 +4,8 @@ KASP is a PyQt5-based compressor analysis and selection application with thermod
 
 ## Current Release Baseline
 
-- Application version: `1.3`
-- GitHub release target: `v1.3`
+- Application version: `1.4`
+- GitHub release target: `v1.4`
 - Desktop icon: natural gas turbine
 - English UI mode: set `app.language` to `"en"` in `kasp_config.json`
 - Built-in update center: checks GitHub releases and lets the user choose download location
@@ -22,7 +22,7 @@ python main.py
 ## Build
 
 ```powershell
-.\build_release_v1.3.bat
+.\build_release_v1.4.bat
 ```
 
 For a workspace-only build without the release filename, use:
@@ -31,7 +31,7 @@ For a workspace-only build without the release filename, use:
 .\build_release_local.bat
 ```
 
-The main desktop icon is expected at `resources/icon.ico`, and the canonical release spec is `KASP_release_v1.3.spec`.
+The main desktop icon is expected at `resources/icon.ico`, and the canonical release spec is `KASP_release_v1.4.spec`.
 
 ## Notes
 

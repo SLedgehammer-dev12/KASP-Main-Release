@@ -119,3 +119,10 @@ def test_refresh_current_graph_readds_canvas_and_draws(app):
     assert graph_layout.indexOf(canvas) >= 0
     assert canvas.drawn is True
     assert default_label.isVisible() is False
+
+
+def test_matplotlib_qt_backend_is_available_for_graphs():
+    from kasp.utils import graphs
+
+    assert graphs.MATPLOTLIB_LOADED is True
+    assert graphs.FigureCanvas.__name__ == "FigureCanvasQTAgg"

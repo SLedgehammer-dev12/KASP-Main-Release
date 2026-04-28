@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Release spec for GitHub release v1.3.
+# Release spec for GitHub release v1.4.
 
 import sys
 from pathlib import Path
@@ -38,6 +38,11 @@ all_datas.extend(chemicals_datas)
 all_datas.extend(scipy_datas)
 
 all_hidden = []
+all_hidden.extend([
+    "matplotlib.backends.backend_qt5agg",
+    "matplotlib.backends.backend_qtagg",
+    "matplotlib.backends.qt_compat",
+])
 all_hidden.extend(collect_submodules("thermo", filter=include_runtime_submodule))
 all_hidden.extend(collect_submodules("chemicals", filter=include_runtime_submodule))
 all_hidden.extend(collect_submodules("scipy", filter=include_runtime_submodule))

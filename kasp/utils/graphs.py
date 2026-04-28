@@ -3,12 +3,15 @@ import numpy as np
 
 try:
     import matplotlib
+    matplotlib.use("Qt5Agg")
     from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
     from matplotlib.figure import Figure
     import matplotlib.pyplot as plt
     MATPLOTLIB_LOADED = True
-except ImportError:
+    MATPLOTLIB_IMPORT_ERROR = None
+except ImportError as import_error:
     MATPLOTLIB_LOADED = False
+    MATPLOTLIB_IMPORT_ERROR = import_error
     from PyQt5.QtWidgets import QWidget as FigureCanvas
 
 from PyQt5.QtWidgets import QVBoxLayout, QLabel
@@ -450,6 +453,14 @@ class GraphManager:
         graphs = {}
         
         try:
+            if not MATPLOTLIB_LOADED:
+                self.current_graphs = {}
+                self.logger.error(
+                    "Grafik modulu yuklenemedi; Matplotlib Qt backend eksik: %s",
+                    MATPLOTLIB_IMPORT_ERROR,
+                )
+                return graphs
+
             # T-s diyagramı
             graphs['ts_diagram'] = self.generator.create_ts_diagram(
                 inputs, results, inputs['gas_comp'], inputs['eos_method']
@@ -478,7 +489,13 @@ class GraphManager:
             graphs['cache_performance'] = self.generator.create_cache_performance_chart(cache_stats)
             
             self.current_graphs = {name: graph for name, graph in graphs.items() if graph is not None}
-            self.logger.info(f"{len(self.current_graphs)} grafik başarıyla oluşturuldu")
+            missing_graphs = [name for name, graph in graphs.items() if graph is None]
+            if missing_graphs:
+                self.logger.warning("Olusturulamayan grafikler: %s", ", ".join(missing_graphs))
+            if self.current_graphs:
+                self.logger.info("%s grafik basariyla olusturuldu", len(self.current_graphs))
+            else:
+                self.logger.error("Hic grafik olusturulamadi; ayrinti icin onceki grafik hata loglarini kontrol edin.")
             
         except Exception as e:
             self.logger.error(f"Grafik oluşturma hatası: {e}")
