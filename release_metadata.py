@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-APP_VERSION = "4.6.2"
 RELEASE_VERSION = "1.2"
+APP_VERSION = RELEASE_VERSION
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 
 RELEASE_REPOSITORY_OWNER = "SLedgehammer-dev12"

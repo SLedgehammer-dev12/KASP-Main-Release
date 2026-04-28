@@ -10,7 +10,7 @@ from release_metadata import (
 
 
 def test_release_metadata_splits_source_and_release_versions():
-    assert APP_VERSION == "4.6.2"
+    assert APP_VERSION == "1.2"
     assert RELEASE_TAG == "v1.2"
 
 

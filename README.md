@@ -5,6 +5,7 @@ KASP is a PyQt5-based compressor analysis and selection application with thermod
 ## Current Release Baseline
 
 - Source baseline: `4.6.2`
+- Application version: `1.2`
 - GitHub release target: `v1.2`
 - Desktop icon: natural gas turbine
 - English UI mode: set `app.language` to `"en"` in `kasp_config.json`

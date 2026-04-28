@@ -1,6 +1,6 @@
 """
 KASP - Thermodynamic Analysis Program
-Version: 4.6.2
+Version: see release_metadata.APP_VERSION
 """
 
 from release_metadata import APP_VERSION

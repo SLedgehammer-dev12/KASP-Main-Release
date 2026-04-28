@@ -22,10 +22,10 @@ from release_metadata import APP_VERSION, RELEASE_TAG
 ALL_LOGS_LABEL = "ALL LOGS"
 
 _EXACT_TRANSLATIONS = {
-    "KASP v4.6.2 - Termodinamik Analiz": "KASP v4.6.2 - Thermodynamic Analysis",
-    "KASP v4.6.2 Hakkında": "About KASP v4.6.2",
+    f"KASP v{APP_VERSION} - Termodinamik Analiz": f"KASP v{APP_VERSION} - Thermodynamic Analysis",
+    f"KASP v{APP_VERSION} Hakkında": f"About KASP v{APP_VERSION}",
     "KASP Güncelleme Notları": "KASP Release Notes",
-    "KASP v4.6.2 - Kompresör Analiz ve Seçim Platformu": "KASP v4.6.2 - Compressor Analysis and Selection Platform",
+    f"KASP v{APP_VERSION} - Kompresör Analiz ve Seçim Platformu": f"KASP v{APP_VERSION} - Compressor Analysis and Selection Platform",
     "📊 Tasarım / Simülasyon": "📊 Design / Simulation",
     "📈 Performans Değerlendirme": "📈 Performance Evaluation",
     "📋 Sistem Logları": "📋 System Logs",
