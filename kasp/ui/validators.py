@@ -41,42 +41,6 @@ class ValidatedLineEdit(QLineEdit):
     
     validation_changed = pyqtSignal(bool, str)  # (is_valid, error_message)
     
-    # Style templates
-    STYLE_NEUTRAL = """
-        QLineEdit {
-            border: 1px solid #bdc3c7;
-            padding: 4px;
-            border-radius: 3px;
-        }
-    """
-    
-    STYLE_VALID = """
-        QLineEdit {
-            border: 2px solid #27ae60;
-            background-color: #e8f8f3;
-            padding: 4px;
-            border-radius: 3px;
-        }
-    """
-    
-    STYLE_INVALID = """
-        QLineEdit {
-            border: 2px solid #e74c3c;
-            background-color: #ffe6e6;
-            padding: 4px;
-            border-radius: 3px;
-        }
-    """
-    
-    STYLE_WARNING = """
-        QLineEdit {
-            border: 2px solid #f39c12;
-            background-color: #fff3e0;
-            padding: 4px;
-            border-radius: 3px;
-        }
-    """
-    
     def __init__(self, validation_func=None, parent=None):
         """
         Initialize validated line edit.
@@ -99,7 +63,13 @@ class ValidatedLineEdit(QLineEdit):
         self.textChanged.connect(self._on_text_changed)
         
         # Set initial style
-        self.setStyleSheet(self.STYLE_NEUTRAL)
+        self._set_validation_state("neutral")
+    
+    def _set_validation_state(self, state):
+        """Set dynamic validation property and trigger QSS refresh."""
+        self.setProperty("validationState", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
     
     def set_validation_context(self, context):
         """
@@ -127,7 +97,7 @@ class ValidatedLineEdit(QLineEdit):
         if not text and not self.has_been_edited:
             self.is_valid = True
             self.error_message = ""
-            self.setStyleSheet(self.STYLE_NEUTRAL)
+            self._set_validation_state("neutral")
             self.setToolTip("")
             self.validation_changed.emit(True, "")
             return
@@ -141,13 +111,13 @@ class ValidatedLineEdit(QLineEdit):
             # Update visual style
             if is_valid:
                 if error_msg:  # Warning message
-                    self.setStyleSheet(self.STYLE_WARNING)
+                    self._set_validation_state("warning")
                     self.setToolTip(f"⚠️ {error_msg}")
                 else:
-                    self.setStyleSheet(self.STYLE_VALID)
+                    self._set_validation_state("valid")
                     self.setToolTip("")
             else:
-                self.setStyleSheet(self.STYLE_INVALID)
+                self._set_validation_state("invalid")
                 self.setToolTip(f"❌ {error_msg}")
             
             self.validation_changed.emit(is_valid, error_msg)
@@ -156,7 +126,7 @@ class ValidatedLineEdit(QLineEdit):
             self.logger.error(f"Validation error: {e}")
             self.is_valid = False
             self.error_message = str(e)
-            self.setStyleSheet(self.STYLE_INVALID)
+            self._set_validation_state("invalid")
             self.setToolTip(f"❌ Validation error: {e}")
             self.validation_changed.emit(False, str(e))
     
@@ -165,7 +135,7 @@ class ValidatedLineEdit(QLineEdit):
         self.has_been_edited = False
         self.is_valid = True
         self.error_message = ""
-        self.setStyleSheet(self.STYLE_NEUTRAL)
+        self._set_validation_state("neutral")
         self.setToolTip("")
 
 

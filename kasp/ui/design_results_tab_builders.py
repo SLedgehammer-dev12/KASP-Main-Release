@@ -42,8 +42,8 @@ def build_basic_results_tab(window):
     window.consistency_info_group = QGroupBox("🔄 Tutarlılık Modu Bilgisi")
     consistency_info_layout = QVBoxLayout()
     window.consistency_info_label = QLabel("Mod: Hızlı")
+    window.consistency_info_label.setObjectName("consistency_info_label")
     window.consistency_info_label.setWordWrap(True)
-    window.consistency_info_label.setStyleSheet("font-size: 10pt; padding: 5px;")
     consistency_info_layout.addWidget(window.consistency_info_label)
     window.consistency_info_group.setLayout(consistency_info_layout)
     window.consistency_info_group.setVisible(False)
@@ -53,9 +53,7 @@ def build_basic_results_tab(window):
     fallback_info_layout = QVBoxLayout()
     window.fallback_info_label = QLabel("Fallback kullanılmadı.")
     window.fallback_info_label.setWordWrap(True)
-    window.fallback_info_label.setStyleSheet(
-        "font-size: 10pt; padding: 6px; color: #92400e; background-color: #fffbeb;"
-    )
+    window.fallback_info_label.setObjectName("fallback_info_label")
     fallback_info_layout.addWidget(window.fallback_info_label)
     window.fallback_info_group.setLayout(fallback_info_layout)
     window.fallback_info_group.setVisible(False)
@@ -71,7 +69,7 @@ def build_basic_results_tab(window):
         results_layout.addWidget(QLabel(f"{label}:"), index, 0)
 
         value_label = QLabel("-")
-        value_label.setStyleSheet("font-weight: bold; color: #2c3e50; min-width: 80px;")
+        value_label.setObjectName("value_label")
         value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         results_layout.addWidget(value_label, index, 1)
         window.result_labels[key] = value_label
@@ -206,5 +204,5 @@ def build_graphs_tab(window):
 
     window.default_graph_label = QLabel("🚀 Hesaplama yapıldıktan sonra grafikler burada görüntülenecek")
     window.default_graph_label.setAlignment(Qt.AlignCenter)
-    window.default_graph_label.setStyleSheet("font-size: 16px; color: #7f8c8d; padding: 50px;")
+    window.default_graph_label.setObjectName("default_graph_label")
     window.graph_layout.addWidget(window.default_graph_label)

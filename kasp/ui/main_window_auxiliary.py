@@ -70,7 +70,7 @@ class MainWindowAuxiliaryController:
             self.window.status_validation_indicator = None
 
         version_label = QLabel(get_version_label_text())
-        version_label.setStyleSheet("color: #7f8c8d; padding: 0 8px;")
+        version_label.setObjectName("version_label")
         status_bar.addPermanentWidget(version_label)
 
     def update_status_bar_validation(self, *_args):

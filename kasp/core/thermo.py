@@ -98,7 +98,7 @@ class ThermoEngine:
         comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
         if eos_method == 'coolprop':
             return GasMixtureBuilder.build_coolprop_string(comp_frac)
-        elif eos_method in ['pr', 'srk']:
+        elif eos_method in ['pr', 'srk', 'aga8']:
             return GasMixtureBuilder.build_thermo_data(comp_frac)
         else:
             raise ValueError(f"Bilinmeyen EOS metodu: {eos_method}")
@@ -173,13 +173,75 @@ class ThermoEngine:
             normal_temp_k=self.NORMAL_TEMP_K,
         )
 
-    def _calculate_heating_values(self, composition, source='kasp'):
+    def _calculate_heating_values(self, composition, source='kasp', gas_obj=None, eos_method=None):
         comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
         
+        # 15°C ideal gross / net values in kJ/mol according to ISO 6976:2016
+        ISO6976_VALUES = {
+            'METHANE':        (891.56, 802.62),
+            'ETHANE':         (1562.14, 1429.35),
+            'PROPANE':        (2221.10, 2044.20),
+            'ISOBUTANE':      (2870.58, 2650.88),
+            'BUTANE':         (2880.44, 2660.74),
+            'ISOPENTANE':     (3531.68, 3270.28),
+            'PENTANE':        (3538.60, 3277.20),
+            'HEXANE':         (4197.20, 3894.10),
+            'HEPTANE':        (4855.80, 4511.00),
+            'OCTANE':         (5514.40, 5127.90),
+            'NONANE':         (6173.00, 5744.80),
+            'DECANE':         (6831.60, 6361.70),
+            'HYDROGEN':       (285.83, 241.83),
+            'HYDROGENSULFIDE':(561.43, 517.93),
+            # İnertler yanmaz → 0
+            'NITROGEN':       (0.0, 0.0),
+            'CARBONDIOXIDE':  (0.0, 0.0),
+            'WATER':          (0.0, 0.0),
+            'ARGON':          (0.0, 0.0),
+            'HELIUM':         (0.0, 0.0),
+            'OXYGEN':         (0.0, 0.0),
+            'NEON':           (0.0, 0.0),
+            'KRYPTON':        (0.0, 0.0),
+            'XENON':          (0.0, 0.0),
+            'AIR':            (0.0, 0.0),
+        }
+
         total_lhv_energy_kj_per_mole = 0 
+        total_hhv_energy_kj_per_mole = 0
         total_molar_mass_mix = 0
         total_water_moles_produced = 0
         
+        if source == 'iso6976':
+            for comp, fraction in comp_frac.items():
+                comp_upper = comp.upper()
+                mw = MOLAR_MASSES.get(comp_upper, 0)
+                total_molar_mass_mix += fraction * mw
+                
+                # Fetch molar gross/net values
+                hhv_molar, lhv_molar = ISO6976_VALUES.get(comp_upper, (0.0, 0.0))
+                total_hhv_energy_kj_per_mole += hhv_molar * fraction
+                total_lhv_energy_kj_per_mole += lhv_molar * fraction
+                
+            if total_molar_mass_mix == 0:
+                return 0.0, 0.0
+                
+            avg_molar_mass_kg = total_molar_mass_mix / 1000.0
+            lhv_mass_basis = total_lhv_energy_kj_per_mole / avg_molar_mass_kg
+            hhv_mass_basis = total_hhv_energy_kj_per_mole / avg_molar_mass_kg
+            
+            # Real gas correction: divide by Z at standard conditions (101325 Pa, 288.15 K)
+            if gas_obj is not None and eos_method is not None:
+                try:
+                    state_std = self.thermo_solver.get_properties(101325.0, 288.15, gas_obj, eos_method)
+                    z_std = state_std.Z
+                    if z_std > 0.1: # Safeguard
+                        lhv_mass_basis = lhv_mass_basis / z_std
+                        hhv_mass_basis = hhv_mass_basis / z_std
+                except Exception as e:
+                    self.logger.warning(f"ISO 6976 Z düzeltmesi hesaplanamadı: {e}")
+                    
+            return lhv_mass_basis, hhv_mass_basis
+
+        # Diğer kaynaklar (kasp veya thermo)
         for comp, fraction in comp_frac.items():
             comp_upper = comp.upper()
             mw = MOLAR_MASSES.get(comp_upper, 0)
@@ -371,9 +433,11 @@ class ThermoEngine:
             motor_power_kw = shaft_power_kw / mech_eff
             
             # 4. Sürücü (Türbin/Yakıt) Hesapları
-            lhv_kj_kg, _ = self._calculate_heating_values(
+            lhv_kj_kg, hhv_kj_kg = self._calculate_heating_values(
                 inputs['gas_comp'], 
-                source=inputs.get('lhv_source', 'kasp')
+                source=inputs.get('lhv_source', 'kasp'),
+                gas_obj=gas_obj,
+                eos_method=eos
             )
             if lhv_kj_kg <= 0:
                 lhv_kj_kg = 50000.0 # Varsayılan yakıt ısıl değeri kJ/kg (Metan'a yakın)
@@ -730,9 +794,12 @@ class ThermoEngine:
         unit_kw = motor_kw * 1.04
 
         fuel_composition = inputs.get("fuel_gas_comp", inputs["gas_comp"])
+        fuel_gas_obj = self._create_gas_object(fuel_composition, context.get("eos", "pr"))
         lhv, hhv = self._calculate_heating_values(
             fuel_composition,
             source=inputs.get("lhv_source", "kasp"),
+            gas_obj=fuel_gas_obj,
+            eos_method=context.get("eos", "pr")
         )
         therm_raw = inputs.get("therm_eff", 0.35)
         therm_eff = therm_raw / 100.0 if therm_raw > 1.0 else therm_raw

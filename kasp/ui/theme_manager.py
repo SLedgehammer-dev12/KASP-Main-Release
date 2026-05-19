@@ -11,6 +11,7 @@ class ThemeManager:
     """Manages application themes and styling"""
     
     # Modern color schemes
+    # Modern color schemes with theme-aware warning variables and contrast safeguards
     THEMES = {
         "light": {
             "primary": "#2196F3",
@@ -22,7 +23,16 @@ class ThemeManager:
             "surface": "#F5F5F5",
             "text": "#212121",
             "text_secondary": "#757575",
-            "border": "#E0E0E0"
+            "border": "#E0E0E0",
+            "success_bg": "#e8f5e9",
+            "success_text": "#2e7d32",
+            "success_border": "#a5d6a7",
+            "danger_bg": "#ffe6e6",
+            "danger_text": "#c62828",
+            "danger_border": "#ef9a9a",
+            "warning_bg": "#fff3e0",
+            "warning_text": "#b25300",
+            "warning_border": "#ffe0b2"
         },
         "dark": {
             "primary": "#2196F3",
@@ -34,7 +44,16 @@ class ThemeManager:
             "surface": "#2D2D2D",
             "text": "#FFFFFF",
             "text_secondary": "#B0B0B0",
-            "border": "#3D3D3D"
+            "border": "#3D3D3D",
+            "success_bg": "#1b5e20",
+            "success_text": "#a5d6a7",
+            "success_border": "#2e7d32",
+            "danger_bg": "#2d1010",
+            "danger_text": "#ff8a80",
+            "danger_border": "#881b1b",
+            "warning_bg": "#2d1f10",
+            "warning_text": "#fbbf24",
+            "warning_border": "#78350f"
         },
         "engineering": {
             "primary": "#00796B",
@@ -46,7 +65,16 @@ class ThemeManager:
             "surface": "#FFFFFF",
             "text": "#263238",
             "text_secondary": "#607D8B",
-            "border": "#CFD8DC"
+            "border": "#CFD8DC",
+            "success_bg": "#e8f5e9",
+            "success_text": "#2e7d32",
+            "success_border": "#a5d6a7",
+            "danger_bg": "#ffe6e6",
+            "danger_text": "#c62828",
+            "danger_border": "#ef9a9a",
+            "warning_bg": "#fff3e0",
+            "warning_text": "#b25300",
+            "warning_border": "#ffe0b2"
         }
     }
     
@@ -59,15 +87,49 @@ class ThemeManager:
         theme = ThemeManager.THEMES[theme_name]
         
         stylesheet = f"""
-            /* Main Window */
-            QMainWindow {{
-                background-color: {theme['background']};
-            }}
-            
-            /* Widgets */
-            QWidget {{
+            /* Main Window & Dialogs */
+            QMainWindow, QDialog, QAbstractScrollArea {{
                 background-color: {theme['background']};
                 color: {theme['text']};
+            }}
+            
+            /* Text Labels (Transparent background protects against leakage) */
+            QLabel {{
+                background-color: transparent;
+                color: {theme['text']};
+            }}
+            
+            /* Specific Warning Banner styling */
+            QLabel#fallback_info_label {{
+                background-color: {theme['warning_bg']};
+                color: {theme['warning_text']};
+                border: 1px solid {theme['warning_border']};
+                border-radius: 4px;
+            }}
+            
+            /* Checkboxes & Radio Buttons */
+            QCheckBox, QRadioButton {{
+                background-color: transparent;
+                color: {theme['text']};
+            }}
+            
+            /* Group Boxes with theme border and primary-colored titles */
+            QGroupBox {{
+                background-color: transparent;
+                color: {theme['text']};
+                font-weight: bold;
+                border: 1px solid {theme['border']};
+                border-radius: 6px;
+                margin-top: 12px;
+                padding-top: 12px;
+            }}
+            
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+                left: 10px;
+                color: {theme['primary']};
             }}
             
             /* Buttons */
@@ -105,6 +167,192 @@ class ThemeManager:
             QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, 
             QDoubleSpinBox:focus, QComboBox:focus {{
                 border: 2px solid {theme['primary']};
+            }}
+            
+            /* Validation States via Dynamic Properties */
+            QLineEdit[validationState="neutral"], QComboBox[validationState="neutral"] {{
+                border: 1px solid {theme['border']};
+                background-color: {theme['surface']};
+                color: {theme['text']};
+            }}
+            QLineEdit[validationState="valid"], QComboBox[validationState="valid"] {{
+                border: 2px solid {theme['success_border']};
+                background-color: {theme['success_bg']};
+                color: {theme['success_text']};
+            }}
+            QLineEdit[validationState="invalid"], QComboBox[validationState="invalid"] {{
+                border: 2px solid {theme['danger_border']};
+                background-color: {theme['danger_bg']};
+                color: {theme['danger_text']};
+            }}
+            QLineEdit[validationState="warning"], QComboBox[validationState="warning"] {{
+                border: 2px solid {theme['warning_border']};
+                background-color: {theme['warning_bg']};
+                color: {theme['warning_text']};
+            }}
+
+            /* Custom Object Styles */
+            QFrame#HelpGuidancePanel {{
+                background-color: {theme['surface']};
+                border: 1px solid {theme['border']};
+                border-left: 5px solid {theme['primary']};
+                border-radius: 4px;
+            }}
+            
+            QLabel#help_guidance_text {{
+                color: {theme['text']};
+            }}
+            
+            ValidationStatusWidget {{
+                background-color: {theme['surface']};
+                border: 1px solid {theme['border']};
+                border-radius: 5px;
+            }}
+            
+            QLabel[statusType="valid"] {{
+                color: {theme['success_text']};
+                font-weight: bold;
+            }}
+            QLabel[statusType="invalid"] {{
+                color: {theme['danger_text']};
+                font-weight: bold;
+            }}
+            QLabel[statusType="warning"] {{
+                color: {theme['warning_text']};
+                font-weight: bold;
+            }}
+            
+            MinimalValidationIndicator {{
+                border-radius: 3px;
+                padding: 2px;
+            }}
+            MinimalValidationIndicator[statusType="valid"] {{
+                background-color: {theme['success_bg']};
+                color: {theme['success_text']};
+            }}
+            MinimalValidationIndicator[statusType="invalid"] {{
+                background-color: {theme['danger_bg']};
+                color: {theme['danger_text']};
+            }}
+            
+            QLabel#comp_total_label[compTotalState="valid"] {{
+                color: {theme['success_text']};
+                font-weight: bold;
+            }}
+            QLabel#comp_total_label[compTotalState="invalid"] {{
+                color: {theme['danger_text']};
+                font-weight: bold;
+            }}
+            QLabel#comp_total_label[compTotalState="warning"] {{
+                color: {theme['warning_text']};
+                font-weight: bold;
+            }}
+            
+            QLabel#ic_label {{
+                font-weight: bold;
+                color: {theme['primary']};
+                font-size: 9pt;
+            }}
+            QLabel#ic_label:disabled {{
+                color: {theme['text_secondary']};
+            }}
+            
+            QLabel#consistency_separator {{
+                font-weight: bold;
+                color: {theme['primary']};
+            }}
+            
+            QPushButton#calculate_btn {{
+                background-color: {theme['success']};
+                color: white;
+                font-weight: bold;
+                padding: 12px;
+                border-radius: 6px;
+                font-size: 14px;
+            }}
+            QPushButton#calculate_btn:hover {{
+                background-color: {theme['success_text']};
+            }}
+            QPushButton#calculate_btn:disabled {{
+                background-color: {theme['border']};
+                color: {theme['text_secondary']};
+            }}
+            
+            QPushButton#stop_btn {{
+                background-color: {theme['danger']};
+                color: white;
+                font-weight: bold;
+                padding: 12px;
+                border-radius: 6px;
+                font-size: 14px;
+            }}
+            QPushButton#stop_btn:hover {{
+                background-color: {theme['danger_text']};
+            }}
+            QPushButton#stop_btn:disabled {{
+                background-color: {theme['border']};
+                color: {theme['text_secondary']};
+            }}
+            
+            QLabel#progress_status_label {{
+                color: {theme['text_secondary']};
+                font-size: 9pt;
+            }}
+            
+            QLabel#progress_time_label {{
+                color: {theme['primary']};
+                font-size: 9pt;
+            }}
+            
+            QLabel#version_label {{
+                color: {theme['text_secondary']};
+                padding: 0 8px;
+            }}
+            
+            QPushButton#verify_perf_btn {{
+                background-color: {theme['secondary']};
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+            }}
+            QPushButton#verify_perf_btn:hover {{
+                background-color: {theme['primary']};
+            }}
+            
+            QPushButton#generate_perf_report_btn {{
+                background-color: {theme['primary']};
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+            }}
+            QPushButton#generate_perf_report_btn:hover {{
+                background-color: {theme['secondary']};
+            }}
+            
+            QLabel[resultLabel="true"] {{
+                font-weight: bold;
+                font-size: 15px;
+            }}
+            
+            QLabel#consistency_info_label {{
+                font-size: 10pt;
+                padding: 5px;
+            }}
+            
+            QLabel#fallback_info_label {{
+                font-size: 10pt;
+                padding: 6px;
+            }}
+            
+            QLabel#value_label {{
+                font-weight: bold;
+                min-width: 80px;
+            }}
+            
+            QLabel#default_graph_label {{
+                font-size: 16px;
+                color: {theme['text_secondary']};
+                padding: 50px;
             }}
             
             /* Tables */

@@ -1,6 +1,23 @@
 """Builders for the left side of the design tab in the KASP main window."""
 
 from __future__ import annotations
+from PyQt5.QtCore import QObject, QEvent
+
+
+class HoverEventFilter(QObject):
+    """Event filter to display contextual help text in the HelpGuidancePanel when hovering over widgets."""
+    def __init__(self, help_label, title, desc, parent=None):
+        super().__init__(parent)
+        self.help_label = help_label
+        self.title = title
+        self.desc = desc
+        
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Enter:
+            self.help_label.setText(f"💡 <b>{self.title}:</b> {self.desc}")
+        elif event.type() == QEvent.Leave:
+            self.help_label.setText("💡 <b>KASP Rehberi:</b> Detaylı mühendislik açıklamaları için fare imlecini parametrelerin üzerine getirin veya bir seçim yapın.")
+        return super().eventFilter(obj, event)
 
 
 def get_pressure_unit_options():
@@ -147,7 +164,7 @@ def build_process_group(
     process_layout.addWidget(window.num_stages_spin, 5, 1)
 
     window.ic_label = QLabel("🔄 Intercooler")
-    window.ic_label.setStyleSheet("font-weight: bold; color: #2980b9; font-size: 9pt;")
+    window.ic_label.setObjectName("ic_label")
     window.ic_label.setEnabled(False)
     process_layout.addWidget(window.ic_label, 6, 0, 1, 3)
 
@@ -173,10 +190,6 @@ def build_process_group(
         window.ic_label.setEnabled(enabled)
         window.ic_dp_spin.setEnabled(enabled)
         window.ic_temp_edit.setEnabled(enabled)
-        if not enabled:
-            window.ic_label.setStyleSheet("font-weight: bold; color: #95a5a6; font-size: 9pt;")
-        else:
-            window.ic_label.setStyleSheet("font-weight: bold; color: #2980b9; font-size: 9pt;")
 
     window.num_stages_spin.valueChanged.connect(_toggle_intercooler)
 
@@ -232,9 +245,8 @@ def build_gas_group(window, left_layout):
     gas_layout.addLayout(comp_buttons_layout)
 
     window.comp_total_label = QLabel("Toplam: 100.00%  ✔")
-    window.comp_total_label.setStyleSheet(
-        "font-weight: bold; color: #27ae60; padding: 2px 4px; border-radius: 4px;"
-    )
+    window.comp_total_label.setObjectName("comp_total_label")
+    window.comp_total_label.setProperty("compTotalState", "valid")
     gas_layout.addWidget(window.comp_total_label)
 
     gas_group.setLayout(gas_layout)
@@ -332,7 +344,7 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
 
     calc_layout.addRow("", QLabel(""))
     consistency_separator = QLabel("🔄 Tutarlılık Modu (Self-Consistent)")
-    consistency_separator.setStyleSheet("font-weight: bold; color: #2980b9;")
+    consistency_separator.setObjectName("consistency_separator")
     calc_layout.addRow("", consistency_separator)
 
     window.consistency_check = QCheckBox("Tutarlılık İterasyonu Kullan")
@@ -376,49 +388,27 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
 
 
 def build_execution_group(window, left_layout):
-    from PyQt5.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QProgressBar, QVBoxLayout
+    from PyQt5.QtWidgets import QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QProgressBar, QVBoxLayout
+
+    # Help Guidance Panel (centralized QSS styling, zero inline CSS)
+    window.help_panel = QFrame()
+    window.help_panel.setObjectName("HelpGuidancePanel")
+    help_panel_layout = QVBoxLayout()
+    help_panel_layout.setContentsMargins(10, 10, 10, 10)
+    window.help_label = QLabel("💡 <b>KASP Rehberi:</b> Detaylı mühendislik açıklamaları için fare imlecini parametrelerin üzerine getirin veya bir seçim yapın.")
+    window.help_label.setObjectName("help_guidance_text")
+    window.help_label.setWordWrap(True)
+    help_panel_layout.addWidget(window.help_label)
+    window.help_panel.setLayout(help_panel_layout)
+    left_layout.addWidget(window.help_panel)
 
     button_layout = QHBoxLayout()
     window.calculate_btn = QPushButton("🚀 Hesaplama Başlat")
-    window.calculate_btn.setStyleSheet(
-        """
-            QPushButton {
-                background-color: #27ae60;
-                color: white;
-                font-weight: bold;
-                padding: 12px;
-                border-radius: 6px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #2ecc71;
-            }
-            QPushButton:disabled {
-                background-color: #95a5a6;
-            }
-        """
-    )
+    window.calculate_btn.setObjectName("calculate_btn")
 
     window.stop_btn = QPushButton("⏹️ Durdur")
+    window.stop_btn.setObjectName("stop_btn")
     window.stop_btn.setEnabled(False)
-    window.stop_btn.setStyleSheet(
-        """
-            QPushButton {
-                background-color: #e74c3c;
-                color: white;
-                font-weight: bold;
-                padding: 12px;
-                border-radius: 6px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #c0392b;
-            }
-            QPushButton:disabled {
-                background-color: #95a5a6;
-            }
-        """
-    )
 
     button_layout.addWidget(window.calculate_btn)
     button_layout.addWidget(window.stop_btn)
@@ -432,17 +422,77 @@ def build_execution_group(window, left_layout):
 
     window.progress_status_label = QLabel("Ready")
     window.progress_status_label.setVisible(False)
-    window.progress_status_label.setStyleSheet("color: #7f8c8d; font-size: 9pt;")
+    window.progress_status_label.setObjectName("progress_status_label")
     progress_layout.addWidget(window.progress_status_label)
 
     window.progress_time_label = QLabel("")
     window.progress_time_label.setVisible(False)
-    window.progress_time_label.setStyleSheet("color: #3498db; font-size: 9pt;")
+    window.progress_time_label.setObjectName("progress_time_label")
     progress_layout.addWidget(window.progress_time_label)
 
     progress_group.setLayout(progress_layout)
     left_layout.addWidget(progress_group)
     left_layout.addStretch()
+
+
+def wire_help_guidance(window):
+    """Set rich HTML tooltips and hover filters for all key process and calculation inputs."""
+    help_texts = {
+        "p_in_edit": {
+            "title": "Giriş Basıncı",
+            "desc": "Kompresör giriş hattındaki mutlak veya efektif gaz basıncı."
+        },
+        "t_in_edit": {
+            "title": "Giriş Sıcaklığı",
+            "desc": "Kompresör giriş hattındaki gaz sıcaklığı."
+        },
+        "p_out_edit": {
+            "title": "Çıkış Basıncı",
+            "desc": "Kompresör çıkış hattındaki hedef mutlak veya efektif gaz basıncı."
+        },
+        "flow_edit": {
+            "title": "Gaz Debisi",
+            "desc": "Kompresörden geçen kütlesel veya hacimsel gaz akış miktarı."
+        },
+        "num_stages_spin": {
+            "title": "Kompresör Kademe Sayısı",
+            "desc": "Kademe sayısı arttıkça kademeler arası soğutma (Intercooler) etkinleştirilir, bu da sıkıştırma işini azaltır ve genel verimliliği artırır."
+        },
+        "gas_combo": {
+            "title": "Gaz Kompozisyonu",
+            "desc": "Standart doğal gaz karışımlarını seçebilir veya alt tablodan özel bileşen yüzdeleri girerek kendi gaz karışımınızı tasarlayabilirsiniz."
+        },
+        "eos_method_combo": {
+            "title": "EoS (Hal Denklemi)",
+            "desc": "<b>CoolProp (GERG-2008):</b> Yüksek hassasiyetli endüstri standardı termodinamik model.<br><b>Peng-Robinson / SRK:</b> Klasik kübik hal denklemleri, hidrokarbon ağırlıklı karışımlarda hızlı ve kararlı sonuçlar verir."
+        },
+        "lhv_source_combo": {
+            "title": "Isıl Değer Kaynağı",
+            "desc": "<b>KASP Sabitleri:</b> Standart ISO 6976 tablosu kullanır.<br><b>Thermo Veritabanı:</b> Karışımın gerçek gaz düzeltmeli kimyasal potansiyel ve ısıl kapasite verilerini dinamik hesaplar."
+        },
+        "method_combo": {
+            "title": "Hesaplama Yöntemi",
+            "desc": "<b>Metot 1 (Ortalama Özellikler):</b> Giriş/çıkış koşullarının ortalamasını kullanan hızlı yaklaşım.<br><b>Metot 4 (Doğrudan H-S):</b> Gerçek entalpi ve entropi değişimlerini entegre eden en kararlı ve hassas yöntemdir."
+        },
+        "consistency_check": {
+            "title": "Tutarlılık İterasyonu",
+            "desc": "Hesaplanan politropik verim ile kullanılan verim eşitlenene kadar iterasyon yapar. Termodinamik kararlılık için şiddetle tavsiye edilir."
+        }
+    }
+    
+    # Store references to prevent garbage collection
+    window._hover_filters = []
+    
+    for attr, info in help_texts.items():
+        widget = getattr(window, attr, None)
+        if widget:
+            # Add rich HTML Tooltip
+            widget.setToolTip(f"<b>{info['title']}</b><br>{info['desc']}")
+            
+            # Install hover filter
+            filt = HoverEventFilter(window.help_label, info['title'], info['desc'], widget)
+            widget.installEventFilter(filt)
+            window._hover_filters.append(filt)
 
 
 def build_design_left_groups(
@@ -480,3 +530,4 @@ def build_design_left_groups(
         thermo_loaded=thermo_loaded,
     )
     build_execution_group(window, left_layout)
+    wire_help_guidance(window)

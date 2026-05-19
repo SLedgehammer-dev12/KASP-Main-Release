@@ -47,21 +47,21 @@ def normalize_percentage_values(values):
 
 
 def build_total_label_state(total):
-    """Return text and style for the live composition-total label."""
+    """Return text and state for the live composition-total label."""
     diff = abs(total - 100.0)
     if diff < 0.01:
         return (
             f"Toplam: {total:.2f}%  ✔",
-            "font-weight: bold; color: #27ae60; padding: 2px 4px; border-radius: 4px;",
+            "valid",
         )
     if diff < 1.0:
         return (
             f"Toplam: {total:.2f}%  ⚠ (%100'e yakın)",
-            "font-weight: bold; color: #e67e22; padding: 2px 4px; border-radius: 4px; background: #fef9e7;",
+            "warning",
         )
     return (
         f"Toplam: {total:.2f}%  ✘ (100.00% olmalı!)",
-        "font-weight: bold; color: #c0392b; padding: 2px 4px; border-radius: 4px; background: #fdf0ef;",
+        "invalid",
     )
 
 
@@ -161,9 +161,11 @@ class GasCompositionController:
     def update_total_label(self, *_args):
         try:
             total = sum(self.get_gas_composition().values())
-            text, style = build_total_label_state(total)
+            text, state = build_total_label_state(total)
             self.window.comp_total_label.setText(text)
-            self.window.comp_total_label.setStyleSheet(style)
+            self.window.comp_total_label.setProperty("compTotalState", state)
+            self.window.comp_total_label.style().unpolish(self.window.comp_total_label)
+            self.window.comp_total_label.style().polish(self.window.comp_total_label)
         except Exception as exc:
             self.window.logger.warning(f"Kompozisyon toplamı güncellenemedi: {exc}")
 

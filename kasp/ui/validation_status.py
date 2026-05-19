@@ -48,7 +48,7 @@ class ValidationStatusWidget(QWidget):
         
         # Overall status indicator
         self.overall_status_label = QLabel("✓ All Valid")
-        self.overall_status_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+        self.overall_status_label.setProperty("statusType", "valid")
         header_layout.addWidget(self.overall_status_label)
         
         main_layout.addLayout(header_layout)
@@ -83,15 +83,7 @@ class ValidationStatusWidget(QWidget):
         self.action_layout.addWidget(self.fix_all_btn)
         main_layout.addLayout(self.action_layout)
         
-        # Set background and border
-        self.setStyleSheet("""
-            ValidationStatusWidget {
-                background-color: #f8f9fa;
-                border: 1px solid #dee2e6;
-                border-radius: 5px;
-            }
-        """)
-        
+        # Set background and border styling is handled via centralized QSS
         self.setLayout(main_layout)
     
     def update_validation_status(self, validation_manager):
@@ -106,14 +98,16 @@ class ValidationStatusWidget(QWidget):
         # Update overall status
         if summary['all_valid']:
             self.overall_status_label.setText(f"✓ All Valid ({summary['valid_count']}/{summary['total_fields']})")
-            self.overall_status_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+            self.overall_status_label.setProperty("statusType", "valid")
             self.fix_all_btn.setVisible(False)
         else:
             self.overall_status_label.setText(
                 f"⚠️ {summary['invalid_count']} Issue(s) ({summary['valid_count']}/{summary['total_fields']} valid)"
             )
-            self.overall_status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+            self.overall_status_label.setProperty("statusType", "invalid")
             self.fix_all_btn.setVisible(True)
+        self.overall_status_label.style().unpolish(self.overall_status_label)
+        self.overall_status_label.style().polish(self.overall_status_label)
         
         # Update field statuses
         for field_name, (is_valid, error_msg) in summary['fields'].items():
@@ -133,13 +127,15 @@ class ValidationStatusWidget(QWidget):
             if is_valid:
                 if error_msg:  # Warning
                     label.setText(f"⚠️ <b>{display_name}:</b> {error_msg}")
-                    label.setStyleSheet("color: #f39c12;")
+                    label.setProperty("statusType", "warning")
                 else:  # Valid
                     label.setText(f"✓ <b>{display_name}:</b> Valid")
-                    label.setStyleSheet("color: #27ae60;")
+                    label.setProperty("statusType", "valid")
             else:  # Invalid
                 label.setText(f"❌ <b>{display_name}:</b> {error_msg}")
-                label.setStyleSheet("color: #e74c3c;")
+                label.setProperty("statusType", "invalid")
+            label.style().unpolish(label)
+            label.style().polish(label)
     
     def add_custom_status(self, field_name, is_valid, message, icon=""):
         """
@@ -163,10 +159,12 @@ class ValidationStatusWidget(QWidget):
         
         if is_valid:
             label.setText(f"{icon or '✓'} <b>{display_name}:</b> {message}")
-            label.setStyleSheet("color: #27ae60;")
+            label.setProperty("statusType", "valid")
         else:
             label.setText(f"{icon or '❌'} <b>{display_name}:</b> {message}")
-            label.setStyleSheet("color: #e74c3c;")
+            label.setProperty("statusType", "invalid")
+        label.style().unpolish(label)
+        label.style().polish(label)
     
     def clear_status(self):
         """Clear all status indicators."""
@@ -175,7 +173,9 @@ class ValidationStatusWidget(QWidget):
             label.deleteLater()
         self.field_labels.clear()
         self.overall_status_label.setText("Ready")
-        self.overall_status_label.setStyleSheet("color: #6c757d;")
+        self.overall_status_label.setProperty("statusType", "neutral")
+        self.overall_status_label.style().unpolish(self.overall_status_label)
+        self.overall_status_label.style().polish(self.overall_status_label)
 
 
 class MinimalValidationIndicator(QWidget):
@@ -200,7 +200,7 @@ class MinimalValidationIndicator(QWidget):
         layout.addWidget(self.text_label)
         
         self.setLayout(layout)
-        self.setStyleSheet("background-color: #e8f8f3; border-radius: 3px; padding: 2px;")
+        self.setProperty("statusType", "valid")
     
     def update_status(self, all_valid, valid_count, total_count):
         """
@@ -214,9 +214,11 @@ class MinimalValidationIndicator(QWidget):
         if all_valid:
             self.icon_label.setText("✓")
             self.text_label.setText(f"All {total_count} inputs valid")
-            self.setStyleSheet("background-color: #e8f8f3; border-radius: 3px; padding: 2px;")
+            self.setProperty("statusType", "valid")
         else:
             invalid_count = total_count - valid_count
             self.icon_label.setText("⚠️")
             self.text_label.setText(f"{invalid_count} input(s) need attention")
-            self.setStyleSheet("background-color: #ffe6e6; border-radius: 3px; padding: 2px;")
+            self.setProperty("statusType", "invalid")
+        self.style().unpolish(self)
+        self.style().polish(self)

@@ -207,12 +207,23 @@ class ThermodynamicSolver:
                 state = self._solve_coolprop(P_pa, T_k, gas_obj)
             elif eos_method in ['pr', 'srk']:
                 state = self._solve_thermo_eos(P_pa, T_k, gas_obj, eos_method)
+            elif eos_method == 'aga8':
+                state = self._solve_aga8(P_pa, T_k, gas_obj)
             else:
                 raise ValueError(f"Desteklenmeyen EOS: {eos_method}")
                 
         except Exception as e:
-            logger.warning(f"⚠️ {eos_method.upper()} EOS hatası: {e}. Fallback (İdeal Gaz) kullanılıyor.")
-            state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
+            logger.warning(f"⚠️ {eos_method.upper()} EOS hatası: {e}. Fallback (PR) kullanılıyor.")
+            if eos_method == 'aga8':
+                try:
+                    state = self._solve_thermo_eos(P_pa, T_k, gas_obj, 'pr')
+                    state.raw_props['fallback'] = True
+                    state.raw_props['fallback_type'] = 'pr_fallback'
+                except Exception as fallback_err:
+                    logger.warning(f"⚠️ Fallback PR da başarısız: {fallback_err}. İdeal Gaz'a geçiliyor.")
+                    state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
+            else:
+                state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
             
         # Z-Factor Uyarısı
         if state.Z < 0.5 or state.Z > 1.5:
@@ -380,6 +391,96 @@ class ThermodynamicSolver:
             density=D,
             phase=phase_str,
             fallback=False,
+        )
+
+    def _solve_aga8(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
+        """pyaga8 (GERG-2008) standardını kullanarak özellikleri çözer."""
+        import pyaga8
+        
+        ids, zs = self._extract_thermo_components(gas_data)
+        
+        # AGA8 bileşenlerini eşleme
+        AGA8_FIELDS_MAP = {
+            "methane": "methane",
+            "ethane": "ethane",
+            "propane": "propane",
+            "isobutane": "isobutane",
+            "butane": "n_butane",
+            "isopentane": "isopentane",
+            "pentane": "n_pentane",
+            "hexane": "hexane",
+            "heptane": "heptane",
+            "octane": "octane",
+            "nonane": "nonane",
+            "decane": "decane",
+            "hydrogen": "hydrogen",
+            "hydrogen sulfide": "hydrogen_sulfide",
+            "nitrogen": "nitrogen",
+            "carbon dioxide": "carbon_dioxide",
+            "water": "water",
+            "oxygen": "oxygen",
+            "argon": "argon",
+            "helium": "helium",
+        }
+        
+        comp = pyaga8.Composition()
+        for c_id, fraction in zip(ids, zs):
+            if fraction <= 1e-6:
+                continue
+            field = AGA8_FIELDS_MAP.get(c_id.lower())
+            if not field:
+                raise ValueError(f"AGA8 standardı '{c_id}' bileşenini desteklemez.")
+            setattr(comp, field, fraction)
+            
+        detail = pyaga8.Detail()
+        detail.set_composition(comp)
+        
+        # MPa ve K birimleri
+        detail.pressure = P_pa / 1e6
+        detail.temperature = T_k
+        
+        detail.calc_density()
+        detail.calc_properties()
+        
+        # Değerlerin okunması
+        Z = detail.z
+        MW_g_mol = detail.mm # g/mol
+        molar_mass = MW_g_mol / 1000.0 # kg/mol
+        
+        # Yoğunluk: d (mol/cm³) -> kg/m³
+        # d * 1e6 * molar_mass
+        density = detail.d * 1e6 * molar_mass
+        
+        # Isı kapasiteleri: cp, cv (J/mol.K) -> J/kg.K
+        Cp = detail.cp / molar_mass
+        Cv = detail.cv / molar_mass
+        k = Cp / Cv if Cv > 0 else 1.4
+        
+        # Mutlak entalpi ve entropi: h (J/mol) -> J/kg, s (J/mol.K) -> J/kg.K
+        H = detail.h / molar_mass
+        S = detail.s / molar_mass
+        
+        speed_of_sound = detail.w
+        
+        # Faz denetimi: Z aşırı düşükse sıvılaşma/yoğuşma riski vardır
+        phase_str = 'gas'
+        if Z < 0.3:
+            phase_str = 'liquid'
+            
+        return self._build_state(
+            P_pa=P_pa,
+            T_k=T_k,
+            H=H,
+            S=S,
+            Z=Z,
+            k=k,
+            MW=MW_g_mol,
+            Cp=Cp,
+            Cv=Cv,
+            density=density,
+            phase=phase_str,
+            fallback=False,
+            speed_of_sound=speed_of_sound
         )
 
     def _solve_fallback(self, P_pa: float, T_k: float, gas_obj, eos: str) -> ThermodynamicState:

@@ -210,16 +210,12 @@ def build_performance_tab(window, *, thermo_loaded):
     input_layout.addWidget(driver_group)
 
     window.verify_perf_btn = QPushButton("🚀 Performans Değerlendir")
-    window.verify_perf_btn.setStyleSheet(
-        "background-color: #e67e22; color: white; font-weight: bold; padding: 10px;"
-    )
+    window.verify_perf_btn.setObjectName("verify_perf_btn")
     window.verify_perf_btn.clicked.connect(window.run_performance_evaluation)
     input_layout.addWidget(window.verify_perf_btn)
 
     window.generate_perf_report_btn = QPushButton("📄 Performans Raporu")
-    window.generate_perf_report_btn.setStyleSheet(
-        "background-color: #16a085; color: white; font-weight: bold; padding: 10px;"
-    )
+    window.generate_perf_report_btn.setObjectName("generate_perf_report_btn")
     window.generate_perf_report_btn.clicked.connect(window.handle_performance_report)
     input_layout.addWidget(window.generate_perf_report_btn)
 
@@ -246,7 +242,7 @@ def build_performance_tab(window, *, thermo_loaded):
         window.perf_res_fuel_or_eff,
         window.perf_res_head,
     ]:
-        label.setStyleSheet("font-weight: bold; font-size: 15px; color: #2c3e50;")
+        label.setProperty("resultLabel", "true")
 
     result_layout.addRow("Politropik Verim (ηp):", window.perf_res_poly_eff)
     result_layout.addRow("İzentropik Verim (ηs):", window.perf_res_isen_eff)
