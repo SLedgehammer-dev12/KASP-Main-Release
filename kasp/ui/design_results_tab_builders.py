@@ -26,7 +26,7 @@ def get_turbine_table_headers():
 
 
 def get_detailed_analysis_tab_titles():
-    return ["🌡️ Termodinamik", "⚡ Güç Dağılımı", "⛽ Yakıt Analizi"]
+    return ["🌡️ Termodinamik", "⚡ Güç Dağılımı", "⛽ Yakıt Analizi", "⚠️ Fallback Karşılaştırması"]
 
 
 def get_graph_option_labels():
@@ -172,6 +172,14 @@ def build_detailed_results_tab(window):
     window.fuel_table.setHorizontalHeaderLabels(["Parametre", "Değer"])
     fuel_layout.addWidget(window.fuel_table)
     tabs.addTab(fuel_tab, get_detailed_analysis_tab_titles()[2])
+
+    fallback_tab = QWidget()
+    fallback_layout = QVBoxLayout(fallback_tab)
+    window.fallback_table = QTableWidget()
+    window.fallback_table.setColumnCount(6)
+    window.fallback_table.setHorizontalHeaderLabels(["Kademe / Bölüm", "Çözücü Metot", "Hesaplanan Sıcaklık", "İterasyon", "Entropi Artığı (dS)", "Süre (ms)"])
+    fallback_layout.addWidget(window.fallback_table)
+    tabs.addTab(fallback_tab, get_detailed_analysis_tab_titles()[3])
 
     layout.addWidget(tabs)
 

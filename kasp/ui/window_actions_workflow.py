@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from kasp.i18n import ALL_LOGS_LABEL, APP_VERSION, tr
+from kasp.i18n import ALL_LOGS_LABEL, APP_VERSION, tr, is_english
 
 
 def filter_logs_by_level(logs, selected_level):
@@ -16,12 +16,42 @@ def filter_logs_by_level(logs, selected_level):
 
 def build_about_dialog_text(version=APP_VERSION):
     """Build the about-dialog body text."""
-    return tr(
-        f"KASP v{version} - Kompresör Analiz ve Seçim Platformu\n\n"
-        "Gelişmiş termodinamik, akışkan dinamiği ve turbomakine hesaplamaları için Python tabanlı platform.\n\n"
-        "V4.6 Yenilikleri: Responsive UI, QScrollArea sol panel, DPI ölçeklendirme.\n\n"
-        "Standartlar: ASME PTC-10, ASME PTC-22, API 616/617, ISO 2314"
-    )
+    if is_english():
+        return (
+            f"KASP v{version} - Compressor Analysis and Selection Platform\n\n"
+            "An advanced thermodynamic, fluid dynamics, and turbomachinery calculation engine.\n\n"
+            "--- Calculation Methodology ---\n"
+            "• Aerodynamics & Thermodynamic Core:\n"
+            "  - Computes isentropic/polytropic compressor performance using standard ASME PTC 10.\n"
+            "  - Employs CoolProp (HEOS), Peng-Robinson (PR), and Soave-Redlich-Kwong (SRK) Equations of State (EoS).\n"
+            "• Equation of State (EoS) Fallback Chain:\n"
+            "  - Stage 1: Primary EoS (e.g., CoolProp/AGA8) for high-accuracy multi-component mixtures.\n"
+            "  - Stage 2: Cubic EoS (Peng-Robinson / SRK) if primary fails near critical limits or phase envelopes.\n"
+            "  - Stage 3: Ideal Gas Equation as the ultimate fallback to prevent application crashes.\n"
+            "• Isentropic Temperature Fallback Root-Finding Solvers:\n"
+            "  - 1. Finite Difference Newton-Raphson (FD-NR): Uses standard numerical gradients.\n"
+            "  - 2. Analytical Jacobian Newton-Raphson (AJ-NR): High-speed solver utilizing the exact thermodynamic relation (dS/dT)_P = Cp/T.\n"
+            "  - 3. Brent's Method: A robust, hybrid root-finding solver with dynamically bounded intervals ensuring 100% convergence under EoS instabilities.\n\n"
+            "Standards: ASME PTC-10, ASME PTC-22, API 616/617, ISO 2314"
+        )
+    else:
+        return (
+            f"KASP v{version} - Kompresör Analiz ve Seçim Platformu\n\n"
+            "Gelişmiş termodinamik, akışkan dinamiği ve turbomakine hesaplamaları için Python tabanlı platform.\n\n"
+            "--- Hesaplama Yöntemi ---\n"
+            "• Aerodinamik & Termodinamik Çekirdek:\n"
+            "  - ASME PTC 10 standardına uygun olarak izantropik/politropik kompresör performansını hesaplar.\n"
+            "  - CoolProp (HEOS), Peng-Robinson (PR) ve Soave-Redlich-Kwong (SRK) Durum Denklemlerini (EoS) kullanır.\n"
+            "• Durum Denklemi (EoS) Fallback Sırası:\n"
+            "  - 1. Kademe: Birincil EoS (örn. CoolProp/AGA8), çok bileşenli karışımlar için yüksek doğruluk sağlar.\n"
+            "  - 2. Kademe: Birincil EoS kritik sınırlarda veya iki fazlı bölgede hata verdiğinde Kübik EoS (Peng-Robinson / SRK) devreye girer.\n"
+            "  - 3. Kademe: Programın çökmesini önlemek için nihai güvenlik ağı olarak İdeal Gaz Denklemi kullanılır.\n"
+            "• İzantropik Sıcaklık Fallback Kök Bulucu Çözücüler:\n"
+            "  - 1. Sonlu Farklar Newton-Raphson (FD-NR): Standart sayısal gradyanları kullanır.\n"
+            "  - 2. Analitik Jakobiyen Newton-Raphson (AJ-NR): (dS/dT)_P = Cp/T analitik termodinamik özdeşliğini kullanan yüksek hızlı çözücü.\n"
+            "  - 3. Brent Metodu: EoS kararsızlıkları altında %100 yakınsama garantisi sunan, dinamik aralık sınırlamalı robust hibrit çözücü.\n\n"
+            "Standartlar: ASME PTC-10, ASME PTC-22, API 616/617, ISO 2314"
+        )
 
 
 def build_examples_dialog_text():

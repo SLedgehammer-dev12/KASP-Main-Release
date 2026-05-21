@@ -1,6 +1,6 @@
 {
     "app": {
-        "version": "1.5",
+        "version": "1.6.0",
         "language": "tr",
         "theme": "light",
         "auto_save": true,

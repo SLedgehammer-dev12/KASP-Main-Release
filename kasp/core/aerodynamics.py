@@ -7,6 +7,28 @@ hesaplayan, ayrıca aerodinamik ve mekanik kayıpları içeren modül.
 import math
 import logging
 import numpy as np
+import threading
+import time
+
+_local_storage = threading.local()
+
+def reset_fallback_comparisons():
+    _local_storage.comparisons = []
+    _local_storage.current_stage = "Performans"
+
+def add_fallback_comparison(comparison):
+    if not hasattr(_local_storage, "comparisons"):
+        _local_storage.comparisons = []
+    _local_storage.comparisons.append(comparison)
+
+def get_fallback_comparisons():
+    return getattr(_local_storage, "comparisons", [])
+
+def set_current_stage(stage):
+    _local_storage.current_stage = stage
+
+def get_current_stage():
+    return getattr(_local_storage, "current_stage", "Performans")
 
 # V4.4 Data Models
 from kasp.core.models import ThermodynamicState, EnginePerformanceResult
@@ -207,24 +229,11 @@ class CompressorAerodynamics:
         return n_minus_1_over_n, k_integral, analysis_data
 
     @staticmethod
-    def calculate_isentropic_temp_fallback(
+    def calculate_isentropic_temp_fd_nr(
         state_in: ThermodynamicState, p_out: float,
         thermo_solver, gas_obj, eos: str
-    ) -> float:
-        """
-        CoolProp entropi-basınç flash başarısız olduğunda Newton-Raphson
-        iterasyonu ile isentropik çıkış sıcaklığını bulur.
-
-        Args:
-            state_in      : Giriş termodinamik durumu (ThermodynamicState)
-            p_out         : Çıkış basıncı (Pa)
-            thermo_solver : ThermodynamicSolver örneği
-            gas_obj       : CoolProp string veya Thermo dict
-            eos           : EOS metodu
-
-        Returns:
-            float: İsentropik çıkış sıcaklığı (K)
-        """
+    ) -> tuple:
+        """Finite Difference Newton-Raphson Solver"""
         S1    = state_in.S
         k_avg = state_in.k
         p_in  = state_in.P
@@ -235,26 +244,29 @@ class CompressorAerodynamics:
         t2_guess  = t_in * (p_out / p_in) ** n_isen
 
         max_iter          = 20
-        tolerance_entropy = 10.0   # J/kg/K
+        tolerance_entropy = 5.0   # J/kg/K
         tolerance_temp    = 0.5    # K
         t2_prev           = t2_guess
+        
+        iter_count = 0
+        residual = 999.0
 
         for i in range(max_iter):
+            iter_count += 1
             try:
                 state2 = thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
                 S2     = state2.S
-            except Exception as e:
-                logger.warning(f"İsentropik fallback adım {i}: özellik hesabı başarısız ({e})")
+            except Exception:
                 break
 
             dS = S2 - S1
+            residual = abs(dS)
 
-            if abs(dS) < tolerance_entropy:
+            if residual < tolerance_entropy:
                 if i > 0 and abs(t2_guess - t2_prev) < tolerance_temp:
-                    logger.debug(f"✓ İsentropik fallback yakınsadı: {i+1} iter, T2={t2_guess:.1f} K")
-                    return t2_guess
+                    break
                 elif i == 0:
-                    return t2_guess
+                    break
 
             t2_prev = t2_guess
 
@@ -273,6 +285,245 @@ class CompressorAerodynamics:
             t2_guess = t2_guess - dS / dS_dT
             t2_guess = max(100.0, min(2000.0, t2_guess))
 
-        logger.warning(f"⚠ İsentropik fallback tam yakınsayamadı, son T2={t2_guess:.1f} K kullanılıyor")
-        return t2_guess
+        return t2_guess, iter_count, residual
+
+    @staticmethod
+    def calculate_isentropic_temp_aj_nr(
+        state_in: ThermodynamicState, p_out: float,
+        thermo_solver, gas_obj, eos: str
+    ) -> tuple:
+        """Analytical Jacobian Newton-Raphson Solver using (dS/dT)_P = Cp/T"""
+        S1    = state_in.S
+        k_avg = state_in.k
+        p_in  = state_in.P
+        t_in  = state_in.T
+
+        # İlk tahmin: politropik ilişki
+        n_isen    = (k_avg - 1) / k_avg if k_avg > 1.0 else 0.2308
+        t2_guess  = t_in * (p_out / p_in) ** n_isen
+
+        max_iter          = 20
+        tolerance_entropy = 5.0   # J/kg/K
+        tolerance_temp    = 0.5    # K
+        t2_prev           = t2_guess
+        
+        iter_count = 0
+        residual = 999.0
+
+        for i in range(max_iter):
+            iter_count += 1
+            try:
+                state2 = thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+                S2     = state2.S
+            except Exception:
+                break
+
+            dS = S2 - S1
+            residual = abs(dS)
+
+            if residual < tolerance_entropy:
+                if i > 0 and abs(t2_guess - t2_prev) < tolerance_temp:
+                    break
+                elif i == 0:
+                    break
+
+            t2_prev = t2_guess
+
+            # Analitik türev: dS_dT = Cp / T (burada Cp J/kg-K cinsindedir)
+            dS_dT = state2.Cp / t2_guess if state2.Cp > 0 else 2.0
+            if abs(dS_dT) < 1e-10:
+                dS_dT = 2.0
+
+            # Newton adımı (stabilite için 0.9 damping faktörü eklendi)
+            t2_guess = t2_guess - 0.9 * (dS / dS_dT)
+            t2_guess = max(100.0, min(2000.0, t2_guess))
+
+        return t2_guess, iter_count, residual
+
+    @staticmethod
+    def calculate_isentropic_temp_brent(
+        state_in: ThermodynamicState, p_out: float,
+        thermo_solver, gas_obj, eos: str
+    ) -> tuple:
+        """Brent's Hybrid Root-Finding Solver (Pure Python)"""
+        S1 = state_in.S
+        t_in = state_in.T
+
+        def f(t):
+            try:
+                state = thermo_solver.get_properties(p_out, t, gas_obj, eos)
+                return state.S - S1
+            except Exception:
+                if t < t_in:
+                    return -1e6
+                else:
+                    return 1e6
+
+        # Başlangıç braketi bulma (T2 >= T1 için kompresörde a = t_in)
+        a = t_in
+        b = min(2500.0, t_in * 2.0)
+        fa = f(a)
+        fb = f(b)
+
+        for _ in range(5):
+            if fa * fb < 0:
+                break
+            if fa > 0:
+                a = max(100.0, a * 0.5)
+                fa = f(a)
+            if fb < 0:
+                b = min(3000.0, b * 1.5)
+                fb = f(b)
+
+        if fa * fb >= 0:
+            # En küçük artığa sahip olanı dön
+            if abs(fa) < abs(fb):
+                return a, 1, abs(fa)
+            else:
+                return b, 1, abs(fb)
+
+        # Brent Algoritması
+        max_iter = 20
+        tol = 5.0 # Entropi toleransı
+        c = a
+        fc = fa
+        d = b - a
+        e = d
+        iter_count = 0
+        residual = 999.0
+
+        for iteration in range(max_iter):
+            iter_count += 1
+            if abs(fc) < abs(fb):
+                a, b, c = b, c, b
+                fa, fb, fc = fb, fc, fb
+
+            residual = abs(fb)
+            if residual < tol:
+                break
+
+            m = 0.5 * (c - b)
+            if abs(m) < 0.1:
+                break
+
+            if abs(e) >= 0.1 and abs(fa) > abs(fb):
+                s = fb / fa
+                if a == c:
+                    p = 2.0 * m * s
+                    q = 1.0 - s
+                else:
+                    q = fa / fc
+                    r = fb / fc
+                    p = s * (2.0 * m * q * (q - r) - (b - a) * (r - 1.0))
+                    q = (q - 1.0) * (r - 1.0) * (s - 1.0)
+
+                if p > 0:
+                    q = -q
+                else:
+                    p = -p
+
+                if 2.0 * p < min(3.0 * m * q - abs(0.1 * q), abs(e * q)):
+                    e = d
+                    d = p / q
+                else:
+                    d = m
+                    e = d
+            else:
+                d = m
+                e = d
+
+            a = b
+            fa = fb
+
+            if abs(d) > 0.1:
+                b += d
+            else:
+                b += 0.1 if m > 0 else -0.1
+
+            fb = f(b)
+
+            if (fb > 0 and fc > 0) or (fb < 0 and fc < 0):
+                c = a
+                fc = fa
+                d = b - a
+                e = d
+
+        return b, iter_count, residual
+
+    @staticmethod
+    def run_isentropic_fallback_comparison(
+        state_in: ThermodynamicState, p_out: float,
+        thermo_solver, gas_obj, eos: str
+    ) -> float:
+        """Her üç metodu da koşturarak karşılaştırır ve aralarındaki farkı raporlar."""
+        stage = get_current_stage()
+
+        # 1. FD-NR
+        t0 = time.perf_counter()
+        t_fd, iter_fd, res_fd = CompressorAerodynamics.calculate_isentropic_temp_fd_nr(
+            state_in, p_out, thermo_solver, gas_obj, eos
+        )
+        dt_fd = (time.perf_counter() - t0) * 1000.0
+
+        # 2. AJ-NR
+        t0 = time.perf_counter()
+        t_aj, iter_aj, res_aj = CompressorAerodynamics.calculate_isentropic_temp_aj_nr(
+            state_in, p_out, thermo_solver, gas_obj, eos
+        )
+        dt_aj = (time.perf_counter() - t0) * 1000.0
+
+        # 3. Brent
+        t0 = time.perf_counter()
+        t_brent, iter_brent, res_brent = CompressorAerodynamics.calculate_isentropic_temp_brent(
+            state_in, p_out, thermo_solver, gas_obj, eos
+        )
+        dt_brent = (time.perf_counter() - t0) * 1000.0
+
+        # Karşılaştırma verisini kaydet
+        comparison = {
+            "stage": stage,
+            "methods": [
+                {
+                    "name": "Sonlu Farklar NR (FD-NR)",
+                    "temp_k": t_fd,
+                    "iterations": iter_fd,
+                    "residual": res_fd,
+                    "time_ms": dt_fd
+                },
+                {
+                    "name": "Analitik Jacobian NR (AJ-NR)",
+                    "temp_k": t_aj,
+                    "iterations": iter_aj,
+                    "residual": res_aj,
+                    "time_ms": dt_aj
+                },
+                {
+                    "name": "Brent Metodu (Brent)",
+                    "temp_k": t_brent,
+                    "iterations": iter_brent,
+                    "residual": res_brent,
+                    "time_ms": dt_brent
+                }
+            ]
+        }
+        add_fallback_comparison(comparison)
+
+        logger.info(
+            f"Fallback Benchmark [{stage}] - "
+            f"FD-NR: {t_fd:.2f}K ({iter_fd} iter, {dt_fd:.2f}ms), "
+            f"AJ-NR: {t_aj:.2f}K ({iter_aj} iter, {dt_aj:.2f}ms), "
+            f"Brent: {t_brent:.2f}K ({iter_brent} iter, {dt_brent:.2f}ms)"
+        )
+
+        # En güvenilir ve hızlı olan AJ-NR sonucunu birincil değer olarak dön
+        return t_aj
+
+    @staticmethod
+    def calculate_isentropic_temp_fallback(
+        state_in: ThermodynamicState, p_out: float,
+        thermo_solver, gas_obj, eos: str
+    ) -> float:
+        return CompressorAerodynamics.run_isentropic_fallback_comparison(
+            state_in, p_out, thermo_solver, gas_obj, eos
+        )
 

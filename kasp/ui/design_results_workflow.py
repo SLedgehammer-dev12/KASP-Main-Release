@@ -323,10 +323,11 @@ class DesignResultsPresenter:
     def populate_detailed_tables(self, results):
         QTableWidgetItem = self._qt_table_widget_item()
 
-        self.window.thermo_table.setRowCount(6)
-        thermo_props = ["Z", "rho", "k", "Cp", "mu", "a"]
-        units = ["-", "kg/m³", "-", "J/kg-K", "Pa-s", "m/s"]
-        display_names = ["Z Faktörü", "Yoğunluk", "İz. Üs (k)", "Cp", "Viskozite", "Ses Hızı"]
+        thermo_props = ["Z", "rho", "k", "Cp", "Cv", "H", "S", "phase", "mu", "a"]
+        units = ["-", "kg/m³", "-", "J/kg-K", "J/kg-K", "J/kg", "J/kg-K", "-", "Pa-s", "m/s"]
+        display_names = ["Z Faktörü", "Yoğunluk", "İz. Üs (k)", "Cp (Özgül Isı)", "Cv (Özgül Isı)", "Entalpi (H)", "Entropi (S)", "Faz Durumu", "Viskozite", "Ses Hızı"]
+
+        self.window.thermo_table.setRowCount(len(thermo_props))
 
         in_props = results["inlet_properties"]
         out_props = results["outlet_properties"]
@@ -334,17 +335,23 @@ class DesignResultsPresenter:
         for index, (prop, unit, name) in enumerate(zip(thermo_props, units, display_names)):
             val_in = in_props.get(prop, 0)
             val_out = out_props.get(prop, 0)
-            change = ((val_out - val_in) / val_in) * 100 if val_in != 0 else 0
+            
+            is_numeric = isinstance(val_in, (int, float)) and isinstance(val_out, (int, float)) and not isinstance(val_in, bool)
+            if is_numeric:
+                change = ((val_out - val_in) / val_in) * 100 if val_in != 0 else 0
+                change_str = f"{change:+.1f}%"
+                val_in_str = f"{val_in:.4e}" if prop in ["mu", "rho", "Cp", "Cv", "H", "S"] else f"{val_in:.3f}"
+                val_out_str = f"{val_out:.4e}" if prop in ["mu", "rho", "Cp", "Cv", "H", "S"] else f"{val_out:.3f}"
+            else:
+                change_str = "-"
+                val_in_str = str(val_in)
+                val_out_str = str(val_out)
 
             self.window.thermo_table.setItem(index, 0, QTableWidgetItem(name))
-            self.window.thermo_table.setItem(
-                index, 1, QTableWidgetItem(f"{val_in:.4e}" if prop in ["mu", "rho", "Cp"] else f"{val_in:.3f}")
-            )
-            self.window.thermo_table.setItem(
-                index, 2, QTableWidgetItem(f"{val_out:.4e}" if prop in ["mu", "rho", "Cp"] else f"{val_out:.3f}")
-            )
+            self.window.thermo_table.setItem(index, 1, QTableWidgetItem(val_in_str))
+            self.window.thermo_table.setItem(index, 2, QTableWidgetItem(val_out_str))
             self.window.thermo_table.setItem(index, 3, QTableWidgetItem(unit))
-            self.window.thermo_table.setItem(index, 4, QTableWidgetItem(f"{change:+.1f}%"))
+            self.window.thermo_table.setItem(index, 4, QTableWidgetItem(change_str))
 
         self.window.power_table.setRowCount(4)
         power_data = [
@@ -366,6 +373,30 @@ class DesignResultsPresenter:
         self.window.fuel_table.setItem(1, 1, QTableWidgetItem(f"{results['hhv']:.0f} kJ/kg"))
         self.window.fuel_table.setItem(2, 0, QTableWidgetItem("Toplam Yakıt Akışı"))
         self.window.fuel_table.setItem(2, 1, QTableWidgetItem(f"{results['fuel_total_kgh']:.1f} kg/h"))
+
+        # Fallback Karşılaştırması Tablosunu Doldur
+        comparisons = results.get("fallback_comparison", [])
+        if comparisons:
+            self.window.fallback_table.setRowCount(len(comparisons) * 3)
+            row_idx = 0
+            for comp in comparisons:
+                stage_name = comp.get("stage", "Performans")
+                for method in comp.get("methods", []):
+                    self.window.fallback_table.setItem(row_idx, 0, QTableWidgetItem(stage_name))
+                    self.window.fallback_table.setItem(row_idx, 1, QTableWidgetItem(method["name"]))
+                    self.window.fallback_table.setItem(row_idx, 2, QTableWidgetItem(f"{method['temp_k']:.2f} K ({method['temp_k']-273.15:.2f} °C)"))
+                    self.window.fallback_table.setItem(row_idx, 3, QTableWidgetItem(str(method["iterations"])))
+                    self.window.fallback_table.setItem(row_idx, 4, QTableWidgetItem(f"{method['residual']:.4f}"))
+                    self.window.fallback_table.setItem(row_idx, 5, QTableWidgetItem(f"{method['time_ms']:.2f} ms"))
+                    row_idx += 1
+        else:
+            self.window.fallback_table.setRowCount(1)
+            self.window.fallback_table.setItem(0, 0, QTableWidgetItem("-"))
+            self.window.fallback_table.setItem(0, 1, QTableWidgetItem("Hesaplamalar esnasında fallback mekanizmasına düşülmedi."))
+            self.window.fallback_table.setItem(0, 2, QTableWidgetItem("-"))
+            self.window.fallback_table.setItem(0, 3, QTableWidgetItem("-"))
+            self.window.fallback_table.setItem(0, 4, QTableWidgetItem("-"))
+            self.window.fallback_table.setItem(0, 5, QTableWidgetItem("-"))
 
     def refresh_current_graph(self):
         current_graph_name = self.window.graph_combo.currentText()

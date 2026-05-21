@@ -522,32 +522,8 @@ class ThermoMethodSuite:
             except Exception as error:
                 self.logger.debug(f"CoolProp izentropik flash başarısız: {error}")
 
-        k = state_in.k if state_in.k > 1.0 else 1.3
-        n_isen = (k - 1) / k
-        t_guess = t_in * math.pow(p_out / p_in, n_isen)
-
-        max_iter = self._coerce_iteration_limit(25)
-        for iteration in range(max_iter):
-            try:
-                state_try = self.thermo_solver.get_properties(p_out, t_guess, gas_obj, eos)
-                s_try = state_try.S
-            except Exception:
-                t_guess *= 1.01
-                continue
-
-            d_s = s_try - s_target
-            if abs(d_s) < 5.0:
-                self.logger.debug(f"İzentropik Newton yakınsadı: {iteration+1} iter, T={t_guess:.1f} K")
-                return t_guess
-
-            d_s_d_t = state_try.Cp / t_guess if state_try.Cp > 0 else 2.0
-            if abs(d_s_d_t) < 1e-10:
-                d_s_d_t = 2.0
-
-            delta = -d_s / d_s_d_t
-            delta = max(-30.0, min(30.0, delta))
-            t_guess += 0.7 * delta
-            t_guess = max(t_in * 0.9, min(t_in * 5.0, t_guess))
-
-        self.logger.warning(f"⚠ İzentropik T tam yakınsayamadı, son T={t_guess:.1f} K")
-        return t_guess
+        # CoolProp başarısız olduğunda veya diğer EoS metotlarında karşılaştırmalı fallback çalıştır
+        from kasp.core.aerodynamics import CompressorAerodynamics
+        return CompressorAerodynamics.run_isentropic_fallback_comparison(
+            state_in, p_out, self.thermo_solver, gas_obj, eos
+        )

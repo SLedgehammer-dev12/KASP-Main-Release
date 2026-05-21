@@ -124,6 +124,7 @@ class ThermoEngine:
             'fallback_used': state.raw_props.get('fallback', False),
             'mu': state.raw_props.get('mu', 1.1e-5),
             'a': speed_of_sound if speed_of_sound is not None else 0.0,
+            'phase': state.phase,
         }
 
     # -------------------------------------------------------------------------
@@ -383,6 +384,9 @@ class ThermoEngine:
         """
         ASME PTC 10 / API 617 standartlarına göre mevcut saha şartları verildiğinde kompresör performansını hesaplar.
         """
+        from kasp.core.aerodynamics import reset_fallback_comparisons, set_current_stage, get_fallback_comparisons
+        reset_fallback_comparisons()
+        set_current_stage("Performans")
         try:
             p1 = inputs['p1_pa']
             t1 = inputs['t1_k']
@@ -467,7 +471,7 @@ class ThermoEngine:
                 inputs.get("site_correction_inputs", {}),
             )
 
-            return {
+            results = {
                 'poly_eff': poly_eff * 100.0,
                 'isen_eff': isen_eff * 100.0,
                 'poly_head_kj_kg': poly_head_j_kg / 1000.0,
@@ -481,6 +485,8 @@ class ThermoEngine:
                 'corrected_heat_rate': corrected["corrected_heat_rate_kj_kwh"],
                 'correction_factors': corrected["correction_factors"],
             }
+            results["fallback_comparison"] = get_fallback_comparisons()
+            return results
         except Exception as e:
             self.logger.error(f"Performans değerlendirme hatası: {e}")
             raise
@@ -839,6 +845,8 @@ class ThermoEngine:
 
     def calculate_design_performance(self, inputs):
         start_time = datetime.datetime.now()
+        from kasp.core.aerodynamics import reset_fallback_comparisons, get_fallback_comparisons
+        reset_fallback_comparisons()
         try:
             fallback_tracking = None
             self.thermo_solver.begin_run_tracking()
@@ -927,6 +935,7 @@ class ThermoEngine:
                 "design_performance",
                 (datetime.datetime.now() - start_time).total_seconds(),
             )
+            results["fallback_comparison"] = get_fallback_comparisons()
             return results
 
         except Exception as error:

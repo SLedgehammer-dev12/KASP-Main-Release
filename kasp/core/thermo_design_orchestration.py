@@ -72,6 +72,9 @@ class ThermoDesignOrchestrator:
             if stage == num_stages:
                 curr_p_out = p_out_pa
 
+            from kasp.core.aerodynamics import set_current_stage
+            set_current_stage(f"Kademe {stage}")
+
             self.logger.info(
                 f">> KADEME {stage}: {curr_p_in/1e5:.2f} bar → {curr_p_out/1e5:.2f} bar"
             )
