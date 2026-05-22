@@ -1,0 +1,58 @@
+#!/bin/bash
+# KASP macOS DMG Packaging Script
+# Creates: dist/KASP v1.6.1.dmg
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+RELEASE_APP=$(python3 -c "from release_metadata import RELEASE_MAC_APP_NAME; print(RELEASE_MAC_APP_NAME)")
+RELEASE_DMG=$(python3 -c "from release_metadata import RELEASE_MAC_DMG_NAME; print(RELEASE_MAC_DMG_NAME)")
+APP_PATH="dist/${RELEASE_APP}"
+DMG_PATH="dist/${RELEASE_DMG}"
+DMG_TEMP="dist/temp_dmg"
+
+echo "============================================"
+echo "  KASP macOS DMG Packaging — v1.6.1"
+echo "============================================"
+echo ""
+
+# --- Verify .app exists ---
+if [ ! -d "${APP_PATH}" ]; then
+    echo "ERROR: ${APP_PATH} not found!"
+    echo "Run ./build_release_v1.6.1.sh first."
+    exit 1
+fi
+
+echo "[1/3] Preparing DMG contents..."
+rm -rf "${DMG_PATH}" "${DMG_TEMP}" 2>/dev/null || true
+mkdir -p "${DMG_TEMP}"
+
+cp -R "${APP_PATH}" "${DMG_TEMP}/"
+# Create a symlink to /Applications for drag-and-drop install
+ln -s /Applications "${DMG_TEMP}/Applications"
+
+echo "       Source: ${APP_PATH}"
+echo "       Temp:   ${DMG_TEMP}"
+
+echo ""
+echo "[2/3] Creating DMG (hdiutil)..."
+hdiutil create \
+    -volname "KASP v1.6.1" \
+    -srcfolder "${DMG_TEMP}" \
+    -ov \
+    -format UDZO \
+    "${DMG_PATH}"
+
+echo ""
+echo "[3/3] Cleaning up..."
+rm -rf "${DMG_TEMP}"
+
+DMG_SIZE=$(ls -lh "${DMG_PATH}" | awk '{print $5}')
+echo "       ✓ Built: ${DMG_PATH}  (${DMG_SIZE})"
+echo ""
+echo "============================================"
+echo "  DMG SUCCESS"
+echo "  File: ${DMG_PATH}"
+echo "============================================"
