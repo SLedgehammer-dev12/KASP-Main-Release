@@ -1,4 +1,4 @@
-name: Build and Release Windows EXE
+name: Build and Release (Win + macOS)
 
 on:
   push:
@@ -9,16 +9,15 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build Windows Release EXE
+
+  # ── Windows EXE ──────────────────────────────────────────────────────
+  release-win:
+    name: Build Windows EXE
     runs-on: windows-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -29,24 +28,66 @@ jobs:
           pip install pyinstaller
           pip install -r requirements.txt
 
-      - name: Build EXE with PyInstaller
+      - name: Build EXE
         run: |
           python -c "from release_metadata import RELEASE_SPEC_FILENAME; import subprocess; subprocess.run(['pyinstaller', '--clean', RELEASE_SPEC_FILENAME], check=True)"
 
-      - name: Identify Built Asset
+      - name: Identify Asset
         shell: bash
         run: |
           EXE_NAME=$(python -c "from release_metadata import RELEASE_EXE_NAME; print(RELEASE_EXE_NAME)")
           echo "EXE_PATH=dist/${EXE_NAME}" >> $GITHUB_ENV
-          echo "EXE_NAME=${EXE_NAME}" >> $GITHUB_ENV
-          echo "Building complete for asset: dist/${EXE_NAME}"
 
-      - name: Create GitHub Release
+      - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.EXE_PATH }}
-          draft: false
-          prerelease: false
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── macOS .app → .dmg ──────────────────────────────────────────────
+  release-mac:
+    name: Build macOS dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build .app with PyInstaller
+        run: |
+          SPEC=$(python3 -c "from release_metadata import RELEASE_MAC_SPEC_FILENAME; print(RELEASE_MAC_SPEC_FILENAME)")
+          pyinstaller --clean "${SPEC}"
+
+      - name: Package .dmg
+        run: |
+          APP_NAME=$(python3 -c "from release_metadata import RELEASE_MAC_APP_NAME; print(RELEASE_MAC_APP_NAME)")
+          DMG_NAME=$(python3 -c "from release_metadata import RELEASE_MAC_DMG_NAME; print(RELEASE_MAC_DMG_NAME)")
+
+          mkdir -p dist/dmg_tmp
+          cp -R "dist/${APP_NAME}" dist/dmg_tmp/
+          ln -s /Applications dist/dmg_tmp/Applications
+
+          hdiutil create \
+            -volname "KASP v1.6.1" \
+            -srcfolder dist/dmg_tmp \
+            -ov \
+            -format UDZO \
+            "dist/${DMG_NAME}"
+
+          rm -rf dist/dmg_tmp
+          echo "DMG_PATH=dist/${DMG_NAME}" >> $GITHUB_ENV
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_PATH }}
+          generate_release_notes: false
