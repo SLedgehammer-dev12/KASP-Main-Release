@@ -1,12 +1,13 @@
 #!/bin/bash
 # KASP macOS DMG Packaging Script
-# Creates: dist/KASP v1.6.1.dmg
+# Creates: dist/temp_dmg
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+RELEASE_VERSION=$(python3 -c "from release_metadata import RELEASE_VERSION; print(RELEASE_VERSION)")
 RELEASE_APP=$(python3 -c "from release_metadata import RELEASE_MAC_APP_NAME; print(RELEASE_MAC_APP_NAME)")
 RELEASE_DMG=$(python3 -c "from release_metadata import RELEASE_MAC_DMG_NAME; print(RELEASE_MAC_DMG_NAME)")
 APP_PATH="dist/${RELEASE_APP}"
@@ -14,14 +15,14 @@ DMG_PATH="dist/${RELEASE_DMG}"
 DMG_TEMP="dist/temp_dmg"
 
 echo "============================================"
-echo "  KASP macOS DMG Packaging — v1.6.1"
+echo "  KASP macOS DMG Packaging — v${RELEASE_VERSION}"
 echo "============================================"
 echo ""
 
 # --- Verify .app exists ---
 if [ ! -d "${APP_PATH}" ]; then
     echo "ERROR: ${APP_PATH} not found!"
-    echo "Run ./build_release_v1.6.1.sh first."
+    echo "Run the build script first."
     exit 1
 fi
 
@@ -39,7 +40,7 @@ echo "       Temp:   ${DMG_TEMP}"
 echo ""
 echo "[2/3] Creating DMG (hdiutil)..."
 hdiutil create \
-    -volname "KASP v1.6.1" \
+    -volname "${RELEASE_APP%.app}" \
     -srcfolder "${DMG_TEMP}" \
     -ov \
     -format UDZO \

@@ -77,7 +77,7 @@ jobs:
           ln -s /Applications dist/dmg_tmp/Applications
 
           hdiutil create \
-            -volname "KASP v1.6.1" \
+            -volname "${APP_NAME%.app}" \
             -srcfolder dist/dmg_tmp \
             -ov \
             -format UDZO \

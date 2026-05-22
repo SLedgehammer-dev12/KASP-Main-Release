@@ -37,6 +37,7 @@ def get_performance_lhv_source_items(thermo_loaded):
     items = [
         "KASP Sabitleri (Hızlı/Varsayılan)",
         "Thermo Veritabanı (Gelişmiş)",
+        "ISO 6976 Standardı (Molar / Z Düzeltmeli)",
     ]
     if not thermo_loaded:
         items[1] = "Thermo Veritabanı (Kütüphane Yok)"
@@ -210,7 +211,8 @@ def build_performance_tab(window, *, thermo_loaded):
     window.perf_lhv_source_combo = QComboBox()
     window.perf_lhv_source_combo.addItems(get_performance_lhv_source_items(thermo_loaded))
     if not thermo_loaded:
-        window.perf_lhv_source_combo.setEnabled(False)
+        from PyQt5.QtCore import Qt
+        window.perf_lhv_source_combo.setItemData(1, 0, Qt.UserRole - 1)
     driver_layout.addWidget(QLabel("LHV / HHV Kaynağı:"))
     driver_layout.addWidget(window.perf_lhv_source_combo)
 

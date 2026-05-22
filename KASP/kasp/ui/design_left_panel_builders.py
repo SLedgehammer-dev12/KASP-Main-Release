@@ -331,9 +331,11 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     window.lhv_source_combo.addItems([
         "KASP Sabitleri (Hızlı/Varsayılan)",
         "Thermo Veritabanı (Gelişmiş)",
+        "ISO 6976 Standardı (Molar / Z Düzeltmeli)",
     ])
     if not thermo_loaded:
-        window.lhv_source_combo.setEnabled(False)
+        from PyQt5.QtCore import Qt
+        window.lhv_source_combo.setItemData(1, 0, Qt.UserRole - 1)
         window.lhv_source_combo.setItemText(1, "Thermo Veritabanı (Kütüphane Yok)")
     calc_layout.addRow("LHV/HHV Kaynağı:", window.lhv_source_combo)
 

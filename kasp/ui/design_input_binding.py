@@ -24,7 +24,11 @@ def eos_method_from_ui_text(selected_text):
 
 def lhv_source_from_ui_text(selected_text):
     """Translate a UI combo label into the engine lhv source code."""
-    return "thermo" if "Thermo" in selected_text else "kasp"
+    if "Thermo" in selected_text:
+        return "thermo"
+    if "ISO 6976" in selected_text:
+        return "iso6976"
+    return "kasp"
 
 
 class DesignInputBinder:
@@ -123,8 +127,11 @@ class DesignInputBinder:
         self._apply_eos_method(normalized.get("eos_method", "coolprop"))
         window.method_combo.setCurrentText(normalized.get("method", "Metot 1: Ortalama Özellikler"))
 
-        if normalized.get("lhv_source", "kasp") == "thermo" and self.thermo_loaded:
+        lhv_src = normalized.get("lhv_source", "kasp")
+        if lhv_src == "thermo" and self.thermo_loaded:
             window.lhv_source_combo.setCurrentIndex(1)
+        elif lhv_src == "iso6976":
+            window.lhv_source_combo.setCurrentIndex(2)
         else:
             window.lhv_source_combo.setCurrentIndex(0)
 
