@@ -4,6 +4,8 @@ Centralized configuration management with validation
 """
 
 import json
+import shutil
+import sys
 import os
 from release_metadata import APP_VERSION
 from typing import Any, Dict
@@ -62,7 +64,18 @@ class ConfigManager:
         }
     }
     
-    def __init__(self, config_file: str = "kasp_config.json"):
+    def __init__(self, config_file: str = None):
+        if config_file is None:
+            if getattr(sys, "frozen", False):
+                base = os.path.expanduser("~/Library/Application Support/KASP") if sys.platform == "darwin" \
+                       else os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "KASP")
+                os.makedirs(base, exist_ok=True)
+                config_file = os.path.join(base, "kasp_config.json")
+                bundled = os.path.join(sys._MEIPASS, "kasp_config.json")
+                if not os.path.exists(config_file) and os.path.exists(bundled):
+                    shutil.copy2(bundled, config_file)
+            else:
+                config_file = "kasp_config.json"
         self.config_file = config_file
         self.config = copy.deepcopy(self.DEFAULT_CONFIG)
         self.load_config()

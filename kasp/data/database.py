@@ -1,12 +1,29 @@
 import sqlite3
 import json
+import shutil
+import sys
 import threading
 import logging
 import os
 
+
+def _resolve_db_path(db_name="kasp_database.db"):
+    if not getattr(sys, "frozen", False):
+        return db_name
+    base = os.path.expanduser("~/Library/Application Support/KASP") if sys.platform == "darwin" \
+           else os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "KASP")
+    os.makedirs(base, exist_ok=True)
+    target = os.path.join(base, db_name)
+    if not os.path.exists(target):
+        bundled = os.path.join(sys._MEIPASS, db_name)
+        if os.path.exists(bundled):
+            shutil.copy2(bundled, target)
+    return target
+
+
 class UnitDatabase:
-    def __init__(self, db_name="kasp_database.db"):
-        self.db_name = db_name
+    def __init__(self, db_name=None):
+        self.db_name = db_name or _resolve_db_path()
         self._local = threading.local()
         self.logger = logging.getLogger(self.__class__.__name__)
         self.create_tables()
