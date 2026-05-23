@@ -62,7 +62,8 @@ class ValidationStatusWidget(QWidget):
         # Scroll area for fields
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(200)
+        from kasp.ui.responsive import scaled_px
+        scroll.setMaximumHeight(scaled_px(200))
         scroll.setStyleSheet("QScrollArea { border: none; }")
         
         fields_widget = QWidget()

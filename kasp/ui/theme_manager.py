@@ -83,9 +83,17 @@ class ThemeManager:
         """Apply theme to application"""
         if theme_name not in ThemeManager.THEMES:
             theme_name = "light"
-        
+
         theme = ThemeManager.THEMES[theme_name]
-        
+
+        try:
+            from kasp.ui.responsive import scaled_px, scaled_font_pt
+            _px = lambda v: scaled_px(v)
+            _pt = lambda v: scaled_font_pt(v)
+        except Exception:
+            _px = lambda v: v
+            _pt = lambda v: v
+
         stylesheet = f"""
             /* Main Window & Dialogs */
             QMainWindow, QDialog, QAbstractScrollArea {{
@@ -120,8 +128,8 @@ class ThemeManager:
                 font-weight: bold;
                 border: 1px solid {theme['border']};
                 border-radius: 6px;
-                margin-top: 12px;
-                padding-top: 12px;
+                margin-top: {_px(12)}px;
+                padding-top: {_px(12)}px;
             }}
             
             QGroupBox::title {{
@@ -160,7 +168,7 @@ class ThemeManager:
                 background-color: {theme['surface']};
                 border: 1px solid {theme['border']};
                 border-radius: 4px;
-                padding: 6px;
+                padding: {_px(6)}px;
                 color: {theme['text']};
             }}
             
@@ -251,7 +259,7 @@ class ThemeManager:
             QLabel#ic_label {{
                 font-weight: bold;
                 color: {theme['primary']};
-                font-size: 9pt;
+                font-size: {_pt(9)}pt;
             }}
             QLabel#ic_label:disabled {{
                 color: {theme['text_secondary']};
@@ -266,9 +274,9 @@ class ThemeManager:
                 background-color: {theme['success']};
                 color: white;
                 font-weight: bold;
-                padding: 12px;
+                padding: {_px(12)}px;
                 border-radius: 6px;
-                font-size: 14px;
+                font-size: {_pt(14)}px;
             }}
             QPushButton#calculate_btn:hover {{
                 background-color: {theme['success_text']};
@@ -282,9 +290,9 @@ class ThemeManager:
                 background-color: {theme['danger']};
                 color: white;
                 font-weight: bold;
-                padding: 12px;
+                padding: {_px(12)}px;
                 border-radius: 6px;
-                font-size: 14px;
+                font-size: {_pt(14)}px;
             }}
             QPushButton#stop_btn:hover {{
                 background-color: {theme['danger_text']};
@@ -296,24 +304,24 @@ class ThemeManager:
             
             QLabel#progress_status_label {{
                 color: {theme['text_secondary']};
-                font-size: 9pt;
+                font-size: {_pt(9)}pt;
             }}
             
             QLabel#progress_time_label {{
                 color: {theme['primary']};
-                font-size: 9pt;
+                font-size: {_pt(9)}pt;
             }}
             
             QLabel#version_label {{
                 color: {theme['text_secondary']};
-                padding: 0 8px;
+                padding: 0 {_px(8)}px;
             }}
             
             QPushButton#verify_perf_btn {{
                 background-color: {theme['secondary']};
                 color: white;
                 font-weight: bold;
-                padding: 10px;
+                padding: {_px(10)}px;
             }}
             QPushButton#verify_perf_btn:hover {{
                 background-color: {theme['primary']};
@@ -323,7 +331,7 @@ class ThemeManager:
                 background-color: {theme['primary']};
                 color: white;
                 font-weight: bold;
-                padding: 10px;
+                padding: {_px(10)}px;
             }}
             QPushButton#generate_perf_report_btn:hover {{
                 background-color: {theme['secondary']};
@@ -331,28 +339,28 @@ class ThemeManager:
             
             QLabel[resultLabel="true"] {{
                 font-weight: bold;
-                font-size: 15px;
+                font-size: {_pt(15)}px;
             }}
             
             QLabel#consistency_info_label {{
-                font-size: 10pt;
-                padding: 5px;
+                font-size: {_pt(10)}pt;
+                padding: {_px(5)}px;
             }}
             
             QLabel#fallback_info_label {{
-                font-size: 10pt;
-                padding: 6px;
+                font-size: {_pt(10)}pt;
+                padding: {_px(6)}px;
             }}
             
             QLabel#value_label {{
                 font-weight: bold;
-                min-width: 80px;
+                min-width: {_px(80)}px;
             }}
             
             QLabel#default_graph_label {{
-                font-size: 16px;
+                font-size: {_pt(16)}px;
                 color: {theme['text_secondary']};
-                padding: 50px;
+                padding: {_px(50)}px;
             }}
             
             /* Tables */
@@ -392,7 +400,7 @@ class ThemeManager:
             QTabBar::tab {{
                 background-color: {theme['background']};
                 color: {theme['text_secondary']};
-                padding: 10px 20px;
+                padding: {_px(10)}px {_px(20)}px;
                 border: 1px solid {theme['border']};
                 border-bottom: none;
                 border-top-left-radius: 4px;
@@ -456,14 +464,14 @@ class ThemeManager:
             /* Scroll Bars */
             QScrollBar:vertical {{
                 background-color: {theme['surface']};
-                width: 12px;
+                width: {_px(12)}px;
                 border-radius: 6px;
             }}
             
             QScrollBar::handle:vertical {{
                 background-color: {theme['text_secondary']};
                 border-radius: 6px;
-                min-height: 20px;
+                min-height: {_px(20)}px;
             }}
             
             QScrollBar::handle:vertical:hover {{
@@ -475,7 +483,7 @@ class ThemeManager:
                 background-color: {theme['text']};
                 color: {theme['background']};
                 border: 1px solid {theme['border']};
-                padding: 5px;
+                padding: {_px(5)}px;
                 border-radius: 4px;
             }}
         """

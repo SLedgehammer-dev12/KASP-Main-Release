@@ -30,7 +30,22 @@ def get_detailed_analysis_tab_titles():
 
 
 def get_graph_option_labels():
-    return ["T-s Diyagramı", "P-v Diyagramı", "Güç Dağılımı", "Türbin Performansı", "Yakınsama Grafiği"]
+    try:
+        from kasp.i18n import is_english
+    except ImportError:
+        is_english = lambda: False
+
+    if is_english():
+        return [
+            "T-s Diagram", "P-v Diagram", "H-S (Mollier)",
+            "Power Flow (Sankey)", "k-Z Pressure Path", "Stage Overview",
+            "Turbine Radar", "Convergence Dashboard",
+        ]
+    return [
+        "T-s Diyagramı", "P-v Diyagramı", "H-S (Mollier)",
+        "Güç Dağılımı (Sankey)", "k-Z Basınç Yolu", "Kademe Özeti",
+        "Türbin Radarı", "Yakınsama Dashboard",
+    ]
 
 
 def build_basic_results_tab(window):
@@ -78,7 +93,8 @@ def build_basic_results_tab(window):
             unit_combo = QComboBox()
             unit_combo.addItems(available_units)
             unit_combo.setCurrentText(default_unit)
-            unit_combo.setMaximumWidth(120)
+            from kasp.ui.responsive import scaled_px
+            unit_combo.setMaximumWidth(scaled_px(120))
             unit_combo.currentTextChanged.connect(lambda unit, result_key=key: window._update_single_result_unit(result_key, unit))
             results_layout.addWidget(unit_combo, index, 2)
             window.result_unit_combos[key] = unit_combo
@@ -91,7 +107,7 @@ def build_basic_results_tab(window):
     summary_group = QGroupBox("📊 Performans Özeti")
     summary_layout = QVBoxLayout()
     window.summary_text = QTextEdit()
-    window.summary_text.setMaximumHeight(150)
+    window.summary_text.setMaximumHeight(scaled_px(150))
     window.summary_text.setReadOnly(True)
     summary_layout.addWidget(window.summary_text)
     summary_group.setLayout(summary_layout)
@@ -186,31 +202,62 @@ def build_detailed_results_tab(window):
 
 def build_graphs_tab(window):
     from PyQt5.QtCore import Qt
-    from PyQt5.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+    from PyQt5.QtWidgets import (
+        QButtonGroup, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    )
 
     layout = QVBoxLayout(window.graphs_tab)
+    layout.setContentsMargins(0, 0, 0, 0)
 
-    graph_selection_layout = QHBoxLayout()
-    graph_selection_layout.addWidget(QLabel("Grafik:"))
+    window.graph_button_group = QButtonGroup(window)
+    window.graph_button_group.setExclusive(True)
 
-    window.graph_combo = QComboBox()
-    window.graph_combo.addItems(get_graph_option_labels())
-    graph_selection_layout.addWidget(window.graph_combo)
-
-    window.refresh_graph_btn = QPushButton("🔄 Grafiği Yenile")
-    graph_selection_layout.addWidget(window.refresh_graph_btn)
-
-    window.save_graph_btn = QPushButton("💾 Grafiği Kaydet")
-    graph_selection_layout.addWidget(window.save_graph_btn)
-
-    graph_selection_layout.addStretch()
-    layout.addLayout(graph_selection_layout)
+    button_row = QHBoxLayout()
+    button_row.setSpacing(2)
+    graph_labels = get_graph_option_labels()
+    for i, label in enumerate(graph_labels):
+        btn = QPushButton(label)
+        btn.setCheckable(True)
+        btn.setFlat(True)
+        if i == 0:
+            btn.setChecked(True)
+        btn.setStyleSheet(
+            "QPushButton { padding: 4px 10px; border-radius: 4px; font-size: 10pt; }"
+            "QPushButton:checked { font-weight: bold; border-bottom: 2px solid palette(highlight); }"
+        )
+        btn.clicked.connect(lambda checked, idx=i: window.on_graph_button_clicked(idx))
+        window.graph_button_group.addButton(btn, i)
+        button_row.addWidget(btn)
+    button_row.addStretch()
+    button_row_widget = QWidget()
+    button_row_widget.setLayout(button_row)
+    layout.addWidget(button_row_widget)
 
     window.graph_widget = QWidget()
     window.graph_layout = QVBoxLayout(window.graph_widget)
-    layout.addWidget(window.graph_widget)
+    window.graph_layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(window.graph_widget, stretch=1)
 
     window.default_graph_label = QLabel("🚀 Hesaplama yapıldıktan sonra grafikler burada görüntülenecek")
     window.default_graph_label.setAlignment(Qt.AlignCenter)
     window.default_graph_label.setObjectName("default_graph_label")
     window.graph_layout.addWidget(window.default_graph_label)
+
+    bottom_row = QHBoxLayout()
+    window.graph_desc_label = QLabel("Grafik seçin...")
+    window.graph_desc_label.setWordWrap(True)
+    bottom_row.addWidget(window.graph_desc_label, stretch=1)
+
+    window.refresh_graph_btn = QPushButton("🔄 Yenile")
+    window.save_graph_btn = QPushButton("💾 PNG")
+    window.save_svg_btn = QPushButton("💾 SVG")
+    window.save_pdf_btn = QPushButton("💾 PDF")
+    bottom_row.addWidget(window.refresh_graph_btn)
+    bottom_row.addWidget(window.save_graph_btn)
+    bottom_row.addWidget(window.save_svg_btn)
+    bottom_row.addWidget(window.save_pdf_btn)
+
+    window.graph_combo = None  # geriye dönük uyumluluk — artık kullanılmıyor
+    bottom_widget = QWidget()
+    bottom_widget.setLayout(bottom_row)
+    layout.addWidget(bottom_widget)

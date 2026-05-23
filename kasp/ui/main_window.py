@@ -98,7 +98,8 @@ class KaspMainWindow(QMainWindow):
         super().__init__()
         
         # Window properties
-        self.setMinimumSize(900, 550)
+        from kasp.ui.responsive import scaled_px
+        self.setMinimumSize(scaled_px(900), scaled_px(550))
         self.setWindowTitle(f"KASP v{APP_VERSION} - Termodinamik Analiz")
         self.setWindowFlags(
             Qt.Window | 
@@ -233,6 +234,7 @@ class KaspMainWindow(QMainWindow):
             self.logger.warning(f"Changelog dialog error: {e}")
 
     def closeEvent(self, event):
+        self._save_splitter_state()
         self._cleanup_update_check_thread()
         self._cleanup_update_download_thread()
         root_logger = logging.getLogger()
@@ -246,6 +248,50 @@ class KaspMainWindow(QMainWindow):
             except Exception:
                 pass
         super().closeEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            from kasp.ui.responsive import is_small_screen
+            if is_small_screen():
+                self._compact_left_panel()
+        except Exception:
+            pass
+
+    def _compact_left_panel(self):
+        try:
+            splitter = getattr(self, "design_splitter", None)
+            if splitter and splitter.count() >= 2:
+                sizes = splitter.sizes()
+                total = sum(sizes) or 1
+                if sizes[0] / total > 0.35:
+                    splitter.setSizes([int(total * 0.25), int(total * 0.75)])
+        except Exception:
+            pass
+
+    def _save_splitter_state(self):
+        try:
+            from PyQt5.QtCore import QSettings
+            settings = QSettings("KASP", "WindowState")
+            for attr in ("design_splitter", "performance_splitter"):
+                splitter = getattr(self, attr, None)
+                if splitter:
+                    settings.setValue(f"splitter/{attr}", splitter.saveState())
+        except Exception:
+            pass
+
+    def restore_splitter_state(self):
+        try:
+            from PyQt5.QtCore import QSettings
+            settings = QSettings("KASP", "WindowState")
+            for attr in ("design_splitter", "performance_splitter"):
+                splitter = getattr(self, attr, None)
+                if splitter:
+                    state = settings.value(f"splitter/{attr}")
+                    if state:
+                        splitter.restoreState(state)
+        except Exception:
+            pass
 
     def _show_changelog_if_needed(self):
         if getattr(self, "last_release_catalog", None):
@@ -387,8 +433,15 @@ class KaspMainWindow(QMainWindow):
     def refresh_current_graph(self):
         return self.design_results_presenter.refresh_current_graph()
 
-    def save_current_graph(self):
-        return self.graph_workflow.save_current_graph()
+    def on_graph_button_clicked(self, idx):
+        bg = getattr(self, "graph_button_group", None)
+        if bg:
+            btn = bg.button(idx)
+            if btn:
+                self.design_results_presenter.refresh_current_graph(btn.text())
+
+    def save_current_graph(self, fmt="png"):
+        return self.graph_workflow.save_current_graph(fmt)
 
     def _serialize_selected_units(self, selected_units):
         return self.design_results_presenter.serialize_selected_units(selected_units)

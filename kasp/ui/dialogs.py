@@ -26,7 +26,8 @@ class CompressorEditDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Kompresor Ekle/Duzenle")
-        self.resize(500, 600)
+        from kasp.ui.responsive import dialog_size
+        self.resize(*dialog_size(0.35, 0.45))
         self.setup_ui()
 
     def setup_ui(self):
@@ -87,7 +88,8 @@ class TurbineDetailDialog(QDialog):
     def __init__(self, turbine_data, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Turbin Detaylari - {turbine_data.get('model', 'Bilinmeyen')}")
-        self.resize(600, 500)
+        from kasp.ui.responsive import dialog_size
+        self.resize(*dialog_size(0.40, 0.35))
         self.turbine_data = turbine_data
         self.setup_ui()
 
@@ -145,7 +147,8 @@ class ChangelogDialog(QDialog):
         self.releases = list(releases or [])
         self.current_release_tag = current_release_tag
         self.setWindowTitle("KASP Surum Notlari")
-        self.resize(700, 520)
+        from kasp.ui.responsive import dialog_size
+        self.resize(*dialog_size(0.50, 0.38))
         self.setup_ui()
 
     def setup_ui(self):
@@ -175,7 +178,8 @@ class UpdateDialog(QDialog):
         self.selected_release = None
         self.selected_asset = None
         self.setWindowTitle("KASP Guncelleme Merkezi")
-        self.resize(720, 520)
+        from kasp.ui.responsive import dialog_size
+        self.resize(*dialog_size(0.50, 0.38))
         self.setup_ui()
 
     def setup_ui(self):

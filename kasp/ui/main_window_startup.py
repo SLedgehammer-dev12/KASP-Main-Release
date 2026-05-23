@@ -44,9 +44,10 @@ class MainWindowStartupController:
 
     def configure_window(self):
         from PyQt5.QtCore import Qt
+        from kasp.ui.responsive import compute_initial_window_size, scaled_px
 
         config = get_window_setup_config()
-        self.window.setMinimumSize(*config["minimum_size"])
+        self.window.setMinimumSize(scaled_px(config["minimum_size"][0]), scaled_px(config["minimum_size"][1]))
         self.window.setWindowTitle(config["title"])
         self.window.setWindowFlags(
             Qt.Window
@@ -56,18 +57,21 @@ class MainWindowStartupController:
             | Qt.WindowMaximizeButtonHint
         )
         try:
-            from kasp.ui.responsive import compute_initial_window_size
-
             width, height = compute_initial_window_size(1700, 950)
             self.window.setGeometry(50, 50, width, height)
         except Exception:
-            self.window.setGeometry(*config["default_geometry"])
+            geo = config["default_geometry"]
+            self.window.setGeometry(scaled_px(geo[0]), scaled_px(geo[1]), scaled_px(geo[2]), scaled_px(geo[3]))
 
         self.window.center_on_screen()
 
     def initialize_ui(self):
         for method_name in get_ui_initialization_method_names():
             getattr(self.window, method_name)()
+        try:
+            self.window.restore_splitter_state()
+        except Exception:
+            pass
 
     def show_changelog_if_needed(self):
         try:

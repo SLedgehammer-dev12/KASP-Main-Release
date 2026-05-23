@@ -7,10 +7,20 @@ from dataclasses import asdict, is_dataclass
 
 GRAPH_KEY_BY_LABEL = {
     "T-s Diyagramı": "ts_diagram",
+    "T-s Diagram": "ts_diagram",
     "P-v Diyagramı": "pv_diagram",
-    "Güç Dağılımı": "power_breakdown",
-    "Türbin Performansı": "performance_comparison",
-    "Yakınsama Grafiği": "convergence",
+    "P-v Diagram": "pv_diagram",
+    "H-S (Mollier)": "hs_mollier",
+    "Güç Dağılımı (Sankey)": "power_breakdown",
+    "Power Flow (Sankey)": "power_breakdown",
+    "k-Z Basınç Yolu": "kz_path",
+    "k-Z Pressure Path": "kz_path",
+    "Kademe Özeti": "stage_overview",
+    "Stage Overview": "stage_overview",
+    "Türbin Radarı": "performance_comparison",
+    "Turbine Radar": "performance_comparison",
+    "Yakınsama Dashboard": "convergence",
+    "Convergence Dashboard": "convergence",
 }
 
 
@@ -398,8 +408,17 @@ class DesignResultsPresenter:
             self.window.fallback_table.setItem(0, 4, QTableWidgetItem("-"))
             self.window.fallback_table.setItem(0, 5, QTableWidgetItem("-"))
 
-    def refresh_current_graph(self):
-        current_graph_name = self.window.graph_combo.currentText()
+    def _get_current_graph_label(self):
+        bg = getattr(self.window, "graph_button_group", None)
+        if bg and bg.checkedButton():
+            return bg.checkedButton().text()
+        combo = getattr(self.window, "graph_combo", None)
+        if combo:
+            return combo.currentText()
+        return "T-s Diyagramı"
+
+    def refresh_current_graph(self, graph_label=None):
+        current_graph_name = graph_label or self._get_current_graph_label()
 
         for index in reversed(range(self.window.graph_layout.count())):
             item = self.window.graph_layout.takeAt(index)
@@ -421,6 +440,7 @@ class DesignResultsPresenter:
                 if hasattr(canvas, "draw_idle"):
                     canvas.draw_idle()
                 canvas.show()
+                self._set_graph_description(current_graph_name)
             else:
                 self.window.default_graph_label.setText(
                     f"Grafik verisi mevcut değil veya kütüphane ({current_graph_name}) yüklü değil."
@@ -429,6 +449,60 @@ class DesignResultsPresenter:
                 self.window.default_graph_label.setVisible(True)
         else:
             self.window.graph_layout.addWidget(self.window.default_graph_label)
+
+    def _set_graph_description(self, label):
+        try:
+            from kasp.i18n import is_english
+        except ImportError:
+            is_english = lambda: False
+        en = is_english()
+        desc_map = {
+            "T-s Diyagramı": (
+                "Sıkıştırma prosesini sıcaklık-entropi düzleminde gösterir. İzentropik (dikey) ve gerçek proses karşılaştırması.",
+                "Shows the compression process on the temperature-entropy plane. Compares isentropic (vertical) vs actual process."
+            ),
+            "P-v Diyagramı": (
+                "Basınç-özgül hacim düzleminde politropik ve izentropik sıkıştırma eğrileri. Gölgeli alan = sıkıştırma işi.",
+                "Polytropic and isentropic compression curves on the pressure-specific volume plane. Shaded area = compression work."
+            ),
+            "H-S (Mollier)": (
+                "Endüstri standardı Mollier diyagramı. ΔH_isen ve ΔH_actual oklarıyla entalpi farklarını gösterir.",
+                "Industry-standard Mollier diagram. Shows enthalpy differences with ΔH_isen and ΔH_actual arrows."
+            ),
+            "Güç Dağılımı (Sankey)": (
+                "Yakıt girişinden gaz gücüne enerji akışı. Her kayıp kademesi oransal olarak gösterilir.",
+                "Energy flow from fuel input to gas power. Each loss stage is shown proportionally."
+            ),
+            "k-Z Basınç Yolu": (
+                "Sıkıştırma boyunca k (Cp/Cv) ve Z (sıkıştırılabilirlik) değişimi. API 617 integral metodu referansı.",
+                "Evolution of k (Cp/Cv) and Z (compressibility) along the compression path. API 617 integral method reference."
+            ),
+            "Kademe Özeti": (
+                "Her kademe için P, T, η_poly, Head değerlerini karşılaştırmalı bar chart olarak sunar.",
+                "Comparative bar charts of P, T, η_poly, Head values for each stage."
+            ),
+            "Türbin Radarı": (
+                "5 eksenli radar grafik: Güç uygunluğu, Isıl verim, Surge marjı, Stonewall marjı, Tip skoru.",
+                "5-axis radar chart: Power fitness, Thermal efficiency, Surge margin, Stonewall margin, Type score."
+            ),
+            "Yakınsama Dashboard": (
+                "3 panelli: η yakınsaması, T çıkış sıcaklığı, logaritmik kalıntı (residual).",
+                "3-panel dashboard: η convergence, T outlet temperature, logarithmic residual."
+            ),
+        }
+        # EN label fallback
+        en_labels = {
+            "T-s Diagram": "T-s Diyagramı", "P-v Diagram": "P-v Diyagramı",
+            "Power Flow (Sankey)": "Güç Dağılımı (Sankey)", "k-Z Pressure Path": "k-Z Basınç Yolu",
+            "Stage Overview": "Kademe Özeti", "Turbine Radar": "Türbin Radarı",
+            "Convergence Dashboard": "Yakınsama Dashboard",
+        }
+        tr_key = en_labels.get(label, label)
+        pair = desc_map.get(tr_key)
+        desc = pair[1] if (en and pair) else (pair[0] if pair else "")
+        lbl = getattr(self.window, "graph_desc_label", None)
+        if lbl and desc:
+            lbl.setText(desc)
 
     def apply_selected_turbine_selection(self, selected_rows, selected_units):
         if not selected_rows or not selected_units:

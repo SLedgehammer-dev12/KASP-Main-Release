@@ -12,7 +12,10 @@ class LibraryManagerWindow(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Ekipman Kutuphanesi Yonetimi - KASP v{APP_VERSION}")
         self.setModal(True)
-        self.resize(1200, 800)
+        from kasp.ui.responsive import dialog_size
+        w, h = dialog_size(0.75, 0.60)
+        self.resize(w, h)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
         self.db = parent.db if parent and hasattr(parent, 'db') else UnitDatabase()
         self.logger = logging.getLogger(self.__class__.__name__)
         self.setup_ui()

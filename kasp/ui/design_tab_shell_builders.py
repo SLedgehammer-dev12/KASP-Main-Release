@@ -4,20 +4,21 @@ from __future__ import annotations
 
 
 def get_design_tab_margins():
-    return (4, 4, 4, 4)
+    from kasp.ui.responsive import compact_padding
+    p = compact_padding()
+    return (p, p, p, p)
 
 
 def get_design_tab_spacing():
-    return 6
-
-
-def get_design_left_scroll_width_range():
-    return (360, 520)
+    from kasp.ui.responsive import compact_spacing
+    return compact_spacing()
 
 
 def build_design_tab_shell(window):
     from PyQt5.QtCore import Qt
-    from PyQt5.QtWidgets import QHBoxLayout, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget
+    from PyQt5.QtWidgets import (
+        QScrollArea, QSizePolicy, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    )
 
     result_tab_specs = [
         ("basic_results_tab", "setup_basic_results_tab", "📈 Temel Sonuçlar"),
@@ -26,14 +27,13 @@ def build_design_tab_shell(window):
         ("graphs_tab", "setup_graphs_tab", "📉 Grafikler"),
     ]
 
-    layout = QHBoxLayout(window.design_tab)
-    margins = get_design_tab_margins()
-    layout.setContentsMargins(*margins)
-    layout.setSpacing(get_design_tab_spacing())
+    splitter = QSplitter(Qt.Horizontal, window.design_tab)
+    splitter.setChildrenCollapsible(False)
 
     left_content = QWidget()
     left_content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
     left_layout = QVBoxLayout(left_content)
+    margins = get_design_tab_margins()
     left_layout.setContentsMargins(*margins)
     left_layout.setSpacing(get_design_tab_spacing())
 
@@ -41,14 +41,16 @@ def build_design_tab_shell(window):
     left_scroll.setWidgetResizable(True)
     left_scroll.setWidget(left_content)
     left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-    min_width, max_width = get_design_left_scroll_width_range()
-    left_scroll.setMinimumWidth(min_width)
-    left_scroll.setMaximumWidth(max_width)
-    left_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
     left_scroll.setStyleSheet(
         "QScrollArea { border: none; background: transparent; }"
         "QScrollArea > QWidget > QWidget { background: transparent; }"
+    )
+
+    right_scroll = QScrollArea()
+    right_scroll.setWidgetResizable(True)
+    right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    right_scroll.setStyleSheet(
+        "QScrollArea { border: none; background: transparent; }"
     )
 
     right_panel = QWidget()
@@ -63,8 +65,13 @@ def build_design_tab_shell(window):
         window.results_tabs.addTab(tab, title)
 
     right_layout.addWidget(window.results_tabs)
+    right_scroll.setWidget(right_panel)
 
-    layout.addWidget(left_scroll)
-    layout.addWidget(right_panel, stretch=1)
+    splitter.addWidget(left_scroll)
+    splitter.addWidget(right_scroll)
+    splitter.setStretchFactor(0, 2)
+    splitter.setStretchFactor(1, 5)
+
+    window.design_splitter = splitter
 
     return left_layout

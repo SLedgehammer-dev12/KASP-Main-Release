@@ -59,9 +59,10 @@ def build_main_menu(window):
 def build_main_tabs(window):
     from PyQt5.QtGui import QFont
     from PyQt5.QtWidgets import QTabWidget, QWidget
+    from kasp.ui.responsive import scaled_font_pt
 
     tabs = QTabWidget()
-    tabs.setFont(QFont("Inter", 10))
+    tabs.setFont(QFont("Inter", scaled_font_pt(10)))
 
     tab_attrs = ("design_tab", "performance_tab", "log_tab")
     for attr_name, title in zip(tab_attrs, get_main_tab_titles()):

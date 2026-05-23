@@ -33,26 +33,38 @@ class GraphWorkflowController:
 
         return QFileDialog, QMessageBox
 
-    def save_current_graph(self):
+    def _get_current_graph_label(self):
+        bg = getattr(self.window, "graph_button_group", None)
+        if bg and bg.checkedButton():
+            return bg.checkedButton().text()
+        combo = getattr(self.window, "graph_combo", None)
+        if combo:
+            return combo.currentText()
+        return "T-s Diyagramı"
+
+    def save_current_graph(self, fmt: str = "png"):
         QFileDialog, QMessageBox = self._qt_widgets()
 
         if not self.window.last_design_results_raw:
             QMessageBox.warning(self.window, "Uyarı", "Önce bir hesaplama yapın.")
             return
 
-        current_graph_name = self.window.graph_combo.currentText()
+        current_graph_name = self._get_current_graph_label()
         graph_key = graph_key_from_label(current_graph_name)
 
         if not graph_key or not self.graph_manager.current_graphs.get(graph_key):
             QMessageBox.warning(self.window, "Uyarı", f"'{current_graph_name}' grafiği oluşturulmamış veya boş.")
             return
 
+        ext_map = {"png": "PNG Files (*.png)", "svg": "SVG Files (*.svg)", "pdf": "PDF Files (*.pdf)"}
+        file_filter = ext_map.get(fmt, "PNG Files (*.png)")
+
         try:
             file_path, _ = QFileDialog.getSaveFileName(
                 self.window,
                 f"Grafiği Kaydet - {current_graph_name}",
-                default_graph_filename(self.window.project_name_edit.text(), graph_key),
-                "PNG Files (*.png)",
+                default_graph_filename(self.window.project_name_edit.text(), graph_key) + f".{fmt}",
+                file_filter,
             )
 
             if not file_path:

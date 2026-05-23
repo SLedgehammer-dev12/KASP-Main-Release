@@ -56,12 +56,15 @@ class MainWindowSignalController:
         window.remove_component_btn.clicked.connect(window.remove_component_row)
         window.normalize_btn.clicked.connect(window.normalize_composition)
         window.refresh_graph_btn.clicked.connect(window.refresh_current_graph)
-        window.save_graph_btn.clicked.connect(window.save_current_graph)
+        window.save_graph_btn.clicked.connect(lambda: window.save_current_graph("png"))
+        if hasattr(window, "save_svg_btn"):
+            window.save_svg_btn.clicked.connect(lambda: window.save_current_graph("svg"))
+        if hasattr(window, "save_pdf_btn"):
+            window.save_pdf_btn.clicked.connect(lambda: window.save_current_graph("pdf"))
 
         window.composition_table.itemChanged.connect(window._update_composition_total_label)
         window.composition_table.model().rowsInserted.connect(window._update_composition_total_label)
         window.composition_table.model().rowsRemoved.connect(window._update_composition_total_label)
-        window.graph_combo.currentTextChanged.connect(window.refresh_current_graph)
 
         window.turbine_table.itemSelectionChanged.connect(window.on_turbine_selection_changed)
 

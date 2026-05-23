@@ -69,7 +69,8 @@ def build_log_tab(window):
 
     window.log_text = QTextEdit()
     window.log_text.setReadOnly(True)
-    window.log_text.setFont(QFont("Courier", 9))
+    from kasp.ui.responsive import scaled_font_pt
+    window.log_text.setFont(QFont("Courier", scaled_font_pt(9)))
     layout.addWidget(window.log_text)
 
     window.all_logs = []
@@ -77,6 +78,7 @@ def build_log_tab(window):
 
 
 def build_performance_tab(window, *, thermo_loaded):
+    from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import (
         QComboBox,
         QFormLayout,
@@ -86,11 +88,14 @@ def build_performance_tab(window, *, thermo_loaded):
         QLineEdit,
         QPushButton,
         QRadioButton,
+        QScrollArea,
+        QSplitter,
         QVBoxLayout,
         QWidget,
     )
 
-    layout = QHBoxLayout(window.performance_tab)
+    splitter = QSplitter(Qt.Horizontal, window.performance_tab)
+    splitter.setChildrenCollapsible(False)
 
     input_panel = QWidget()
     input_layout = QVBoxLayout(input_panel)
@@ -222,7 +227,15 @@ def build_performance_tab(window, *, thermo_loaded):
     input_layout.addWidget(window.generate_perf_report_btn)
 
     input_layout.addStretch()
-    layout.addWidget(input_panel, stretch=1)
+    input_scroll = QScrollArea()
+    input_scroll.setWidgetResizable(True)
+    input_scroll.setWidget(input_panel)
+    input_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    splitter.addWidget(input_scroll)
+
+    result_panel_scroll = QScrollArea()
+    result_panel_scroll.setWidgetResizable(True)
+    result_panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     result_panel = QGroupBox("📊 Değerlendirme Sonuçları")
     result_layout = QFormLayout()
@@ -257,4 +270,10 @@ def build_performance_tab(window, *, thermo_loaded):
     result_layout.addRow(window.perf_res_fuel_lbl, window.perf_res_fuel_or_eff)
 
     result_panel.setLayout(result_layout)
-    layout.addWidget(result_panel, stretch=2)
+    result_panel_scroll.setWidget(result_panel)
+    splitter.addWidget(result_panel_scroll)
+
+    splitter.setStretchFactor(0, 1)
+    splitter.setStretchFactor(1, 2)
+
+    window.performance_splitter = splitter

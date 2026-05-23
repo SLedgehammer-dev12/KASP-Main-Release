@@ -73,7 +73,8 @@ def build_project_group(window, left_layout):
     window.project_name_edit.setText("Yeni Kompresör Projesi")
 
     window.project_notes_edit = QTextEdit()
-    window.project_notes_edit.setMaximumHeight(80)
+    from kasp.ui.responsive import scaled_px
+    window.project_notes_edit.setMaximumHeight(scaled_px(80))
     window.project_notes_edit.setPlaceholderText("Proje notları...")
 
     project_layout.addRow("Proje Adı *:", window.project_name_edit)
@@ -219,7 +220,7 @@ def build_gas_group(window, left_layout):
     window.composition_table.setHorizontalHeaderLabels(["Bileşen", "%"])
     window.composition_table.horizontalHeader().setStretchLastSection(True)
     window.composition_table.setRowCount(5)
-    window.composition_table.setMinimumHeight(220)
+    window.composition_table.setMinimumHeight(scaled_px(220))
 
     for row, (display_name, percentage) in enumerate(get_default_gas_rows()):
         combo = QComboBox()
@@ -295,7 +296,7 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     poly_layout = QHBoxLayout()
     window.poly_eff_edit = QLineEdit("90.0")
     window.poly_eff_edit.setValidator(QDoubleValidator(50.0, 95.0, 1))
-    window.poly_eff_edit.setMaximumWidth(60)
+    window.poly_eff_edit.setMaximumWidth(scaled_px(60))
     window.poly_eff_slider = QSlider(Qt.Horizontal)
     window.poly_eff_slider.setRange(500, 950)
     window.poly_eff_slider.setValue(900)
@@ -306,7 +307,7 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     therm_layout = QHBoxLayout()
     window.therm_eff_edit = QLineEdit("35.0")
     window.therm_eff_edit.setValidator(QDoubleValidator(20.0, 50.0, 1))
-    window.therm_eff_edit.setMaximumWidth(60)
+    window.therm_eff_edit.setMaximumWidth(scaled_px(60))
     window.therm_eff_slider = QSlider(Qt.Horizontal)
     window.therm_eff_slider.setRange(200, 500)
     window.therm_eff_slider.setValue(350)
@@ -317,7 +318,7 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     mech_layout = QHBoxLayout()
     window.mech_eff_edit = QLineEdit("98.0")
     window.mech_eff_edit.setValidator(QDoubleValidator(80.0, 99.0, 1))
-    window.mech_eff_edit.setMaximumWidth(60)
+    window.mech_eff_edit.setMaximumWidth(scaled_px(60))
     window.mech_eff_slider = QSlider(Qt.Horizontal)
     window.mech_eff_slider.setRange(800, 990)
     window.mech_eff_slider.setValue(980)
