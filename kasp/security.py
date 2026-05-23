@@ -5,6 +5,8 @@ Handles input validation, sanitization, and security checks
 
 import re
 import os
+import time
+import json
 import hashlib
 import secrets
 from typing import Any, Union
@@ -13,6 +15,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 DEFAULT_PASSWORD = "kasp2024"
+
+LOCKOUT_LEVELS = [
+    (3, 1),
+    (5, 5),
+    (8, 15),
+    (10, 60),
+]
+
+_lockout_file = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "kasp_lockout.json"
+)
+
+
+def _load_lockout_state():
+    try:
+        with open(_lockout_file) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"failures": 0, "last_failure": 0, "lockout_until": 0}
+
+
+def _save_lockout_state(state):
+    try:
+        with open(_lockout_file, "w") as f:
+            json.dump(state, f)
+    except OSError:
+        pass
 
 
 def hash_password(password: str) -> str:
@@ -28,6 +57,47 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return dk.hex() == expected
     except (ValueError, AttributeError):
         return False
+
+
+def record_attempt(success):
+    state = _load_lockout_state()
+    if success:
+        state["failures"] = 0
+        state["lockout_until"] = 0
+    else:
+        state["failures"] = state.get("failures", 0) + 1
+        state["last_failure"] = time.time()
+    _save_lockout_state(state)
+
+
+def check_lockout():
+    state = _load_lockout_state()
+    now = time.time()
+
+    if state.get("lockout_until", 0) and now < state["lockout_until"]:
+        remaining_sec = int(state["lockout_until"] - now)
+        mins = max(1, remaining_sec // 60 + (1 if remaining_sec % 60 else 0))
+        return True, f"{mins} dakika kilitli"
+
+    failures = state.get("failures", 0)
+    for level_failures, lockout_mins in LOCKOUT_LEVELS:
+        if failures >= level_failures and now > state.get("last_failure", 0):
+            state["lockout_until"] = now + lockout_mins * 60
+            _save_lockout_state(state)
+            return True, f"{lockout_mins} dakika kilitlendi"
+
+    return False, ""
+
+
+def get_lockout_remaining():
+    state = _load_lockout_state()
+    failures = state.get("failures", 0)
+    remaining = 999
+    for level_failures, _ in LOCKOUT_LEVELS:
+        if failures < level_failures:
+            remaining = level_failures - failures
+            break
+    return remaining
 
 class InputValidator:
     """Validates and sanitizes user inputs"""
