@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,19 +26,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
-          pip install -r KASP/requirements.txt
+          pip install -r requirements.txt
 
       - name: Build EXE
         run: |
-          cd KASP
           python -c "from release_metadata import RELEASE_SPEC_FILENAME; import subprocess; subprocess.run(['pyinstaller', '--clean', RELEASE_SPEC_FILENAME], check=True)"
 
       - name: Identify Asset
         shell: bash
         run: |
-          cd KASP
           EXE_NAME=$(python -c "from release_metadata import RELEASE_EXE_NAME; print(RELEASE_EXE_NAME)")
-          echo "EXE_PATH=KASP/dist/${EXE_NAME}" >> $GITHUB_ENV
+          echo "EXE_PATH=dist/${EXE_NAME}" >> $GITHUB_ENV
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
@@ -63,39 +60,31 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           pip install pyinstaller
-          pip install -r KASP/requirements.txt
+          pip install -r requirements.txt
 
       - name: Build .app with PyInstaller
         run: |
-          cd KASP
           SPEC=$(python3 -c "from release_metadata import RELEASE_MAC_SPEC_FILENAME; print(RELEASE_MAC_SPEC_FILENAME)")
           pyinstaller --clean "${SPEC}"
 
       - name: Package .dmg
         run: |
-          cd KASP
           APP_NAME=$(python3 -c "from release_metadata import RELEASE_MAC_APP_NAME; print(RELEASE_MAC_APP_NAME)")
           DMG_NAME=$(python3 -c "from release_metadata import RELEASE_MAC_DMG_NAME; print(RELEASE_MAC_DMG_NAME)")
 
-          # Fix .app extension if missing
-          if [ -d "dist/${APP_NAME}" ] && [ ! -d "dist/${APP_NAME}.app" ]; then
-            mv "dist/${APP_NAME}" "dist/${APP_NAME}.app"
-          fi
-          APP_PATH="dist/${APP_NAME}.app"
-
           mkdir -p dist/dmg_tmp
-          cp -R "${APP_PATH}" dist/dmg_tmp/
+          cp -R "dist/${APP_NAME}" dist/dmg_tmp/
           ln -s /Applications dist/dmg_tmp/Applications
 
           hdiutil create \
-            -volname "KASP v1.6.1" \
+            -volname "${APP_NAME%.app}" \
             -srcfolder dist/dmg_tmp \
             -ov \
             -format UDZO \
             "dist/${DMG_NAME}"
 
           rm -rf dist/dmg_tmp
-          echo "DMG_PATH=KASP/dist/${DMG_NAME}" >> $GITHUB_ENV
+          echo "DMG_PATH=dist/${DMG_NAME}" >> $GITHUB_ENV
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2

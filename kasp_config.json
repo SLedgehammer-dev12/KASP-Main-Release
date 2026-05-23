@@ -1,8 +1,8 @@
 {
     "app": {
-        "version": "1.6.0",
+        "version": "1.6.1",
         "language": "tr",
-        "theme": "light",
+        "theme": "engineering",
         "auto_save": true,
         "auto_save_interval": 300
     },
@@ -17,8 +17,8 @@
         "default_units": "SI"
     },
     "ui": {
-        "window_width": 1200,
-        "window_height": 800,
+        "window_width": 1440,
+        "window_height": 763,
         "font_family": "Segoe UI",
         "font_size": 9,
         "show_tooltips": true,
@@ -34,5 +34,17 @@
         "include_charts": true,
         "decimal_separator": ",",
         "thousands_separator": "."
+    },
+    "updates": {
+        "check_on_startup": true,
+        "repo_owner": "SLedgehammer-dev12",
+        "repo_name": "KASP-Main-Release",
+        "last_dismissed_tag": "",
+        "last_seen_release_notes_tag": ""
+    },
+    "auth": {
+        "password_hash": "pbkdf2_sha256$200000$d8b3ac9a882d93f2379069b2719b5996$2e395f0de21c9f15763009267ae756c2d07c1f134ac0e6d23de893c8d0122eb4",
+        "lockout_attempts": 0,
+        "lockout_until": 0.0
     }
 }

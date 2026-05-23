@@ -142,6 +142,24 @@ def main():
         else:
             logger.warning(f"⚠ Application icon not found: {icon_path}")
         
+        # Login authentication
+        from kasp.config_manager import get_config_manager
+        from kasp.security import hash_password, DEFAULT_PASSWORD
+
+        config = get_config_manager()
+        password_hash = config.get("auth.password_hash", "")
+        if not password_hash:
+            password_hash = hash_password(DEFAULT_PASSWORD)
+            config.set("auth.password_hash", password_hash)
+            logger.info("Default password hash created")
+
+        from kasp.ui.login_dialog import LoginDialog
+        login = LoginDialog(password_hash)
+        if login.exec_() != LoginDialog.Accepted:
+            logger.info("Login cancelled by user")
+            sys.exit(0)
+        logger.info("✓ Login successful")
+
         # Create main window
         logger.info("Creating main window...")
         window = KaspMainWindow()

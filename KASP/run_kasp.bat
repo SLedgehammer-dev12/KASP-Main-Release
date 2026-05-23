@@ -1,3 +1,0 @@
-@echo off
-echo KASP baslatiliyor...
-".\venv\Scripts\python.exe" main.py

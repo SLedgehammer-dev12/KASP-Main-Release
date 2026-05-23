@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 
 echo "=========================================="
 echo "      KASP Compressor Analysis & Selection"
-echo "            macOS Launcher v1.5"
+echo "            macOS Launcher v1.6.1"
 echo "=========================================="
 echo ""
 

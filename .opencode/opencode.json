@@ -1,0 +1,56 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "deepseek-v4-pro",
+  "instructions": ["AGENTS.md"],
+  "skills": {
+    "paths": [".opencode/skills"]
+  },
+  "agent": {
+    "kasp-core-agent": {
+      "description": "KASP termodinamik cekirdek uzmani. kasp/core/ altindaki hesaplama motoru, EOS (CoolProp/PR/SRK/AGA8), aerodinamik, turbin secimi, belirsizlik analizi dosyalarini yonetir.",
+      "mode": "subagent",
+      "model": "deepseek-v4-pro"
+    },
+    "kasp-ui-agent": {
+      "description": "KASP PyQt5 arayuz uzmani. kasp/ui/ altindaki widget hiyerarsisi, layout, sinyal-slot, validasyon, tema/dil yonetimi, grafik gosterimi ve diyalog pencerelerini yonetir.",
+      "mode": "subagent",
+      "model": "deepseek-v4-pro"
+    },
+    "kasp-data-agent": {
+      "description": "KASP veri katmani uzmani. kasp/data/database.py, JSON veri dosyalari, kasp/utils/project_manager.py, PDF raporlama, onbellek optimizasyonu ve grafik uretimini yonetir.",
+      "mode": "subagent",
+      "model": "deepseek-v4-pro"
+    },
+    "kasp-qa-agent": {
+      "description": "KASP kalite guvencesi uzmani. Tum test_*.py dosyalarini, conftest.py'yi yonetir. Test kosumu, hata analizi, edge case testleri ve regresyon yakalama yapar.",
+      "mode": "subagent",
+      "model": "deepseek-v4-pro"
+    },
+    "kasp-release-agent": {
+      "description": "KASP surum yonetimi uzmani. release_metadata.py, build_release.py, PyInstaller spec dosyalari, requirements.txt ve CI/CD workflow'larini yonetir.",
+      "mode": "subagent",
+      "model": "deepseek-v4-pro"
+    }
+  },
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "python3 -m pytest *": "allow",
+      "python3 main.py": "ask",
+      "python3 build_release.py": "ask",
+      "pip install *": "ask",
+      "git push *": "ask",
+      "git tag *": "ask",
+      "gh release *": "ask",
+      "*": "allow"
+    },
+    "external_directory": {
+      "/Users/macbook/Documents/Kodlama/KASP/**": "allow",
+      "*": "ask"
+    },
+    "todowrite": "allow",
+    "webfetch": "allow",
+    "question": "allow",
+    "task": "allow"
+  }
+}

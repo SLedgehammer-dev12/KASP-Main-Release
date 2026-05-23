@@ -1,0 +1,4 @@
+# .opencode gitignore - keep agent definitions, ignore runtime artifacts
+*.log
+*.pyc
+__pycache__/
