@@ -5,10 +5,29 @@ Handles input validation, sanitization, and security checks
 
 import re
 import os
+import hashlib
+import secrets
 from typing import Any, Union
 import logging
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_PASSWORD = "kasp2024"
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(12)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 600_000)
+    return f"pbkdf2:sha256:600000:{salt}:{dk.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        _, algo, iters, salt, expected = stored_hash.split(":")
+        dk = hashlib.pbkdf2_hmac(algo, password.encode(), salt.encode(), int(iters))
+        return dk.hex() == expected
+    except (ValueError, AttributeError):
+        return False
 
 class InputValidator:
     """Validates and sanitizes user inputs"""

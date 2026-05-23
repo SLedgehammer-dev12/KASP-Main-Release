@@ -35,6 +35,7 @@ all_datas = [
     ("kasp", "kasp"),
     ("kasp_database.db", "."),
     ("kasp_config.json", "."),
+    ("release_metadata.py", "."),
     ("resources", "resources"),
 ]
 all_datas.extend(thermo_datas)
