@@ -51,6 +51,16 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
+    if not stored_hash:
+        return False
+    if "$" in stored_hash and "_sha256" in stored_hash:
+        try:
+            converted = stored_hash.replace("_sha256", ":sha256").replace("$", ":")
+            _, algo, iters, salt, expected = converted.split(":")
+            dk = hashlib.pbkdf2_hmac(algo, password.encode(), salt.encode(), int(iters))
+            return dk.hex() == expected
+        except (ValueError, AttributeError):
+            return False
     try:
         _, algo, iters, salt, expected = stored_hash.split(":")
         dk = hashlib.pbkdf2_hmac(algo, password.encode(), salt.encode(), int(iters))
