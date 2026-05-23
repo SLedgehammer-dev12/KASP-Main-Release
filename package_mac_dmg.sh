@@ -34,6 +34,29 @@ cp -R "${APP_PATH}" "${DMG_TEMP}/"
 # Create a symlink to /Applications for drag-and-drop install
 ln -s /Applications "${DMG_TEMP}/Applications"
 
+# First-launch README (Gatekeeper workaround instructions)
+cat > "${DMG_TEMP}/README - Ilk Calistirma.txt" << 'EOR'
+Ilk calistirmada macOS Gatekeeper uyarisi alirsaniz:
+
+1. KASP uygulamasina SAG TIKLAYIN
+2. "Ac" secenegine tiklayin
+3. Acilan pencerede "Ac" butonuna basin
+
+Bu islemi yalnizca bir kez yapmaniz yeterlidir.
+Sonraki calistirmalarda normal cift tiklama ile acilir.
+
+---
+
+First-launch Gatekeeper workaround:
+
+1. RIGHT-CLICK on the KASP app
+2. Select "Open"
+3. Click "Open" in the dialog
+
+You only need to do this once.
+Subsequent launches work with normal double-click.
+EOR
+
 echo "       Source: ${APP_PATH}"
 echo "       Temp:   ${DMG_TEMP}"
 

@@ -56,6 +56,16 @@ fi
 if [ -d "${APP_PATH}" ]; then
     APP_SIZE=$(du -sh "${APP_PATH}" | cut -f1)
     echo "       ✓ Built:  ${APP_PATH}  (${APP_SIZE})"
+
+    echo ""
+    echo "[5/5] Ad-hoc codesigning for Gatekeeper bypass..."
+    codesign --force --deep --sign - "${APP_PATH}" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "       ✓ Codesigned (ad-hoc): ${APP_PATH}"
+    else
+        echo "       ⚠ codesign skipped (not available or failed — app still functional)"
+    fi
+
     echo ""
     echo "============================================"
     echo "  Build SUCCESS"
