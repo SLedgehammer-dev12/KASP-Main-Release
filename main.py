@@ -31,11 +31,14 @@ def safe_import():
         print("Using fallback logging configuration", file=sys.stderr)
         
         def setup_logging():
+            _log_dir = os.path.expanduser("~/Library/Logs/KASP") if sys.platform == "darwin" else current_dir
+            os.makedirs(_log_dir, exist_ok=True)
+            _log_path = os.path.join(_log_dir, "kasp_error.log")
             logging.basicConfig(
                 level=logging.INFO,
                 format='%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - Line %(lineno)d - %(message)s',
                 handlers=[
-                    logging.FileHandler('kasp_error.log', encoding='utf-8'),
+                    logging.FileHandler(_log_path, encoding='utf-8'),
                     logging.StreamHandler(sys.stdout)
                 ]
             )

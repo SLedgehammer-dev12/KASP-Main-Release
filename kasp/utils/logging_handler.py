@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from release_metadata import APP_VERSION
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -46,7 +47,13 @@ def setup_logging(log_widget_handler):
             pass
     
     # File handler - detaylı hata kaydı
-    file_handler = logging.FileHandler('kasp_error.log', mode='w', encoding='utf-8')
+    if getattr(sys, 'frozen', False):
+        log_dir = os.path.expanduser("~/Library/Logs/KASP") if sys.platform == "darwin" else os.getcwd()
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "kasp_error.log")
+    else:
+        log_path = "kasp_error.log"
+    file_handler = logging.FileHandler(log_path, mode='w', encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(
         '%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - Line %(lineno)d - %(message)s'
