@@ -201,6 +201,7 @@ def build_process_group(
 def build_gas_group(window, left_layout):
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QComboBox, QGroupBox, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+    from kasp.ui.responsive import scaled_px
 
     gas_group = QGroupBox("⛽ Gaz Kompozisyonu")
     gas_layout = QVBoxLayout()
@@ -280,6 +281,7 @@ def configure_design_validation_context_hooks(window, *, validation_available):
 def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_loaded):
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QDoubleValidator
+    from kasp.ui.responsive import scaled_px
     from PyQt5.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QSlider, QSpinBox
 
     calc_group = QGroupBox("🧮 Hesaplama Parametreleri")
