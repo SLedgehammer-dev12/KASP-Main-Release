@@ -26,7 +26,7 @@ def get_turbine_table_headers():
 
 
 def get_detailed_analysis_tab_titles():
-    return ["🌡️ Termodinamik", "⚡ Güç Dağılımı", "⛽ Yakıt Analizi", "⚠️ Fallback Karşılaştırması"]
+    return ["🌡️ Termodinamik", "⚡ Güç Dağılımı", "⛽ Yakıt Analizi", "📐 Boyutsuz Katsayılar", "📊 Belirsizlik", "⚠️ Fallback Karşılaştırması"]
 
 
 def get_graph_option_labels():
@@ -189,13 +189,29 @@ def build_detailed_results_tab(window):
     fuel_layout.addWidget(window.fuel_table)
     tabs.addTab(fuel_tab, get_detailed_analysis_tab_titles()[2])
 
+    dimless_tab = QWidget()
+    dimless_layout = QVBoxLayout(dimless_tab)
+    window.dimless_table = QTableWidget()
+    window.dimless_table.setColumnCount(2)
+    window.dimless_table.setHorizontalHeaderLabels(["Parametre", "Değer"])
+    dimless_layout.addWidget(window.dimless_table)
+    tabs.addTab(dimless_tab, get_detailed_analysis_tab_titles()[3])
+
+    uncertainty_tab = QWidget()
+    uncertainty_layout = QVBoxLayout(uncertainty_tab)
+    window.uncertainty_table = QTableWidget()
+    window.uncertainty_table.setColumnCount(2)
+    window.uncertainty_table.setHorizontalHeaderLabels(["Parametre", "Değer"])
+    uncertainty_layout.addWidget(window.uncertainty_table)
+    tabs.addTab(uncertainty_tab, get_detailed_analysis_tab_titles()[4])
+
     fallback_tab = QWidget()
     fallback_layout = QVBoxLayout(fallback_tab)
     window.fallback_table = QTableWidget()
     window.fallback_table.setColumnCount(6)
     window.fallback_table.setHorizontalHeaderLabels(["Kademe / Bölüm", "Çözücü Metot", "Hesaplanan Sıcaklık", "İterasyon", "Entropi Artığı (dS)", "Süre (ms)"])
     fallback_layout.addWidget(window.fallback_table)
-    tabs.addTab(fallback_tab, get_detailed_analysis_tab_titles()[3])
+    tabs.addTab(fallback_tab, get_detailed_analysis_tab_titles()[5])
 
     layout.addWidget(tabs)
 

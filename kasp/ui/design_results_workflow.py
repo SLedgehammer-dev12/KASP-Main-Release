@@ -402,11 +402,53 @@ class DesignResultsPresenter:
         else:
             self.window.fallback_table.setRowCount(1)
             self.window.fallback_table.setItem(0, 0, QTableWidgetItem("-"))
-            self.window.fallback_table.setItem(0, 1, QTableWidgetItem("Hesaplamalar esnasında fallback mekanizmasına düşülmedi."))
-            self.window.fallback_table.setItem(0, 2, QTableWidgetItem("-"))
-            self.window.fallback_table.setItem(0, 3, QTableWidgetItem("-"))
-            self.window.fallback_table.setItem(0, 4, QTableWidgetItem("-"))
-            self.window.fallback_table.setItem(0, 5, QTableWidgetItem("-"))
+            self.window.fallback_table.setItem(0, 1, QTableWidgetItem("Fallback mekanizmasına düşülmedi."))
+
+        # Boyutsuz Katsayılar
+        dimless = None
+        try:
+            from kasp.core.aerodynamics import CompressorAerodynamics
+            mass_flow = results.get("mass_flow_per_unit_kgs", 0)
+            inlet_props = results.get("inlet_properties", {})
+            dimless = CompressorAerodynamics.calculate_dimensionless_coeffs(results, inlet_props, mass_flow)
+        except Exception:
+            pass
+
+        if dimless:
+            dim_data = [
+                ("ψ (Basınç katsayısı)", f"{dimless['psi']:.4f}"),
+                ("φ (Debi katsayısı)", f"{dimless['phi']:.4f}"),
+                ("Re (Reynolds sayısı)", dimless["Re"]),
+                ("Ma (Mach sayısı)", f"{dimless['Ma']:.3f}"),
+                ("U_tahmini (m/s)", f"{dimless['U_est_m_s']:.1f}"),
+                ("RPM_tahmini", dimless["RPM_est"]),
+            ]
+        else:
+            dim_data = [("—", "Hesaplanamadı")]
+
+        self.window.dimless_table.setRowCount(len(dim_data))
+        for idx, (label, value) in enumerate(dim_data):
+            self.window.dimless_table.setItem(idx, 0, QTableWidgetItem(label))
+            self.window.dimless_table.setItem(idx, 1, QTableWidgetItem(value))
+
+        # Belirsizlik Analizi
+        uncertainty = results.get("uncertainty") or {}
+        poly_unc = uncertainty.get("polytropic_efficiency", {})
+        if poly_unc and poly_unc.get("value"):
+            unc_data = [
+                ("Politropik Verim", f"{poly_unc.get('value', 0):.4f} ± {poly_unc.get('expanded_uncertainty', 0):.4f} (%95 GA)"),
+                ("Birleşik Belirsizlik (σ)", f"{poly_unc.get('combined_uncertainty', 0):.4f}"),
+            ]
+            breakdown = poly_unc.get("breakdown", {})
+            for param, pct in sorted(breakdown.items(), key=lambda x: -x[1]):
+                unc_data.append((f"  ↳ {param} katkısı", f"{pct:.1f}%"))
+        else:
+            unc_data = [("Belirsizlik", "Hesaplanmadı (enable_uncertainty=False veya modül yok)")]
+
+        self.window.uncertainty_table.setRowCount(len(unc_data))
+        for idx, (label, value) in enumerate(unc_data):
+            self.window.uncertainty_table.setItem(idx, 0, QTableWidgetItem(label))
+            self.window.uncertainty_table.setItem(idx, 1, QTableWidgetItem(value))
 
     def _get_current_graph_label(self):
         bg = getattr(self.window, "graph_button_group", None)

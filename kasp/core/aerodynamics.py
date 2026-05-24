@@ -142,6 +142,35 @@ class CompressorAerodynamics:
         therm_eff = 3600.0 / heat_rate_kj_kwh
         return max(0.0, min(1.0, therm_eff))
 
+    @staticmethod
+    def calculate_dimensionless_coeffs(results, inlet_props, mass_flow_kgs):
+        try:
+            head_j_kg = float(results.get("head_kj_kg", 0)) * 1000.0
+            rho = float(inlet_props.get("rho", 1.2))
+            a_sound = float(inlet_props.get("a", 340.0))
+            mu = float(inlet_props.get("mu", 1.8e-5))
+
+            D_ref = 0.5
+            U_est = max(10.0, (head_j_kg / 0.55) ** 0.5)
+            RPM_est = (U_est * 60.0) / (3.1416 * D_ref)
+
+            psi = head_j_kg / (U_est ** 2) if U_est > 0 else 0
+            Q_m3s = mass_flow_kgs / rho if rho > 0 else 0
+            phi = Q_m3s / (U_est * (D_ref ** 2)) if U_est > 0 else 0
+            Re = (rho * U_est * D_ref) / mu if mu > 0 else 0
+            Ma = U_est / a_sound if a_sound > 0 else 0
+
+            return {
+                "psi": round(psi, 4),
+                "phi": round(phi, 4),
+                "Re": f"{Re:.2e}",
+                "Ma": round(Ma, 3),
+                "U_est_m_s": round(U_est, 1),
+                "RPM_est": round(RPM_est, 0),
+            }
+        except Exception:
+            return None
+
     # ─────────────────────────────────────────────────────────────────────────
     # API 617 APPENDIX C — Sayısal İntegrasyon & İsentropik Fallback
     # ─────────────────────────────────────────────────────────────────────────

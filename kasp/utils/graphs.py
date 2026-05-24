@@ -198,7 +198,7 @@ class GraphGenerator:
             return canvas
             
         except Exception as e:
-            self.logger.error(f"T-s diyagramı oluşturma hatası: {e}")
+            self.logger.exception(f"T-s diyagramı oluşturma hatası: {e}")
             return None
 
     def create_pv_diagram(self, inputs, results, gas_composition, eos_method):
@@ -283,7 +283,7 @@ class GraphGenerator:
             return canvas
             
         except Exception as e:
-            self.logger.error(f"P-v diyagramı oluşturma hatası: {e}")
+            self.logger.exception(f"P-v diyagramı oluşturma hatası: {e}")
             return None
 
     def create_performance_chart(self, selected_units):
