@@ -166,7 +166,7 @@ class CompressorAerodynamics:
                 "Re": f"{Re:.2e}",
                 "Ma": round(Ma, 3),
                 "U_est_m_s": round(U_est, 1),
-                "RPM_est": round(RPM_est, 0),
+                "RPM_est": str(int(round(RPM_est))),
             }
         except Exception:
             return None
