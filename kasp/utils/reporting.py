@@ -1,7 +1,8 @@
 import logging
 import datetime
 import os
-import io  # Task 5: For graph embedding
+import sys
+import io
 from html import escape
 from release_metadata import APP_VERSION
 
@@ -11,9 +12,46 @@ try:
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib import colors
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     REPORTLAB_LOADED = True
 except ImportError:
     REPORTLAB_LOADED = False
+
+
+def _get_font_path(filename):
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, "resources", "fonts", filename)
+    return os.path.join(os.path.dirname(__file__), "..", "..", "resources", "fonts", filename)
+
+
+def _register_dejavu_fonts():
+    if not REPORTLAB_LOADED:
+        return
+    try:
+        regular = _get_font_path("DejaVuSans.ttf")
+        bold = _get_font_path("DejaVuSans-Bold.ttf")
+        if os.path.exists(regular):
+            pdfmetrics.registerFont(TTFont("DejaVuSans", regular))
+        if os.path.exists(bold):
+            pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", bold))
+    except Exception:
+        pass
+
+
+def _is_english():
+    try:
+        from kasp.i18n import is_english
+        return is_english()
+    except Exception:
+        return False
+
+
+def _L(tr_text, en_text):
+    return en_text if _is_english() else tr_text
+
+
+_register_dejavu_fonts()
 
 
 # Task 5: Import GraphGenerator for graph embedding
@@ -58,35 +96,43 @@ class ReportGenerator:
         """Tasarım raporu oluşturur - GELİŞMİŞ VERSİYON"""
         if not REPORTLAB_LOADED:
             raise ImportError("ReportLab kütüphanesi yüklü değil")
-            
+             
         try:
             doc = SimpleDocTemplate(self.file_path, pagesize=A4)
             story = []
             styles = getSampleStyleSheet()
+            for style_name in styles.byName:
+                styles[style_name].fontName = "DejaVuSans"
             
             # Başlık
-            title = Paragraph(f"KASP v{APP_VERSION} - Kompresor Tasarim Raporu<br/>{inputs['project_name']}", styles['Title'])
+            title = Paragraph(
+                _L(f"KASP v{APP_VERSION} - Kompresör Tasarım Raporu",
+                   f"KASP v{APP_VERSION} - Compressor Design Report") +
+                f"<br/>{inputs['project_name']}", styles['Title'])
             story.append(title)
             story.append(Spacer(1, 12))
             
             # Tarih ve versiyon
             date_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-            version_info = Paragraph(f"Rapor Tarihi: {date_str} | KASP v{APP_VERSION} | Gelismis Termodinamik Motor", styles['Normal'])
+            version_info = Paragraph(
+                _L(f"Rapor Tarihi: {date_str} | KASP v{APP_VERSION} | Gelişmiş Termodinamik Motor",
+                   f"Report Date: {date_str} | KASP v{APP_VERSION} | Advanced Thermodynamic Engine"),
+                styles['Normal'])
             story.append(version_info)
             story.append(Spacer(1, 20))
             
             # 1. PROJE BİLGİLERİ
-            story.append(Paragraph("1. PROJE BİLGİLERİ", styles['Heading2']))
+            story.append(Paragraph(_L("1. PROJE BİLGİLERİ", "1. PROJECT INFORMATION"), styles['Heading2']))
             project_data = [
-                ['Parametre', 'Değer', 'Birim'],
-                ['Proje Adı', inputs['project_name'], ''],
-                ['Ünite Sayısı', f"{inputs['num_units']}", ''],
-                ['Gaz Kompozisyonu', self._format_composition(inputs['gas_comp']), ''],
-                ['EOS Metodu', self._get_eos_display_name(inputs['eos_method']), ''],
-                ['Hesaplama Metodu', inputs['method'], ''],
-                ['Ortam Sıcaklığı', f"{inputs['ambient_temp']:.1f}", '°C'],
-                ['Ortam Basıncı', f"{inputs.get('ambient_pressure', 1013):.1f}", 'mbar'],
-                ['Rakım', f"{inputs.get('altitude', 0):.0f}", 'm']
+                [_L("Parametre", "Parameter"), _L("Değer", "Value"), _L("Birim", "Unit")],
+                [_L("Proje Adı", "Project Name"), inputs['project_name'], ''],
+                [_L("Ünite Sayısı", "Number of Units"), f"{inputs['num_units']}", ''],
+                [_L("Gaz Kompozisyonu", "Gas Composition"), self._format_composition(inputs['gas_comp']), ''],
+                [_L("EOS Metodu", "EOS Method"), self._get_eos_display_name(inputs['eos_method']), ''],
+                [_L("Hesaplama Metodu", "Calculation Method"), inputs['method'], ''],
+                [_L("Ortam Sıcaklığı", "Ambient Temperature"), f"{inputs['ambient_temp']:.1f}", '°C'],
+                [_L("Ortam Basıncı", "Ambient Pressure"), f"{inputs.get('ambient_pressure', 1013):.1f}", 'mbar'],
+                [_L("Rakım", "Altitude"), f"{inputs.get('altitude', 0):.0f}", 'm']
             ]
             
             project_table = Table(project_data, colWidths=[200, 200, 80])
@@ -94,7 +140,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                ('FONTNAME', (0, 1), (-1, -1), 'DejaVuSans'),
                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#ecf0f1')),
@@ -104,15 +151,15 @@ class ReportGenerator:
             story.append(Spacer(1, 20))
             
             # 2. PROSES KOŞULLARI
-            story.append(Paragraph("2. PROSES KOŞULLARI", styles['Heading2']))
+            story.append(Paragraph(_L("2. PROSES KOŞULLARI", "2. PROCESS CONDITIONS"), styles['Heading2']))
             process_data = [
-                ['Parametre', 'Giriş', 'Çıkış', 'Birim'],
-                ['Basınç', f"{inputs['p_in']}", f"{inputs['p_out']}", inputs['p_in_unit']],
-                ['Sıcaklık', f"{inputs['t_in']}", f"{results['t_out']:.1f}", inputs['t_in_unit']],
-                ['Sıkıştırma Oranı', '-', f"{results['compression_ratio']:.2f}", ''],
-                ['Politropik Verim', f"{inputs['poly_eff']:.1f}", f"{results['actual_poly_efficiency']*100:.2f}", '%'],
-                ['Isıl Verim', f"{inputs['therm_eff']:.1f}", '-', '%'],
-                ['Mekanik Verim', f"{inputs['mech_eff']:.1f}", '-', '%']
+                [_L("Parametre", "Parameter"), _L("Giriş", "Inlet"), _L("Çıkış", "Outlet"), _L("Birim", "Unit")],
+                [_L("Basınç", "Pressure"), f"{inputs['p_in']}", f"{inputs['p_out']}", inputs['p_in_unit']],
+                [_L("Sıcaklık", "Temperature"), f"{inputs['t_in']}", f"{results['t_out']:.1f}", inputs['t_in_unit']],
+                [_L("Sıkıştırma Oranı", "Compression Ratio"), '-', f"{results['compression_ratio']:.2f}", ''],
+                [_L("Politropik Verim", "Polytropic Efficiency"), f"{inputs['poly_eff']:.1f}", f"{results['actual_poly_efficiency']*100:.2f}", '%'],
+                [_L("Isıl Verim", "Thermal Efficiency"), f"{inputs['therm_eff']:.1f}", '-', '%'],
+                [_L("Mekanik Verim", "Mechanical Efficiency"), f"{inputs['mech_eff']:.1f}", '-', '%']
             ]
             
             process_table = Table(process_data, colWidths=[120, 80, 80, 60])
@@ -120,7 +167,7 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495e')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#bdc3c7')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -172,7 +219,7 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d5f4e6')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -206,7 +253,7 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e67e22')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fdebd0')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -245,7 +292,7 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8e44ad')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#e8daef')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -336,7 +383,7 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#c0392b')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 8),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fadbd8')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -355,7 +402,7 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#16a085')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 8),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d1f2eb')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -384,7 +431,7 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7f8c8d')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f4f6f6')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
         ]))
@@ -453,7 +500,7 @@ class ReportGenerator:
                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2980b9')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                     ('FONTSIZE', (0, 0), (-1, 0), 9),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d6eaf8')),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -479,7 +526,7 @@ class ReportGenerator:
                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                     ('FONTSIZE', (0, 0), (-1, 0), 9),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d5f5e3')),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -578,7 +625,7 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e67e22')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fdebd0')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -620,11 +667,13 @@ class ReportGenerator:
         """Performans raporu oluşturur - GELİŞTİRİLMİŞ"""
         if not REPORTLAB_LOADED:
             raise ImportError("ReportLab kütüphanesi yüklü değil")
-            
+             
         try:
             doc = SimpleDocTemplate(self.file_path, pagesize=A4)
             story = []
             styles = getSampleStyleSheet()
+            for style_name in styles.byName:
+                styles[style_name].fontName = "DejaVuSans"
             
             # Başlık
             title = Paragraph(f"KASP v{APP_VERSION} - Performans Degerlendirme Raporu<br/>{inputs['unit_name']}", styles['Title'])
@@ -659,7 +708,7 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#ecf0f1')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -714,7 +763,7 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 9),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d5f4e6')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -772,7 +821,7 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8e44ad')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#e8daef')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
         ]))
@@ -802,7 +851,7 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e67e22')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fdebd0')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
         ]))

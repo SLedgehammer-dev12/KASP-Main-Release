@@ -105,6 +105,19 @@ def is_english() -> bool:
     return get_language().startswith("en")
 
 
+def set_language(lang: str) -> None:
+    get_config_manager().set("app.language", lang)
+
+
+def refresh_all_windows() -> None:
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication.instance()
+    if not app:
+        return
+    for widget in app.topLevelWidgets():
+        apply_window_language(widget)
+
+
 def tr(text: str) -> str:
     if not text or not is_english():
         return text
@@ -117,36 +130,62 @@ def tr(text: str) -> str:
 
 def _translate_combo(combo: QComboBox) -> None:
     for index in range(combo.count()):
-        combo.setItemText(index, tr(combo.itemText(index)))
+        current = combo.itemText(index)
+        original = combo.itemData(index)
+        if original is None:
+            combo.setItemData(index, current)
+            original = current
+        combo.setItemText(index, tr(str(original)))
 
 
 def _translate_widget(widget: QWidget) -> None:
     if isinstance(widget, QTabWidget):
         for index in range(widget.count()):
-            widget.setTabText(index, tr(widget.tabText(index)))
+            current = widget.tabText(index)
+            original = widget.property("tr_tab_" + str(index))
+            if original is None:
+                widget.setProperty("tr_tab_" + str(index), current)
+                original = current
+            widget.setTabText(index, tr(str(original)))
 
     if isinstance(widget, (QLabel, QAbstractButton, QGroupBox)):
-        widget.setText(tr(widget.text()))
+        current = widget.text()
+        original = widget.property("tr_text")
+        if original is None:
+            widget.setProperty("tr_text", current)
+            original = current
+        widget.setText(tr(str(original)))
 
     if isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
-        placeholder = widget.placeholderText()
-        if placeholder:
-            widget.setPlaceholderText(tr(placeholder))
+        current = widget.placeholderText()
+        if current:
+            original = widget.property("tr_placeholder")
+            if original is None:
+                widget.setProperty("tr_placeholder", current)
+                original = current
+            widget.setPlaceholderText(tr(str(original)))
 
     if widget.windowTitle():
-        widget.setWindowTitle(tr(widget.windowTitle()))
+        current = widget.windowTitle()
+        original = widget.property("tr_title")
+        if original is None:
+            widget.setProperty("tr_title", current)
+            original = current
+        widget.setWindowTitle(tr(str(original)))
 
     if widget.toolTip():
-        widget.setToolTip(tr(widget.toolTip()))
+        current = widget.toolTip()
+        original = widget.property("tr_tooltip")
+        if original is None:
+            widget.setProperty("tr_tooltip", current)
+            original = current
+        widget.setToolTip(tr(str(original)))
 
     if isinstance(widget, QComboBox):
         _translate_combo(widget)
 
 
 def apply_window_language(widget: QWidget) -> None:
-    if not is_english():
-        return
-
     _translate_widget(widget)
     for child in widget.findChildren(QWidget):
         _translate_widget(child)

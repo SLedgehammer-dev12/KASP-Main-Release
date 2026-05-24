@@ -27,7 +27,10 @@ def build_design_tab_shell(window):
         ("graphs_tab", "setup_graphs_tab", "📉 Grafikler"),
     ]
 
-    splitter = QSplitter(Qt.Horizontal, window.design_tab)
+    shell_layout = QVBoxLayout(window.design_tab)
+    shell_layout.setContentsMargins(0, 0, 0, 0)
+
+    splitter = QSplitter(Qt.Horizontal)
     splitter.setChildrenCollapsible(False)
 
     left_content = QWidget()
@@ -72,6 +75,7 @@ def build_design_tab_shell(window):
     splitter.setStretchFactor(0, 2)
     splitter.setStretchFactor(1, 5)
 
+    shell_layout.addWidget(splitter)
     window.design_splitter = splitter
 
     return left_layout

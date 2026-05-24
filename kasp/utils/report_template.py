@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import datetime
+import os
 from html import escape
 from typing import Any, Mapping
 
@@ -29,6 +30,30 @@ try:
     REPORTLAB_LOADED = True
 except ImportError:
     REPORTLAB_LOADED = False
+
+
+def _register_template_fonts():
+    if not REPORTLAB_LOADED:
+        return
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        import sys
+        if getattr(sys, "frozen", False):
+            fdir = os.path.join(sys._MEIPASS, "resources", "fonts")
+        else:
+            fdir = os.path.join(os.path.dirname(__file__), "..", "..", "resources", "fonts")
+        regular = os.path.join(fdir, "DejaVuSans.ttf")
+        bold = os.path.join(fdir, "DejaVuSans-Bold.ttf")
+        if os.path.exists(regular):
+            pdfmetrics.registerFont(TTFont("DejaVuSans", regular))
+        if os.path.exists(bold):
+            pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", bold))
+    except Exception:
+        pass
+
+
+_register_template_fonts()
 
 logger = logging.getLogger(__name__)
 
@@ -1022,6 +1047,8 @@ class ReportTemplate:
         ctx.setdefault("report_date", datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
 
         styles = getSampleStyleSheet()
+        for style_name in styles.byName:
+            styles[style_name].fontName = "DejaVuSans"
         title_style = styles["Title"]
         h2_style = styles["Heading2"]
         h3_style = styles["Heading3"]

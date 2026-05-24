@@ -94,7 +94,7 @@ def build_performance_tab(window, *, thermo_loaded):
         QWidget,
     )
 
-    splitter = QSplitter(Qt.Horizontal, window.performance_tab)
+    splitter = QSplitter(Qt.Horizontal)
     splitter.setChildrenCollapsible(False)
 
     input_panel = QWidget()
@@ -276,4 +276,7 @@ def build_performance_tab(window, *, thermo_loaded):
     splitter.setStretchFactor(0, 1)
     splitter.setStretchFactor(1, 2)
 
+    shell_layout = QVBoxLayout(window.performance_tab)
+    shell_layout.setContentsMargins(0, 0, 0, 0)
+    shell_layout.addWidget(splitter)
     window.performance_splitter = splitter

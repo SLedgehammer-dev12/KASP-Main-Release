@@ -304,12 +304,60 @@ class KaspMainWindow(QMainWindow):
         self._setup_design_tab()
         self._setup_performance_tab()
         self._setup_log_tab()
-        self._setup_status_bar()   # V4.6: always-visible validation indicator
+        self._setup_status_bar()
         self._connect_signals()
         self._populate_unit_combos()
         self._setup_unit_tooltips()
         self._update_method_options()
         self._update_button_state()
+        self._apply_saved_theme()
+        self._apply_saved_language()
+
+    def _apply_saved_theme(self):
+        try:
+            from kasp.config_manager import get_config_manager
+            from kasp.ui.theme_manager import ThemeManager
+            theme = get_config_manager().get("app.theme", "light")
+            ThemeManager.apply_theme(theme)
+            self._update_theme_checkmarks(theme)
+        except Exception:
+            pass
+
+    def _apply_saved_language(self):
+        try:
+            from kasp.config_manager import get_config_manager
+            lang = get_config_manager().get("app.language", "tr")
+            self._update_language_checkmarks(lang)
+        except Exception:
+            pass
+
+    def switch_theme(self, theme_name):
+        from kasp.config_manager import get_config_manager
+        from kasp.ui.theme_manager import ThemeManager
+        get_config_manager().set("app.theme", theme_name)
+        ThemeManager.apply_theme(theme_name)
+        self._update_theme_checkmarks(theme_name)
+
+    def switch_language(self, lang):
+        from kasp.config_manager import get_config_manager
+        from kasp.i18n import set_language, refresh_all_windows
+        set_language(lang)
+        self.setWindowTitle(f"KASP v{APP_VERSION} - " + ("Termodinamik Analiz" if lang == "tr" else "Thermodynamic Analysis"))
+        refresh_all_windows()
+        self._update_language_checkmarks(lang)
+
+    def _update_theme_checkmarks(self, theme_name):
+        actions = getattr(self, "_theme_actions", {})
+        for key, action in actions.items():
+            action.setChecked(key == theme_name)
+
+    def _update_language_checkmarks(self, lang):
+        actions = getattr(self, "_language_actions", {})
+        for key, action in actions.items():
+            action.setChecked(key == lang)
+
+    def _update_menu_checkmarks(self, lang):
+        self._update_language_checkmarks(lang)
 
     # ------------------------------------------------------------------ #
     # V4.6: Status Bar with Validation Indicator                          #
