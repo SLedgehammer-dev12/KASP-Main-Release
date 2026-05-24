@@ -148,7 +148,14 @@ def _translate_widget(widget: QWidget) -> None:
                 original = current
             widget.setTabText(index, tr(str(original)))
 
-    if isinstance(widget, (QLabel, QAbstractButton, QGroupBox)):
+    if isinstance(widget, QGroupBox):
+        current = widget.title()
+        original = widget.property("tr_text")
+        if original is None:
+            widget.setProperty("tr_text", current)
+            original = current
+        widget.setTitle(tr(str(original)))
+    elif isinstance(widget, (QLabel, QAbstractButton)):
         current = widget.text()
         original = widget.property("tr_text")
         if original is None:
