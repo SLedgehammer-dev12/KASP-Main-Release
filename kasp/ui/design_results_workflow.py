@@ -255,6 +255,7 @@ class DesignResultsPresenter:
 
         self.populate_detailed_tables(results)
         self.graph_manager.generate_all_graphs(self.window.last_design_inputs, results, selected_units)
+        self.window._graph_error = getattr(self.graph_manager, "_graph_error", None)
         self.refresh_current_graph()
         self.populate_turbine_table(selected_units)
 
@@ -484,12 +485,19 @@ class DesignResultsPresenter:
                 canvas.show()
                 self._set_graph_description(current_graph_name)
             else:
-                self.window.default_graph_label.setText(
-                    f"Grafik verisi mevcut değil veya kütüphane ({current_graph_name}) yüklü değil."
-                )
+                err = getattr(self.window, "_graph_error", None)
+                msg = f"'{current_graph_name}' grafiği oluşturulamadı."
+                if err:
+                    msg += f"\nSebep: {err}"
+                self.window.default_graph_label.setText(msg)
                 self.window.graph_layout.addWidget(self.window.default_graph_label)
                 self.window.default_graph_label.setVisible(True)
         else:
+            err = getattr(self.window, "_graph_error", None)
+            msg = "Henüz hesaplama yapılmadı."
+            if err:
+                msg += f"\nSebep: {err}"
+            self.window.default_graph_label.setText(msg)
             self.window.graph_layout.addWidget(self.window.default_graph_label)
 
     def _set_graph_description(self, label):

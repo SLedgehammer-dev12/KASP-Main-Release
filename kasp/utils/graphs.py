@@ -199,6 +199,7 @@ class GraphGenerator:
             
         except Exception as e:
             self.logger.exception(f"T-s diyagramı oluşturma hatası: {e}")
+            import sys; print(f"GRAPH ERROR (ts): {e}", file=sys.stderr)
             return None
 
     def create_pv_diagram(self, inputs, results, gas_composition, eos_method):
@@ -284,6 +285,7 @@ class GraphGenerator:
             
         except Exception as e:
             self.logger.exception(f"P-v diyagramı oluşturma hatası: {e}")
+            import sys; print(f"GRAPH ERROR (pv): {e}", file=sys.stderr)
             return None
 
     def create_performance_chart(self, selected_units):
@@ -793,13 +795,18 @@ class GraphManager:
         comp = composition or inputs.get("gas_comp", {})
         eos = eos_method or inputs.get("eos_method", "coolprop")
 
+        self._graph_error = None
+
         try:
             if not MATPLOTLIB_LOADED:
                 self.current_graphs = {}
-                self.logger.error(
-                    "Grafik modulu yuklenemedi; Matplotlib Qt backend eksik: %s",
-                    MATPLOTLIB_IMPORT_ERROR,
-                )
+                self._graph_error = f"Matplotlib yuklu degil: {MATPLOTLIB_IMPORT_ERROR}"
+                self.logger.error("Grafik modulu yuklenemedi: %s", MATPLOTLIB_IMPORT_ERROR)
+                return graphs
+
+            if not comp or not isinstance(comp, dict) or len(comp) == 0:
+                self._graph_error = "Gaz kompozisyonu tanimlanmamis veya bos."
+                self.logger.warning(self._graph_error)
                 return graphs
 
             gen = self.generator
@@ -838,13 +845,20 @@ class GraphManager:
             missing_graphs = [name for name, graph in graphs.items() if graph is None]
             if missing_graphs:
                 self.logger.warning("Olusturulamayan grafikler: %s", ", ".join(missing_graphs))
+                if not self._graph_error:
+                    self._graph_error = f"Su grafikler olusturulamadi: {', '.join(missing_graphs)}"
             if self.current_graphs:
                 self.logger.info("%s grafik basariyla olusturuldu", len(self.current_graphs))
             else:
                 self.logger.error("Hic grafik olusturulamadi; ayrinti icin onceki grafik hata loglarini kontrol edin.")
+                if not self._graph_error:
+                    self._graph_error = "Tum grafikler olusturulamadi. Log dosyasini kontrol edin."
             
         except Exception as e:
-            self.logger.error(f"Grafik oluşturma hatası: {e}")
+            self.logger.exception(f"Grafik oluşturma hatası: {e}")
+            self._graph_error = str(e)
+            import sys
+            print(f"GRAPH ERROR: {e}", file=sys.stderr)
         
         return graphs
     
