@@ -59,7 +59,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["pytest", "unittest", "doctest", "torch"],
+    excludes=["pytest", "doctest", "torch"],
     noarchive=False,
     optimize=0,
 )

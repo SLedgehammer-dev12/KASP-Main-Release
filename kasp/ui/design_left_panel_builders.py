@@ -224,7 +224,7 @@ def build_gas_group(window, left_layout):
     from kasp.ui.responsive import scaled_font_pt
     from PyQt5.QtGui import QFont
     table_font = QFont()
-    table_font.setPointSize(scaled_font_pt(10))
+    table_font.setPointSize(scaled_font_pt(12))
     window.composition_table.setFont(table_font)
     window.composition_table.setMinimumHeight(scaled_px(220))
 
