@@ -72,8 +72,9 @@ def build_design_tab_shell(window):
 
     splitter.addWidget(left_scroll)
     splitter.addWidget(right_scroll)
-    splitter.setStretchFactor(0, 2)
-    splitter.setStretchFactor(1, 5)
+    splitter.setSizes([500, 500])
+    splitter.setStretchFactor(0, 1)
+    splitter.setStretchFactor(1, 1)
 
     shell_layout.addWidget(splitter)
     window.design_splitter = splitter

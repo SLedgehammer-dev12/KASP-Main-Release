@@ -337,6 +337,10 @@ class KaspMainWindow(QMainWindow):
         get_config_manager().set("app.theme", theme_name)
         ThemeManager.apply_theme(theme_name)
         self._update_theme_checkmarks(theme_name)
+        try:
+            self.refresh_current_graph()
+        except Exception:
+            pass
 
     def switch_language(self, lang):
         from kasp.config_manager import get_config_manager

@@ -28,7 +28,13 @@ class MplCanvas(FigureCanvas):
             except Exception:
                 dpi = 100
         if MATPLOTLIB_LOADED:
-            self.fig = Figure(figsize=(width, height), dpi=dpi)
+            try:
+                from kasp.config_manager import get_config_manager
+                theme_name = get_config_manager().get("app.theme", "light")
+            except Exception:
+                theme_name = "light"
+            theme_bg = "#0F172A" if theme_name == "dark" else "#0E1726" if theme_name == "engineering" else "#F8F9FA"
+            self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor=theme_bg)
             FigureCanvas.__init__(self, self.fig)
             self.setParent(parent)
             self._default_size = (width, height)
@@ -57,6 +63,68 @@ class GraphGenerator:
     
     def __init__(self, engine):
         self.engine = engine
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def _apply_axis_theme(self, ax, ax2=None):
+        if not MATPLOTLIB_LOADED:
+            return
+        try:
+            from kasp.config_manager import get_config_manager
+            theme_name = get_config_manager().get("app.theme", "light")
+        except Exception:
+            theme_name = "light"
+
+        if theme_name == "dark":
+            text_color = "#F8FAFC"
+            grid_color = "#334155"
+            face_color = "#1E293B"
+        elif theme_name == "engineering":
+            text_color = "#E2E8F0"
+            grid_color = "#2E3A4E"
+            face_color = "#1A2332"
+        else:
+            text_color = "#1C1917"
+            grid_color = "#E5E7EB"
+            face_color = "#FFFFFF"
+
+        ax.set_facecolor(face_color)
+        ax.tick_params(colors=text_color)
+        ax.xaxis.label.set_color(text_color)
+        ax.yaxis.label.set_color(text_color)
+        if hasattr(ax, 'title'):
+            ax.title.set_color(text_color)
+        
+        # Grid lines color override
+        for line in ax.get_xgridlines() + ax.get_ygridlines():
+            line.set_color(grid_color)
+            line.set_alpha(0.4)
+
+        # Spines (borders) color
+        for spine in ax.spines.values():
+            spine.set_color(grid_color)
+
+        # Legend styling if exists
+        legend = ax.get_legend()
+        if legend:
+            frame = legend.get_frame()
+            frame.set_facecolor(face_color)
+            frame.set_edgecolor(grid_color)
+            for text in legend.get_texts():
+                text.set_color(text_color)
+
+        if ax2:
+            ax2.tick_params(colors=text_color)
+            ax2.yaxis.label.set_color(text_color)
+            for spine in ax2.spines.values():
+                spine.set_color(grid_color)
+            
+            legend2 = ax2.get_legend()
+            if legend2:
+                frame2 = legend2.get_frame()
+                frame2.set_facecolor(face_color)
+                frame2.set_edgecolor(grid_color)
+                for text in legend2.get_texts():
+                    text.set_color(text_color)
         self.logger = logging.getLogger(self.__class__.__name__)
     
     def create_cache_performance_chart(self, cache_stats):
@@ -840,6 +908,19 @@ class GraphManager:
             # 9. Önbellek Performansı (yedek)
             cache_stats = gen.engine.thermo_solver.get_cache_stats()
             graphs["cache_performance"] = gen.create_cache_performance_chart(cache_stats)
+
+            # Apply theme dynamically to all graphs
+            for name, canvas in graphs.items():
+                if canvas and hasattr(canvas, 'fig'):
+                    for ax in canvas.fig.axes:
+                        try:
+                            gen._apply_axis_theme(ax)
+                        except Exception:
+                            pass
+                    try:
+                        canvas.fig.tight_layout()
+                    except Exception:
+                        pass
 
             self.current_graphs = {name: graph for name, graph in graphs.items() if graph is not None}
             missing_graphs = [name for name, graph in graphs.items() if graph is None]

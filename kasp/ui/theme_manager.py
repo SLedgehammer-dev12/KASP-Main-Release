@@ -14,67 +14,67 @@ class ThemeManager:
     # Modern color schemes with theme-aware warning variables and contrast safeguards
     THEMES = {
         "light": {
-            "primary": "#2196F3",
-            "secondary": "#FFC107",
-            "success": "#4CAF50",
-            "warning": "#FF9800",
-            "danger": "#F44336",
-            "background": "#FFFFFF",
-            "surface": "#F5F5F5",
-            "text": "#212121",
-            "text_secondary": "#757575",
-            "border": "#E0E0E0",
-            "success_bg": "#e8f5e9",
-            "success_text": "#2e7d32",
-            "success_border": "#a5d6a7",
-            "danger_bg": "#ffe6e6",
-            "danger_text": "#c62828",
-            "danger_border": "#ef9a9a",
-            "warning_bg": "#fff3e0",
-            "warning_text": "#b25300",
-            "warning_border": "#ffe0b2"
+            "primary": "#0F62FE",
+            "secondary": "#6F42C1",
+            "success": "#198754",
+            "warning": "#FD7E14",
+            "danger": "#DC3545",
+            "background": "#F8F9FA",
+            "surface": "#FFFFFF",
+            "text": "#1C1917",
+            "text_secondary": "#6B7280",
+            "border": "#E5E7EB",
+            "success_bg": "#DCFCE7",
+            "success_text": "#15803D",
+            "success_border": "#BBF7D0",
+            "danger_bg": "#FEE2E2",
+            "danger_text": "#B91C1C",
+            "danger_border": "#FECACA",
+            "warning_bg": "#FEF3C7",
+            "warning_text": "#B45309",
+            "warning_border": "#FDE68A"
         },
         "dark": {
-            "primary": "#2196F3",
-            "secondary": "#FFC107",
-            "success": "#66BB6A",
-            "warning": "#FFA726",
-            "danger": "#EF5350",
-            "background": "#1E1E1E",
-            "surface": "#2D2D2D",
-            "text": "#FFFFFF",
-            "text_secondary": "#B0B0B0",
-            "border": "#3D3D3D",
-            "success_bg": "#1b5e20",
-            "success_text": "#a5d6a7",
-            "success_border": "#2e7d32",
-            "danger_bg": "#2d1010",
-            "danger_text": "#ff8a80",
-            "danger_border": "#881b1b",
-            "warning_bg": "#2d1f10",
-            "warning_text": "#fbbf24",
-            "warning_border": "#78350f"
+            "primary": "#3B82F6",
+            "secondary": "#A855F7",
+            "success": "#10B981",
+            "warning": "#F59E0B",
+            "danger": "#EF4444",
+            "background": "#0F172A",
+            "surface": "#1E293B",
+            "text": "#F8FAFC",
+            "text_secondary": "#94A3B8",
+            "border": "#334155",
+            "success_bg": "#064E3B",
+            "success_text": "#34D399",
+            "success_border": "#059669",
+            "danger_bg": "#7F1D1D",
+            "danger_text": "#FCA5A5",
+            "danger_border": "#B91C1C",
+            "warning_bg": "#78350F",
+            "warning_text": "#FBBF24",
+            "warning_border": "#D97706"
         },
         "engineering": {
-            "primary": "#00796B",
+            "primary": "#00B4D8",
             "secondary": "#FF6F00",
-            "success": "#388E3C",
-            "warning": "#F57C00",
-            "danger": "#D32F2F",
-            "background": "#FAFAFA",
-            "surface": "#FFFFFF",
-            "text": "#263238",
-            "text_secondary": "#607D8B",
-            "border": "#CFD8DC",
-            "success_bg": "#e8f5e9",
-            "success_text": "#2e7d32",
-            "success_border": "#a5d6a7",
-            "danger_bg": "#ffe6e6",
-            "danger_text": "#c62828",
-            "danger_border": "#ef9a9a",
-            "warning_bg": "#fff3e0",
-            "warning_text": "#b25300",
-            "warning_border": "#ffe0b2"
+            "success": "#2ECC71",
+            "warning": "#F39C12",
+            "danger": "#E74C3C",
+            "background": "#0E1726",
+            "surface": "#1A2332",
+            "text": "#E2E8F0",
+            "text_secondary": "#94A3B8",
+            "border": "#2E3A4E",
+            "success_bg": "#1B3B2B",
+            "success_text": "#2ECC71",
+            "success_border": "#27AE60",
+            "danger_bg": "#3B1C1C",
+            "danger_text": "#E74C3C",
+            "danger_border": "#C0392B",
+            "warning_bg": "#3B2C1C",
+            "warning_text": "#F39C12",
+            "warning_border": "#D35400"
         }
     }
     
@@ -107,6 +107,10 @@ class ThemeManager:
                 color: {theme['text']};
             }}
             
+            QLabel:disabled {{
+                color: {theme['text_secondary']};
+            }}
+            
             /* Specific Warning Banner styling */
             QLabel#fallback_info_label {{
                 background-color: {theme['warning_bg']};
@@ -121,21 +125,29 @@ class ThemeManager:
                 color: {theme['text']};
             }}
             
+            QCheckBox:disabled, QRadioButton:disabled {{
+                color: {theme['text_secondary']};
+            }}
+            
             /* Group Boxes with theme border and primary-colored titles */
             QGroupBox {{
                 background-color: transparent;
                 color: {theme['text']};
                 font-weight: bold;
                 border: 1px solid {theme['border']};
-                border-radius: 6px;
-                margin-top: {_px(12)}px;
-                padding-top: {_px(12)}px;
+                border-radius: 8px;
+                margin-top: {_px(14)}px;
+                padding-top: {_px(14)}px;
+            }}
+            
+            QGroupBox:disabled {{
+                color: {theme['text_secondary']};
             }}
             
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                padding: 0 5px;
+                padding: 0 6px;
                 left: 10px;
                 color: {theme['primary']};
             }}
@@ -144,14 +156,15 @@ class ThemeManager:
             QPushButton {{
                 background-color: {theme['primary']};
                 color: white;
-                border: none;
+                border: 1px solid rgba(0, 0, 0, 0.1);
                 padding: 8px 16px;
-                border-radius: 4px;
+                border-radius: 6px;
                 font-weight: bold;
             }}
             
             QPushButton:hover {{
                 background-color: {theme['secondary']};
+                border: 1px solid rgba(255, 255, 255, 0.15);
             }}
             
             QPushButton:pressed {{
@@ -167,7 +180,7 @@ class ThemeManager:
             QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
                 background-color: {theme['surface']};
                 border: 1px solid {theme['border']};
-                border-radius: 4px;
+                border-radius: 6px;
                 padding: {_px(6)}px;
                 color: {theme['text']};
             }}
@@ -175,6 +188,40 @@ class ThemeManager:
             QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, 
             QDoubleSpinBox:focus, QComboBox:focus {{
                 border: 2px solid {theme['primary']};
+                background-color: {theme['background']};
+            }}
+            
+            QLineEdit:disabled, QTextEdit:disabled, QSpinBox:disabled, 
+            QDoubleSpinBox:disabled, QComboBox:disabled {{
+                background-color: {theme['surface']};
+                color: {theme['text_secondary']};
+                border: 1px solid {theme['border']};
+            }}
+            
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: {_px(24)}px;
+                border-left-width: 1px;
+                border-left-color: {theme['border']};
+                border-left-style: solid;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+            }}
+            
+            QComboBox::down-arrow {{
+                image: none;
+                border: none;
+            }}
+            
+            QComboBox QAbstractItemView {{
+                background-color: {theme['surface']};
+                border: 1px solid {theme['border']};
+                border-radius: 6px;
+                selection-background-color: {theme['primary']};
+                selection-color: white;
+                color: {theme['text']};
+                padding: {_px(4)}px;
             }}
             
             /* Validation States via Dynamic Properties */
@@ -369,7 +416,7 @@ class ThemeManager:
                 alternate-background-color: {theme['background']};
                 gridline-color: {theme['border']};
                 border: 1px solid {theme['border']};
-                border-radius: 4px;
+                border-radius: 8px;
             }}
             
             QTableWidget::item {{
@@ -386,14 +433,14 @@ class ThemeManager:
                 color: {theme['text']};
                 padding: 8px;
                 border: none;
-                border-bottom: 2px solid {theme['primary']};
+                border-bottom: 3px solid {theme['primary']};
                 font-weight: bold;
             }}
             
             /* Tabs */
             QTabWidget::pane {{
                 border: 1px solid {theme['border']};
-                border-radius: 4px;
+                border-radius: 8px;
                 background-color: {theme['surface']};
             }}
             
@@ -403,8 +450,8 @@ class ThemeManager:
                 padding: {_px(10)}px {_px(20)}px;
                 border: 1px solid {theme['border']};
                 border-bottom: none;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
                 margin-right: 2px;
             }}
             
@@ -464,18 +511,40 @@ class ThemeManager:
             /* Scroll Bars */
             QScrollBar:vertical {{
                 background-color: {theme['surface']};
-                width: {_px(12)}px;
-                border-radius: 6px;
+                width: {_px(8)}px;
+                border-radius: 4px;
             }}
             
             QScrollBar::handle:vertical {{
                 background-color: {theme['text_secondary']};
-                border-radius: 6px;
+                border-radius: 4px;
                 min-height: {_px(20)}px;
             }}
             
             QScrollBar::handle:vertical:hover {{
                 background-color: {theme['primary']};
+            }}
+            
+            QScrollBar:horizontal {{
+                background-color: {theme['surface']};
+                height: {_px(8)}px;
+                border-radius: 4px;
+            }}
+            
+            QScrollBar::handle:horizontal {{
+                background-color: {theme['text_secondary']};
+                border-radius: 4px;
+                min-width: {_px(20)}px;
+            }}
+            
+            QScrollBar::handle:horizontal:hover {{
+                background-color: {theme['primary']};
+            }}
+            
+            QScrollBar::add-line, QScrollBar::sub-line,
+            QScrollBar::add-page, QScrollBar::sub-page {{
+                background: none;
+                border: none;
             }}
             
             /* Tool Tips */

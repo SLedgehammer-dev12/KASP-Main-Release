@@ -707,12 +707,22 @@ class ThermoEngine:
         if eos != "coolprop":
             return requested_max_iter
 
+        if inputs.get("bypass_complex_cap", False):
+            return requested_max_iter
+
         gas_comp = inputs.get("gas_comp") or {}
         active_components = sum(1 for value in gas_comp.values() if float(value or 0.0) > 1e-9)
         if active_components < 8:
             return requested_max_iter
 
-        capped_iter = min(requested_max_iter, 3)
+        try:
+            from kasp.config_manager import get_config_manager
+            config = get_config_manager()
+            max_complex_iter = int(config.get("coolprop.max_complex_iter", 3))
+        except Exception:
+            max_complex_iter = 3
+
+        capped_iter = min(requested_max_iter, max_complex_iter)
         if capped_iter < requested_max_iter:
             self.logger.warning(
                 "Kompleks CoolProp karisimi icin metot iterasyonu %s -> %s ile sinirlandi.",
