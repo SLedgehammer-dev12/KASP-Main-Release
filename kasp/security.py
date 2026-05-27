@@ -164,34 +164,75 @@ class InputValidator:
             return False
 
 class PermissionManager:
-    """Manages user permissions and access control"""
-    
+    ROLES = {
+        "admin": ["read", "write", "delete", "export", "config", "manage_users"],
+        "engineer": ["read", "write", "export"],
+        "user": ["read", "export"],
+        "viewer": ["read"],
+    }
+
     def __init__(self):
-        self.user_role = "user"  # Default role
-        self.permissions = {
-            "admin": ["read", "write", "delete", "export", "config"],
-            "engineer": ["read", "write", "export"],
-            "user": ["read", "export"],
-            "viewer": ["read"]
-        }
-    
+        self.user_role = "user"
+        self.current_user = None
+
     def has_permission(self, action: str) -> bool:
-        """Check if current user has permission for action"""
-        return action in self.permissions.get(self.user_role, [])
-    
+        return action in self.ROLES.get(self.user_role, [])
+
     def set_user_role(self, role: str):
-        """Set user role"""
-        if role in self.permissions:
+        if role in self.ROLES:
             self.user_role = role
             logger.info(f"User role set to: {role}")
         else:
             logger.warning(f"Invalid role attempted: {role}")
 
-# Singleton instance
+    def is_admin(self):
+        return self.user_role == "admin"
+
+
+class Session:
+    """Global oturum yöneticisi."""
+    _permission_manager = None
+    _current_user = None
+
+    @classmethod
+    def login(cls, user):
+        cls._current_user = user
+        pm = get_permission_manager()
+        pm.current_user = user
+        pm.set_user_role(user.role)
+        cls._permission_manager = pm
+        logger.info(f"Session baslatildi: {user.username} ({user.role})")
+        return True
+
+    @classmethod
+    def logout(cls):
+        cls._current_user = None
+        if cls._permission_manager:
+            cls._permission_manager.current_user = None
+            cls._permission_manager.set_user_role("user")
+        logger.info("Session sonlandirildi.")
+
+    @classmethod
+    def current_user(cls):
+        return cls._current_user
+
+    @classmethod
+    def has_permission(cls, action):
+        if cls._permission_manager is None:
+            pm = get_permission_manager()
+            pm.set_user_role(cls._current_user.role if cls._current_user else "user")
+            cls._permission_manager = pm
+        return cls._permission_manager.has_permission(action)
+
+    @classmethod
+    def is_admin(cls):
+        return cls._permission_manager.is_admin() if cls._permission_manager else False
+
+
 _permission_manager = None
 
+
 def get_permission_manager() -> PermissionManager:
-    """Get global permission manager instance"""
     global _permission_manager
     if _permission_manager is None:
         _permission_manager = PermissionManager()

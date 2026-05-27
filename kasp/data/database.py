@@ -108,7 +108,22 @@ class UnitDatabase:
                     user_notes TEXT
                 )
             """)
-            
+
+            # Kullanıcı yönetimi tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS Users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    full_name TEXT DEFAULT '',
+                    email TEXT DEFAULT '',
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    last_login TEXT
+                )
+            """)
+
             self.get_connection().commit()
             self.logger.info("Veritabanı tabloları başarıyla oluşturuldu.")
             
@@ -421,3 +436,95 @@ class UnitDatabase:
         except sqlite3.Error as e:
             self.logger.error(f"Geçmiş getirme hatası: {e}")
             return []
+
+    # ─────────────────────── Kullanıcı Yönetimi ───────────────────────
+
+    def _is_users_table_empty(self):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT COUNT(*) FROM Users")
+            return cursor.fetchone()[0] == 0
+        except sqlite3.OperationalError:
+            return True
+
+    def create_default_admin(self, password_hash):
+        if not self._is_users_table_empty():
+            return
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("""
+                INSERT INTO Users (username, password_hash, role, full_name)
+                VALUES (?, ?, ?, ?)
+            """, ("admin", password_hash, "admin", "System Admin"))
+            self.get_connection().commit()
+            self.logger.info("Varsayılan admin kullanıcısı oluşturuldu.")
+        except sqlite3.Error as e:
+            self.logger.error(f"Admin oluşturma hatası: {e}")
+
+    def get_user_by_username(self, username):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT * FROM Users WHERE username = ?", (username,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            self.logger.error(f"Kullanıcı getirme hatası: {e}")
+            return None
+
+    def get_all_users(self):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT * FROM Users ORDER BY username")
+            return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            self.logger.error(f"Kullanıcı listesi hatası: {e}")
+            return []
+
+    def create_user(self, username, password_hash, role="user", full_name="", email=""):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("""
+                INSERT INTO Users (username, password_hash, role, full_name, email)
+                VALUES (?, ?, ?, ?, ?)
+            """, (username, password_hash, role, full_name, email))
+            self.get_connection().commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+        except sqlite3.Error as e:
+            self.logger.error(f"Kullanıcı ekleme hatası: {e}")
+            return None
+
+    def update_user(self, user_id, **kwargs):
+        allowed = {"role", "full_name", "email", "is_active", "password_hash"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return False
+        try:
+            cursor = self.get_cursor()
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values()) + [user_id]
+            cursor.execute(f"UPDATE Users SET {set_clause} WHERE id = ?", values)
+            self.get_connection().commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            self.logger.error(f"Kullanıcı güncelleme hatası: {e}")
+            return False
+
+    def update_user_login(self, user_id):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("UPDATE Users SET last_login = datetime('now') WHERE id = ?", (user_id,))
+            self.get_connection().commit()
+        except sqlite3.Error as e:
+            self.logger.error(f"Login güncelleme hatası: {e}")
+
+    def delete_user(self, user_id):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("DELETE FROM Users WHERE id = ?", (user_id,))
+            self.get_connection().commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            self.logger.error(f"Kullanıcı silme hatası: {e}")
+            return False

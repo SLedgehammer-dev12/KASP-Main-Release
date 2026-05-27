@@ -145,23 +145,30 @@ def main():
         else:
             logger.warning(f"⚠ Application icon not found: {icon_path}")
         
-        # Login authentication
-        from kasp.config_manager import get_config_manager
-        from kasp.security import hash_password, DEFAULT_PASSWORD
+        # Login authentication — Gelişmiş Kullanıcı Yönetimi
+        from kasp.security import hash_password, DEFAULT_PASSWORD, Session
+        from kasp.core.user_manager import UserManager
+        from kasp.data.database import UnitDatabase
 
-        config = get_config_manager()
-        password_hash = config.get("auth.password_hash", "")
-        if not password_hash:
-            password_hash = hash_password(DEFAULT_PASSWORD)
-            config.set("auth.password_hash", password_hash)
-            logger.info("Default password hash created")
+        db = UnitDatabase()
+        user_manager = UserManager(db)
+
+        # İlk çalıştırma: Varsayılan admin oluştur
+        db.create_default_admin(hash_password(DEFAULT_PASSWORD))
 
         from kasp.ui.login_dialog import LoginDialog
-        login = LoginDialog(password_hash)
+        login = LoginDialog(user_manager)
         if login.exec_() != LoginDialog.Accepted:
             logger.info("Login cancelled by user")
             sys.exit(0)
-        logger.info("✓ Login successful")
+
+        authenticated_user = login.authenticated_user()
+        if authenticated_user is None:
+            logger.critical("Login accepted but no authenticated user returned.")
+            sys.exit(1)
+
+        Session.login(authenticated_user)
+        logger.info(f"✓ Login successful — user: {authenticated_user.username} ({authenticated_user.role})")
 
         # Create main window
         logger.info("Creating main window...")

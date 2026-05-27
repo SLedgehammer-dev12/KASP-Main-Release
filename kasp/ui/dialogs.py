@@ -277,3 +277,256 @@ class UpdateDialog(QDialog):
         if self.selected_release is None or self.selected_asset is None:
             return
         self.accept()
+
+
+class ThermodynamicsHandbookDialog(QDialog):
+    """Bilingual (TR/EN) Thermodynamics Handbook explaining EoS and sizing path integrations."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("📘 KASP Termodinamik Kılavuzu & El Kitabı (Thermodynamics Handbook)")
+        from kasp.ui.responsive import dialog_size
+        self.resize(*dialog_size(0.65, 0.75))
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.browser = QTextBrowser()
+        self.browser.setOpenExternalLinks(True)
+
+        from kasp.ui.theme_manager import ThemeManager
+        try:
+            from kasp.config_manager import get_config_manager
+            theme_name = get_config_manager().get("app.theme", "dark")
+        except Exception:
+            theme_name = "dark"
+        t = ThemeManager.THEMES.get(theme_name, ThemeManager.THEMES["dark"])
+
+        html_content = f"""
+        <html>
+        <head>
+        <style>
+            body {{
+                background-color: {t['background']};
+                color: {t['text']};
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 14px;
+                line-height: 1.6;
+                margin: 20px;
+            }}
+            h1 {{
+                color: {t['primary']};
+                border-bottom: 2px solid {t['border']};
+                padding-bottom: 8px;
+                font-size: 22px;
+            }}
+            h2 {{
+                color: {t['danger']};
+                margin-top: 25px;
+                font-size: 18px;
+            }}
+            h3 {{
+                color: {t['primary']};
+                font-size: 15px;
+            }}
+            p {{
+                margin-bottom: 15px;
+            }}
+            ul, ol {{
+                margin-left: 20px;
+                margin-bottom: 15px;
+            }}
+            li {{
+                margin-bottom: 5px;
+            }}
+            code {{
+                background-color: {t['surface']};
+                padding: 2px 5px;
+                border-radius: 4px;
+                font-family: 'Consolas', monospace;
+                color: {t['warning']};
+            }}
+            pre {{
+                background-color: {t['surface']};
+                padding: 12px;
+                border-radius: 6px;
+                border: 1px solid {t['border']};
+                overflow-x: auto;
+                font-family: 'Consolas', monospace;
+                color: {t['text']};
+            }}
+            .info-box {{
+                background-color: {t['surface']};
+                border-left: 4px solid {t['primary']};
+                padding: 12px;
+                border-radius: 4px;
+                margin: 15px 0;
+            }}
+            .warning-box {{
+                background-color: {t['surface']};
+                border-left: 4px solid {t['warning']};
+                padding: 12px;
+                border-radius: 4px;
+                margin: 15px 0;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 15px 0;
+            }}
+            th, td {{
+                border: 1px solid {t['border']};
+                padding: 8px 12px;
+                text-align: left;
+            }}
+            th {{
+                background-color: {t['surface']};
+                color: {t['primary']};
+            }}
+            tr:nth-child(even) {{
+                background-color: {t['surface']};
+            }}
+            .lang-section {{
+                margin-bottom: 40px;
+            }}
+            .divider {{
+                border-top: 2px dashed {t['border']};
+                margin: 40px 0;
+            }}
+        </style>
+        </head>
+        <body>
+
+        <!-- ================= TURKISH SECTION ================= -->
+        <div class="lang-section">
+            <h1>🇹🇷 KASP Termodinamik Kılavuzu & El Kitabı</h1>
+            <p>KASP uygulaması, kompresör tasarım hesaplamalarını en yüksek bilimsel ve endüstriyel hassasiyetle (ASME PTC 10, API 617) çözmek üzere tasarlanmıştır. Bu kılavuz, arka planda koşan karmaşık termodinamik ve aerodinamik adımları anlaşılır hale getirmek için hazırlanmıştır.</p>
+
+            <div class="info-box">
+                <b>💡 Altın Kural:</b> Kompresör hesaplama zinciri iki bağımsız seviyede çalışır:
+                <ol>
+                    <li><b>Durum-Seviyesi Çözücü (State EoS Solver):</b> Tekil noktalarda kök bulma.</li>
+                    <li><b>Yol-Seviyesi Sıkıştırma Yordamı (Compression Path Method):</b> Emişten çıkışa integrasyon yolu.</li>
+                </ol>
+            </div>
+
+            <h2>1. Durum-Seviyesi EoS Çözücüler (State Model)</h2>
+            <p>Bu seviye, gazın belirli bir basınç (P) ve sıcaklıkta (T) yoğunluk, sıkıştırılabilirlik faktörü (Z), entalpi (H), entropi (S) gibi tüm fiziksel özelliklerini belirleyen termodinamik teorileri barındırır. Kübik hal denklemleri, matematiksel olarak birer <b>kök bulma (root solving)</b> problemidir:</p>
+            <pre>Z³ - (1-B)Z² + (A - 3B² - 2B)Z - (AB - B² - B³) = 0</pre>
+            <p>Bu 3. dereceden kübik polinom çözüldüğünde en fazla 3 gerçel kök çıkabilir. EoS Çözücü, termodinamik kurallara (Gibbs serbest enerjisine) göre gaz fazına ait en büyük gerçel kökü veya sıvı fazına ait en küçük gerçel kökü seçen sayısal bir algoritmadır.</p>
+
+            <h3>Mevcut Durum Modelleri:</h3>
+            <table>
+                <tr>
+                    <th style="width: 25%;">Model (EoS)</th>
+                    <th>Açıklama ve Kullanım Alanı</th>
+                </tr>
+                <tr>
+                    <td><b>CoolProp (HEOS)</b></td>
+                    <td>Yüksek hassasiyetli endüstri standardı termodinamik kütüphane (GERG-2008). Doğal gaz ve saf akışkan karışımları için referans kabul edilir.</td>
+                </tr>
+                <tr>
+                    <td><b>SINTEF thermopack</b></td>
+                    <td>Sıvılaşma ve faz ayrışması sınırlarında son derece hızlı ve kararlı çözüm sunan gelişmiş açık kaynaklı endüstriyel EoS motoru.</td>
+                </tr>
+                <tr>
+                    <td><b>Petrobras ccp</b></td>
+                    <td>ASME PTC 10 standartlarında test edilmiş, Petrobras'ın doğrulanmış performans hesaplama motoru.</td>
+                </tr>
+                <tr>
+                    <td><b>Peng-Robinson / SRK</b></td>
+                    <td>Geleneksel kübik hal denklemleri. Özellikle ağır hidrokarbon ağırlıklı karışımlarda hızlı sonuç üretir.</td>
+                </tr>
+                <tr>
+                    <td><b>AGA8-DC92</b></td>
+                    <td>Doğal gaz boru hattı taşımacılığı için geliştirilmiş, Z-faktörü odaklı hassas standart.</td>
+                </tr>
+            </table>
+
+            <h2>2. Sıkıştırma Yolu Yöntemleri (Path Sizing)</h2>
+            <p>Emiş koşullarından çıkış basıncına giden termodinamik sıkıştırma eğrisi boyunca <b>politropik integrali (∫ V dP)</b> çözmek için kullanılan nümerik şemalardır. Bunlar kendi başlarına birer EoS çözücü değildir, yol boyunca EoS çözücüden sürekli özellik çekerler.</p>
+            
+            <h3>Yol Entegrasyon Metotları:</h3>
+            <ul>
+                <li><b>Metot 1 (Ortalama Özellikler - Average Properties):</b> API 617 Appendix C standardını temel alır. Giriş ve çıkış durumlarındaki özelliklerin (k ve Z) ortalamasını kullanarak çıkış sıcaklığı T₂'yi basit bir iterasyon döngüsü ile yakınsatır.</li>
+                <li><b>Metot 2 (Uç Nokta Yöntemi - Endpoint Method):</b> Sıkıştırma üssünü (polytropic exponent) doğrudan kompresörün çıkış koşullarına (outlet endpoint) göre hesaplar.</li>
+                <li><b>Metot 3 (Artımlı Yol Entegrasyonu - Incremental Pressure):</b> Basınç farkını küçük dilimlere (örneğin 10 veya 100 adıma) bölerek, her adımda yerel EoS özelliklerini çözer ve kompresör yolunu adım adım integre eder. Çok kademeli sistemlerde hassasiyeti artırır.</li>
+                <li><b>Metot 4 (Doğrudan H-S Yöntemi - Mollier Path):</b> Gerçek entalpi ve entropi farklarını (Mollier diyagramı üzerinde) kullanarak doğrudan entalpi yolunu integre eder. Termodinamik açıdan en kararlı ve hassas fiziksel yöntemdir.</li>
+            </ul>
+
+            <div class="warning-box">
+                <b>⚠️ Sıvılaşma ve Thermo Health İzleme:</b> KASP, her iterasyon adımında EoS çözücüden gelen faz durumlarını kontrol eder. Eğer gaz sıvı veya iki faz bölgesine girerse, Z faktörü 0.5'in altına düşerse arayüzde <b>CRITICAL / WARNING</b> uyarıları göstererek kompresörde sıvı hasarı oluşmasını önler.
+            </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- ================= ENGLISH SECTION ================= -->
+        <div class="lang-section">
+            <h1>🇺🇸 KASP Thermodynamics Handbook & Help Guide</h1>
+            <p>KASP application is designed to solve compressor sizing and design calculations with the highest degree of scientific and industrial precision (ASME PTC 10, API 617). This handbook explains the thermodynamic and aerodynamic calculation steps running in the background.</p>
+
+            <div class="info-box">
+                <b>💡 Golden Rule:</b> The compressor calculation chain operates on two distinct levels:
+                <ol>
+                    <li><b>State-Level EoS Solver:</b> Mathematical root-finding at a single state.</li>
+                    <li><b>Path-Level Sizing Method:</b> Numerical integration of the polytropic path.</li>
+                </ol>
+            </div>
+
+            <h2>1. State-Level EoS Solvers (State Model)</h2>
+            <p>This level consists of thermodynamic theories determining the physical properties of a gas (density, compressibility factor Z, enthalpy H, entropy S, Cp, Cv) at a given pressure (P) and temperature (T). Cubic equations of state are mathematical <b>root-finding</b> problems:</p>
+            <pre>Z³ - (1-B)Z² + (A - 3B² - 2B)Z - (AB - B² - B³) = 0</pre>
+            <p>Solving this 3rd-degree cubic polynomial yields up to 3 real roots. The EoS Solver is a numerical algorithm that identifies and selects the correct physical root (largest real root for vapor phase, smallest real root for liquid phase) according to Gibbs free energy minimization.</p>
+
+            <h3>Supported State Models (Equations of State):</h3>
+            <table>
+                <tr>
+                    <th style="width: 25%;">Model (EoS)</th>
+                    <th>Description and Application Areas</th>
+                </tr>
+                <tr>
+                    <td><b>CoolProp (HEOS)</b></td>
+                    <td>High-accuracy industry standard library (GERG-2008). Widely accepted as a reference for natural gas and pure fluid mixtures.</td>
+                </tr>
+                <tr>
+                    <td><b>SINTEF thermopack</b></td>
+                    <td>Advanced, robust open-source EoS engine offering ultra-fast and exceptionally stable calculations near condensation boundaries.</td>
+                </tr>
+                <tr>
+                    <td><b>Petrobras ccp</b></td>
+                    <td>Petrobras' officially validated centrifugal compressor performance engine, fully tested against ASME PTC 10.</td>
+                </tr>
+                <tr>
+                    <td><b>Peng-Robinson / SRK</b></td>
+                    <td>Classic cubic equations of state. Highly efficient and robust, particularly for heavy hydrocarbon mixtures.</td>
+                </tr>
+                <tr>
+                    <td><b>AGA8-DC92</b></td>
+                    <td>Natural gas pipeline standard specializing in highly accurate Z-factor computations.</td>
+                </tr>
+            </table>
+
+            <h2>2. Compression Path Sizing Methods</h2>
+            <p>Numerical integration schemes used to solve the <b>polytropic integral ( ∫ V dP )</b> along the thermodynamic compression curve from inlet to outlet pressure. Sizing methods are not thermodynamic EoS models; they iteratively query the EoS solver for local properties.</p>
+            
+            <h3>Path Integration Methods:</h3>
+            <ul>
+                <li><b>Method 1 (Average Properties):</b> Based on API 617 Appendix C. Uses arithmetic or logarithmic averages of inlet/outlet properties (k and Z) to converge on the discharge temperature T₂.</li>
+                <li><b>Method 2 (Endpoint Method):</b> Calculates the polytropic exponent referencing directly the discharge endpoint conditions of the compressor.</li>
+                <li><b>Method 3 (Incremental Pressure Path):</b> Divides the pressure span into multiple increments (e.g., 10 or 100 steps), solving local EoS properties at each step and integrating numerically. Highly accurate for complex sizing paths.</li>
+                 <li><b>Method 4 (Direct H-S Method):</b> Operates on the Mollier enthalpy-entropy plane, utilizing enthalpy definitions and efficiency ratios ($\eta_{{\text{{poly}}}} = \frac{{dH_{{\text{{isen}}}}}}{{dH_{{\text{{actual}}}}}}$) to integrate the polytropic curve. Physically the most stable and rigorous method.</li>
+            </ul>
+        </div>
+
+        </body>
+        </html>
+        """
+        
+        self.browser.setHtml(html_content)
+        layout.addWidget(self.browser)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)

@@ -41,12 +41,39 @@ def get_design_method_options():
     ]
 
 
+def get_solver_method_options():
+    return [
+        "Analitik Jakobiyen NR (AJ-NR - Hızlı)",
+        "Sonlu Farklar NR (FD-NR - Standart)",
+        "Brent Hibrit Yöntemi (Brent - Kararlı)",
+        "Otomatik Karşılaştırmalı Benchmark (Auto)",
+    ]
+
+
 def get_eos_display_items(coolprop_loaded, thermo_loaded):
     items = []
     if coolprop_loaded:
         items.append("🎯 Yüksek Doğruluk (CoolProp)")
+    
+    items.append("🌊 SINTEF thermopack (Kübik)")
+    
     if thermo_loaded:
         items.extend(["📊 Peng-Robinson (thermo)", "📈 SRK (thermo)"])
+        
+    items.append("🇧🇷 Petrobras ccp (ASME)")
+    
+    dwsim_available = False
+    try:
+        import clr
+        dwsim_available = True
+    except ImportError:
+        pass
+        
+    if dwsim_available:
+        items.append("🇩🇪 DWSIM Thermodynamics (PR)")
+    else:
+        items.append("🇩🇪 DWSIM (.NET / pythonnet Eksik)")
+        
     if not items:
         items.append("❌ Kütüphane Yok")
     return items
@@ -289,13 +316,60 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     from kasp.ui.responsive import scaled_px
     from PyQt5.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QSlider, QSpinBox
 
-    calc_group = QGroupBox("🧮 Hesaplama Parametreleri")
-    calc_layout = QFormLayout()
+    # 1. Termodinamik Durum Modeli Grubu
+    thermo_group = QGroupBox("🧪 Termodinamik Durum Modeli (State Model)")
+    thermo_layout = QFormLayout()
 
     window.eos_method_combo = QComboBox()
     window.eos_method_combo.addItems(get_eos_display_items(coolprop_loaded, thermo_loaded))
     if window.eos_method_combo.count():
         window.eos_method_combo.setCurrentIndex(0)
+
+    dwsim_available = False
+    try:
+        import clr
+        dwsim_available = True
+    except ImportError:
+        pass
+    if not dwsim_available:
+        for index in range(window.eos_method_combo.count()):
+            text = window.eos_method_combo.itemText(index)
+            if "DWSIM" in text and ("Eksik" in text or "Yok" in text):
+                from PyQt5.QtCore import Qt
+                j = window.eos_method_combo.model().index(index, 0)
+                window.eos_method_combo.model().itemFromIndex(j).setEnabled(False)
+
+    window.lhv_source_combo = QComboBox()
+    window.lhv_source_combo.addItems([
+        "KASP Sabitleri (Hızlı/Varsayılan)",
+        "Thermo Veritabanı (Gelişmiş)",
+        "ISO 6976 Standardı (Molar / Z Düzeltmeli)",
+    ])
+    if not thermo_loaded:
+        from PyQt5.QtCore import Qt
+        window.lhv_source_combo.setItemData(1, 0, Qt.UserRole - 1)
+        window.lhv_source_combo.setItemText(1, "Thermo Veritabanı (Kütüphane Yok)")
+
+    thermo_layout.addRow("EoS Durum Denklemi:", window.eos_method_combo)
+    thermo_layout.addRow("LHV/HHV Kaynağı:", window.lhv_source_combo)
+    thermo_group.setLayout(thermo_layout)
+    left_layout.addWidget(thermo_group)
+
+    # 2. Termodinamik Kök Çözücü (State Solver) Grubu
+    solver_group = QGroupBox("🧪 Termodinamik Kök Çözücü (State Solver)")
+    solver_layout = QFormLayout()
+
+    window.solver_method_combo = QComboBox()
+    window.solver_method_combo.addItems(get_solver_method_options())
+    window.solver_method_combo.setCurrentIndex(0)
+
+    solver_layout.addRow("Kök Çözücü Algoritması:", window.solver_method_combo)
+    solver_group.setLayout(solver_layout)
+    left_layout.addWidget(solver_group)
+
+    # 3. Sıkıştırma Yolu Yöntemi Grubu
+    sizing_group = QGroupBox("🧮 Sıkıştırma Yolu Entegratörü (Sizing)")
+    sizing_layout = QFormLayout()
 
     window.method_combo = QComboBox()
     window.method_combo.addItems(get_design_method_options())
@@ -333,29 +407,15 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     mech_layout.addWidget(QLabel("%"))
     mech_layout.addWidget(window.mech_eff_slider)
 
-    calc_layout.addRow("EOS Metodu:", window.eos_method_combo)
+    sizing_layout.addRow("Yol Entegrasyon Metodu:", window.method_combo)
+    sizing_layout.addRow("Politropik Verim (%):", poly_layout)
+    sizing_layout.addRow("Isıl Verim (%):", therm_layout)
+    sizing_layout.addRow("Mekanik Verim (%):", mech_layout)
 
-    window.lhv_source_combo = QComboBox()
-    window.lhv_source_combo.addItems([
-        "KASP Sabitleri (Hızlı/Varsayılan)",
-        "Thermo Veritabanı (Gelişmiş)",
-        "ISO 6976 Standardı (Molar / Z Düzeltmeli)",
-    ])
-    if not thermo_loaded:
-        from PyQt5.QtCore import Qt
-        window.lhv_source_combo.setItemData(1, 0, Qt.UserRole - 1)
-        window.lhv_source_combo.setItemText(1, "Thermo Veritabanı (Kütüphane Yok)")
-    calc_layout.addRow("LHV/HHV Kaynağı:", window.lhv_source_combo)
-
-    calc_layout.addRow("Hesaplama Metodu:", window.method_combo)
-    calc_layout.addRow("Politropik Verim (%):", poly_layout)
-    calc_layout.addRow("Isıl Verim (%):", therm_layout)
-    calc_layout.addRow("Mekanik Verim (%):", mech_layout)
-
-    calc_layout.addRow("", QLabel(""))
+    sizing_layout.addRow("", QLabel(""))
     consistency_separator = QLabel("🔄 Tutarlılık Modu (Self-Consistent)")
     consistency_separator.setObjectName("consistency_separator")
-    calc_layout.addRow("", consistency_separator)
+    sizing_layout.addRow("", consistency_separator)
 
     window.consistency_check = QCheckBox("Tutarlılık İterasyonu Kullan")
     window.consistency_check.setToolTip(
@@ -363,7 +423,7 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
         "KAPALI (Hızlı): Tek geçiş, hızlı hesaplama\n"
         "AÇIK (Tutarlı): İteratif, yavaş ama termodinamik olarak tutarlı"
     )
-    calc_layout.addRow("", window.consistency_check)
+    sizing_layout.addRow("", window.consistency_check)
 
     iter_settings_layout = QHBoxLayout()
     iter_settings_layout.addWidget(QLabel("Maks. İterasyon:"))
@@ -384,7 +444,7 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     window.consistency_tolerance.setToolTip("Yakınsama toleransı: |η_calc - η_used| < tol")
     iter_settings_layout.addWidget(window.consistency_tolerance)
     iter_settings_layout.addStretch()
-    calc_layout.addRow("", iter_settings_layout)
+    sizing_layout.addRow("", iter_settings_layout)
 
     window.consistency_check.toggled.connect(
         lambda checked: [
@@ -393,8 +453,8 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
         ]
     )
 
-    calc_group.setLayout(calc_layout)
-    left_layout.addWidget(calc_group)
+    sizing_group.setLayout(sizing_layout)
+    left_layout.addWidget(sizing_group)
 
 
 def build_execution_group(window, left_layout):
@@ -474,15 +534,19 @@ def wire_help_guidance(window):
         },
         "eos_method_combo": {
             "title": "EoS (Hal Denklemi)",
-            "desc": "<b>CoolProp (GERG-2008):</b> Yüksek hassasiyetli endüstri standardı termodinamik model.<br><b>Peng-Robinson / SRK:</b> Klasik kübik hal denklemleri, hidrokarbon ağırlıklı karışımlarda hızlı ve kararlı sonuçlar verir."
+            "desc": "<b>CoolProp (GERG-2008):</b> Yüksek hassasiyetli endüstri standardı termodinamik model.<br><b>SINTEF thermopack:</b> Gelişmiş ve faz sınırlarında son derece kararlı kübik EoS motoru.<br><b>Petrobras ccp:</b> ASME/API standardında resmi doğrulanmış motor.<br><b>DWSIM Thermodynamics:</b> Polar karışımlarda ve ASME Steam su buharı tablolarında üstün kararlılık sağlayan .NET tabanlı motor.<br><b>Peng-Robinson / SRK:</b> Hidrokarbon ağırlıklı karışımlarda hızlı ve kararlı kübik hal denklemleri."
         },
         "lhv_source_combo": {
             "title": "Isıl Değer Kaynağı",
             "desc": "<b>KASP Sabitleri:</b> Standart ISO 6976 tablosu kullanır.<br><b>Thermo Veritabanı:</b> Karışımın gerçek gaz düzeltmeli kimyasal potansiyel ve ısıl kapasite verilerini dinamik hesaplar."
         },
+        "solver_method_combo": {
+            "title": "Termodinamik Kök Çözücü",
+            "desc": "<b>AJ-NR (Analitik Jakobiyen Newton-Raphson):</b> (S(P,T)-S_in=0) için analitik türev (Cp/T) kullanarak süper hızlı ve kararlı yakınsar.<br><b>FD-NR (Sonlu Farklar Newton-Raphson):</b> Standart sonlu farklar yaklaşımıyla çalışır.<br><b>Brent Hibrit:</b> Bölme ve sekant yöntemlerini birleştiren, faz değişim sınırlarında en güvenli, asla ıraksamayan çözücüdür.<br><b>Auto Benchmark:</b> Hız ve kararlılığı optimize etmek için otomatik yöntem seçer."
+        },
         "method_combo": {
-            "title": "Hesaplama Yöntemi",
-            "desc": "<b>Metot 1 (Ortalama Özellikler):</b> Giriş/çıkış koşullarının ortalamasını kullanan hızlı yaklaşım.<br><b>Metot 4 (Doğrudan H-S):</b> Gerçek entalpi ve entropi değişimlerini entegre eden en kararlı ve hassas yöntemdir."
+            "title": "Sıkıştırma Yolu Yöntemi",
+            "desc": "<b>Ortalama Özellikler (Metot 1):</b> API 617 standardında giriş/çıkış ortalamasını alan hızlı yaklaşım.<br><b>Uç Nokta (Metot 2):</b> Çıkış özelliklerini referans alan entegrasyon.<br><b>Artımlı Basınç (Metot 3):</b> Basınç aralığını dilimlere bölüp adım adım entegre eden yol.<br><b>Doğrudan H-S (Metot 4):</b> Gerçek entalpi ve entropi değişimlerini entegre eden en kararlı ve hassas fiziksel yöntemdir."
         },
         "consistency_check": {
             "title": "Tutarlılık İterasyonu",

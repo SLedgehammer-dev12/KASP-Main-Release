@@ -522,8 +522,8 @@ class ThermoMethodSuite:
             except Exception as error:
                 self.logger.debug(f"CoolProp izentropik flash başarısız: {error}")
 
-        # CoolProp başarısız olduğunda veya diğer EoS metotlarında karşılaştırmalı fallback çalıştır
+        # CoolProp başarısız olduğunda veya diğer EoS metotlarında kullanıcı seçimine saygılı dispatcher
         from kasp.core.aerodynamics import CompressorAerodynamics
-        return CompressorAerodynamics.run_isentropic_fallback_comparison(
+        return CompressorAerodynamics.calculate_isentropic_temp_fallback(
             state_in, p_out, self.thermo_solver, gas_obj, eos
         )

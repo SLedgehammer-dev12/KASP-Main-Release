@@ -20,11 +20,15 @@ def get_main_menu_specs():
             None,
             ("📤 Sonuçları Dışa Aktar", "Ctrl+E", "export_results"),
             None,
-            ("🚪 Çıkış", "Ctrl+Q", "close"),
+            ("🚪 Çıkış Yap", None, "logout"),
+            None,
+            ("🚪 Kapat", "Ctrl+Q", "close"),
         ],
         "🛠️ Araçlar": [
             ("📚 Kütüphane Yöneticisi", None, "open_library_manager"),
             ("🧹 Önbelleği Temizle", None, "clear_engine_cache"),
+            None,
+            ("👥 Kullanıcı Yönetimi", None, "show_admin_panel"),
         ],
         "🎨 Görünüm": [
             ("__submenu_theme__", None, None),
@@ -34,6 +38,9 @@ def get_main_menu_specs():
         "❓ Yardım": [
             ("📖 Örnekler", None, "show_examples"),
             ("Guncellemeleri Kontrol Et", None, "_check_for_updates_manual"),
+            None,
+            ("📘 Termodinamik El Kitabı", None, "show_thermodynamics_handbook"),
+            None,
             ("ℹ️ Hakkında", None, "show_about_dialog"),
         ],
     }

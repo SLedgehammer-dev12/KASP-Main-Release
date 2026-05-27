@@ -9,17 +9,36 @@ def eos_method_from_ui_text(selected_text):
     """Translate a UI combo label into the engine eos_method code."""
     if "CoolProp" in selected_text:
         return "coolprop", None
+    if "thermopack" in selected_text:
+        return "thermopack", None
+    if "ccp" in selected_text:
+        return "ccp", None
     if "Peng-Robinson" in selected_text:
         return "pr", None
     if "SRK" in selected_text:
         return "srk", None
+    if "DWSIM" in selected_text:
+        if "Eksik" in selected_text or "Yok" in selected_text:
+            return None, "EOS Hatası: DWSIM kütüphanesini kullanmak için pythonnet kurmalı ve DWSIM DTL DLL dosyasını eklemelisiniz (pip install pythonnet)."
+        return "dwsim", None
     if "Kütüphane Yok" in selected_text:
         return None, "EOS Hatası: Geçerli bir EOS metodu seçiniz (Kütüphane yüklü değil)."
 
     normalized = selected_text.lower().strip()
-    if normalized in {"coolprop", "pr", "srk"}:
+    if normalized in {"coolprop", "pr", "srk", "thermopack", "ccp", "dwsim"}:
         return normalized, None
     return normalized, f"EOS Hatası: Bilinmeyen veya yanlış eşleşen EOS metodu: {selected_text}"
+
+
+def solver_method_from_ui_text(selected_text):
+    """Translate a UI combo label into the engine solver_method code."""
+    if "AJ-NR" in selected_text:
+        return "aj_nr"
+    if "FD-NR" in selected_text:
+        return "fd_nr"
+    if "Brent" in selected_text:
+        return "brent"
+    return "auto"
 
 
 def lhv_source_from_ui_text(selected_text):
@@ -74,6 +93,7 @@ class DesignInputBinder:
         elif eos_method:
             inputs["eos_method"] = eos_method
 
+        inputs["solver_method"] = solver_method_from_ui_text(window.solver_method_combo.currentText())
         inputs["method"] = window.method_combo.currentText()
         inputs["lhv_source"] = lhv_source_from_ui_text(window.lhv_source_combo.currentText())
 
@@ -125,6 +145,7 @@ class DesignInputBinder:
         window.ic_temp_edit.setText(str(normalized.get("intercooler_t", 40.0)))
 
         self._apply_eos_method(normalized.get("eos_method", "coolprop"))
+        self._apply_solver_method(normalized.get("solver_method", "auto"))
         window.method_combo.setCurrentText(normalized.get("method", "Metot 1: Ortalama Özellikler"))
 
         lhv_src = normalized.get("lhv_source", "kasp")
@@ -162,6 +183,17 @@ class DesignInputBinder:
                 return
         if window.eos_method_combo.count():
             window.eos_method_combo.setCurrentIndex(0)
+
+    def _apply_solver_method(self, solver_method):
+        window = self.window
+        for index in range(window.solver_method_combo.count()):
+            text = window.solver_method_combo.itemText(index)
+            mapped = solver_method_from_ui_text(text)
+            if mapped == solver_method:
+                window.solver_method_combo.setCurrentIndex(index)
+                return
+        if window.solver_method_combo.count():
+            window.solver_method_combo.setCurrentIndex(0)
 
     def _apply_gas_composition(self, gas_comp):
         window = self.window

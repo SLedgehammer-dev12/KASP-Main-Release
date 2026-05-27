@@ -1,4 +1,4 @@
-"""KASP Login Dialog — Brute-Force Korumalı Giriş Penceresi."""
+"""KASP Login Dialog — Gelişmiş Kullanıcı Giriş Penceresi."""
 
 import time
 
@@ -19,7 +19,6 @@ from kasp.security import (
     check_lockout,
     get_lockout_remaining,
     record_attempt,
-    verify_password,
 )
 from kasp.i18n import tr
 
@@ -27,9 +26,9 @@ from kasp.i18n import tr
 class LoginDialog(QDialog):
     _LOCKOUT_TIMER_INTERVAL = 1000
 
-    def __init__(self, password_hash: str, parent=None):
+    def __init__(self, user_manager, parent=None):
         super().__init__(parent)
-        self._password_hash = password_hash
+        self._user_manager = user_manager
         self._remaining_lockout = get_lockout_remaining()
         self._lockout_timer = None
         self._setup_ui()
@@ -37,20 +36,19 @@ class LoginDialog(QDialog):
 
     def _setup_ui(self):
         self.setWindowTitle(tr("KASP — Giriş"))
-        # V4.7: Responsive dialog size
         try:
             from kasp.ui.responsive import scaled
-            w, h = scaled(380), scaled(220)
+            w, h = scaled(400), scaled(260)
         except Exception:
-            w, h = 380, 220
+            w, h = 400, 260
         self.setFixedSize(w, h)
         self.setWindowFlags(
             Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint
         )
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(10)
+        layout.setContentsMargins(24, 18, 24, 18)
 
         title = QLabel(tr("🔒 KASP Giriş"))
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
@@ -61,6 +59,10 @@ class LoginDialog(QDialog):
         self._status_label.setAlignment(Qt.AlignCenter)
         self._status_label.setWordWrap(True)
         layout.addWidget(self._status_label)
+
+        self._username_edit = QLineEdit()
+        self._username_edit.setPlaceholderText(tr("Kullanıcı Adı"))
+        layout.addWidget(self._username_edit)
 
         pw_layout = QHBoxLayout()
         self._password_edit = QLineEdit()
@@ -96,15 +98,29 @@ class LoginDialog(QDialog):
             self._update_lockout_state()
             return
 
+        username = self._username_edit.text().strip()
         password = self._password_edit.text()
-        if verify_password(password, self._password_hash):
+
+        if not username:
+            self._status_label.setText(tr("Kullanıcı adı gerekli."))
+            self._status_label.setStyleSheet("color: #c62828;")
+            return
+
+        user = self._user_manager.authenticate(username, password)
+        if user is not None:
             record_attempt(success=True)
+            self._authenticated_user = user
             self.accept()
         else:
             record_attempt(success=False)
             self._password_edit.clear()
             self._password_edit.setFocus()
+            self._status_label.setText(tr("Hatalı kullanıcı adı veya şifre."))
+            self._status_label.setStyleSheet("color: #c62828;")
             self._update_lockout_state()
+
+    def authenticated_user(self):
+        return getattr(self, "_authenticated_user", None)
 
     def _update_lockout_state(self):
         locked, msg = check_lockout()
@@ -115,6 +131,7 @@ class LoginDialog(QDialog):
 
         if locked:
             self._login_btn.setEnabled(False)
+            self._username_edit.setEnabled(False)
             self._password_edit.setEnabled(False)
             self._status_label.setText(f"⏳ {msg}")
             self._status_label.setStyleSheet("color: #c62828;")
@@ -123,6 +140,7 @@ class LoginDialog(QDialog):
             self._lockout_timer.start(self._LOCKOUT_TIMER_INTERVAL)
         else:
             self._login_btn.setEnabled(True)
+            self._username_edit.setEnabled(True)
             self._password_edit.setEnabled(True)
             remaining = get_lockout_remaining()
             if remaining > 0:

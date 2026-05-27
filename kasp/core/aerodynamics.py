@@ -405,11 +405,19 @@ class CompressorAerodynamics:
                 fb = f(b)
 
         if fa * fb >= 0:
-            # En küçük artığa sahip olanı dön
-            if abs(fa) < abs(fb):
-                return a, 1, abs(fa)
-            else:
-                return b, 1, abs(fb)
+            # Braket başarısız — bisection stratejisi ile en iyi tahmini bul
+            left, right = min(a, b), max(a, b)
+            best_t, best_res = (a, abs(fa)) if abs(fa) < abs(fb) else (b, abs(fb))
+            for _ in range(8):
+                mid = (left + right) / 2.0
+                fmid = abs(f(mid))
+                if fmid < best_res:
+                    best_t, best_res = mid, fmid
+                if f(mid) > 0:
+                    right = mid
+                else:
+                    left = mid
+            return best_t, 1, best_res
 
         # Brent Algoritması
         max_iter = 20
@@ -552,7 +560,28 @@ class CompressorAerodynamics:
         state_in: ThermodynamicState, p_out: float,
         thermo_solver, gas_obj, eos: str
     ) -> float:
-        return CompressorAerodynamics.run_isentropic_fallback_comparison(
-            state_in, p_out, thermo_solver, gas_obj, eos
-        )
+        # Retrieve selected root-finding solver from thread-local context
+        solver_method = "auto"
+        if hasattr(thermo_solver, "_run_tracking") and hasattr(thermo_solver._run_tracking, "context") and thermo_solver._run_tracking.context:
+            solver_method = thermo_solver._run_tracking.context.get("solver_method", "auto")
+
+        if solver_method == "aj_nr":
+            t_aj, _, _ = CompressorAerodynamics.calculate_isentropic_temp_aj_nr(
+                state_in, p_out, thermo_solver, gas_obj, eos
+            )
+            return t_aj
+        elif solver_method == "fd_nr":
+            t_fd, _, _ = CompressorAerodynamics.calculate_isentropic_temp_fd_nr(
+                state_in, p_out, thermo_solver, gas_obj, eos
+            )
+            return t_fd
+        elif solver_method == "brent":
+            t_brent, _, _ = CompressorAerodynamics.calculate_isentropic_temp_brent(
+                state_in, p_out, thermo_solver, gas_obj, eos
+            )
+            return t_brent
+        else:
+            return CompressorAerodynamics.run_isentropic_fallback_comparison(
+                state_in, p_out, thermo_solver, gas_obj, eos
+            )
 

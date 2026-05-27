@@ -117,6 +117,11 @@ class WindowActionController:
         QMessageBox = self._qt_message_box()
         QMessageBox.information(self.window, tr("Örnekler"), build_examples_dialog_text())
 
+    def show_thermodynamics_handbook(self):
+        from kasp.ui.dialogs import ThermodynamicsHandbookDialog
+        dialog = ThermodynamicsHandbookDialog(self.window)
+        dialog.exec_()
+
     def clear_logs(self):
         self.window.log_text.clear()
         self.window.all_logs = []

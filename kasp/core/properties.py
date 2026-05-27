@@ -7,6 +7,7 @@ mekanizmasını işleten ThermodynamicSolver sınıfını içerir.
 
 import math
 import logging
+import sys
 import threading
 from collections import OrderedDict
 
@@ -141,11 +142,12 @@ class ThermodynamicSolver:
             },
         )
 
-    def begin_run_tracking(self):
+    def begin_run_tracking(self, solver_method="auto"):
         self._run_tracking.context = {
             "calls": 0,
             "fallback_calls": 0,
             "fallback_events": OrderedDict(),
+            "solver_method": solver_method,
         }
 
     def end_run_tracking(self):
@@ -209,12 +211,19 @@ class ThermodynamicSolver:
                 state = self._solve_thermo_eos(P_pa, T_k, gas_obj, eos_method)
             elif eos_method == 'aga8':
                 state = self._solve_aga8(P_pa, T_k, gas_obj)
+            elif eos_method == 'thermopack':
+                state = self._solve_thermopack(P_pa, T_k, gas_obj)
+            elif eos_method == 'ccp':
+                state = self._solve_ccp(P_pa, T_k, gas_obj)
+            elif eos_method == 'dwsim':
+                state = self._solve_dwsim(P_pa, T_k, gas_obj)
             else:
                 raise ValueError(f"Desteklenmeyen EOS: {eos_method}")
                 
         except Exception as e:
             logger.warning(f"⚠️ {eos_method.upper()} EOS hatası: {e}. Fallback (PR) kullanılıyor.")
             if eos_method == 'aga8':
+                # AGA8 → PR fallback (iki model de thermo dict formatını kullanır)
                 try:
                     state = self._solve_thermo_eos(P_pa, T_k, gas_obj, 'pr')
                     state.raw_props['fallback'] = True
@@ -225,9 +234,24 @@ class ThermodynamicSolver:
             else:
                 state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
             
-        # Z-Factor Uyarısı
-        if state.Z < 0.5 or state.Z > 1.5:
-             logger.warning(f"⚠️ Olağandışı Z faktörü: {state.Z:.4f} (P={P_pa/1e5:.1f} bar, T={T_k-273.15:.1f}°C)")
+        # Z-Factor Uyarısı ve Teşhis Entegrasyonu
+        thermo_health = "HEALTHY"
+        health_reasons = []
+        if state.Z < 0.5:
+            thermo_health = "WARNING"
+            health_reasons.append(f"Düşük sıkıştırılabilirlik faktörü Z={state.Z:.4f} (yoğuşma riski)")
+            logger.warning(f"⚠️ Olağandışı düşük Z faktörü: {state.Z:.4f} (P={P_pa/1e5:.1f} bar, T={T_k-273.15:.1f}°C)")
+        elif state.Z > 1.5:
+            thermo_health = "WARNING"
+            health_reasons.append(f"Beklenmedik yüksek sıkıştırılabilirlik faktörü Z={state.Z:.4f}")
+            logger.warning(f"⚠️ Olağandışı yüksek Z faktörü: {state.Z:.4f} (P={P_pa/1e5:.1f} bar, T={T_k-273.15:.1f}°C)")
+        
+        if state.phase in ('liquid', 'two-phase'):
+            thermo_health = "CRITICAL"
+            health_reasons.append("Akışkan sıvı veya iki faz bölgesine girdi (faz ayrışması)")
+            
+        state.raw_props['thermo_health'] = thermo_health
+        state.raw_props['health_reasons'] = health_reasons
              
         self._store_cached_state(cache_key, state)
         self._record_run_tracking(P_pa, T_k, eos_method, state)
@@ -483,13 +507,277 @@ class ThermodynamicSolver:
             speed_of_sound=speed_of_sound
         )
 
+    def _get_thermopack_eos(self, tp_components_tuple, eos_model='PR'):
+        cache_key = (tp_components_tuple, eos_model)
+        if cache_key not in self._package_cache:
+            from thermopack.cubic import cubic
+            components_str = ','.join(tp_components_tuple)
+            eos = cubic(components_str, eos_model)
+            self._package_cache[cache_key] = eos
+        return self._package_cache[cache_key]
+
+    def _solve_thermopack(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
+        """thermopack (SINTEF) motorunu kullanarak özellikleri çözer."""
+        from kasp.core.mixture import GasMixtureBuilder
+        
+        ids, zs = self._extract_thermo_components(gas_data)
+        
+        THERMOPACK_MAPPING = {
+            'METHANE': 'C1',
+            'ETHANE': 'C2',
+            'PROPANE': 'C3',
+            'BUTANE': 'NC4',
+            'ISOBUTANE': 'IC4',
+            'PENTANE': 'NC5',
+            'ISOPENTANE': 'IC5',
+            'HEXANE': 'NC6',
+            'HEPTANE': 'NC7',
+            'OCTANE': 'NC8',
+            'NONANE': 'NC9',
+            'DECANE': 'NC10',
+            'NITROGEN': 'N2',
+            'CARBONDIOXIDE': 'CO2',
+            'HYDROGENSULFIDE': 'H2S',
+            'HYDROGEN': 'H2',
+            'OXYGEN': 'O2',
+            'WATER': 'H2O',
+            'HELIUM': 'HE',
+            'ARGON': 'AR',
+        }
+        
+        reverse_map = {
+            thermo_id.lower(): component
+            for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
+        }
+        
+        tp_ids = []
+        for component_id in ids:
+            canonical = reverse_map.get(str(component_id).lower(), str(component_id).upper())
+            tp_id = THERMOPACK_MAPPING.get(canonical, canonical)
+            tp_ids.append(tp_id)
+            
+        eos = self._get_thermopack_eos(tuple(tp_ids), 'PR')
+        
+        # Calculate specific volume and phase
+        try:
+            v, = eos.specific_volume(T_k, P_pa, zs, eos.VAPPH)
+            phase_str = 'gas'
+        except Exception:
+            try:
+                v, = eos.specific_volume(T_k, P_pa, zs, eos.LIQPH)
+                phase_str = 'liquid'
+            except Exception:
+                v = 8.314462 * T_k / P_pa
+                phase_str = 'ideal'
+                
+        # Calculate MW and density
+        MW_g_mol = sum(zs[i] * MOLAR_MASSES[reverse_map.get(str(ids[i]).lower(), str(ids[i]).upper())] for i in range(len(zs)))
+        molar_mass = MW_g_mol / 1000.0 # kg/mol
+        
+        density = molar_mass / v # kg/m^3
+        Z = P_pa * v / (8.314462 * T_k)
+        
+        # Enthalpy and entropy
+        h_molar, cp_molar = eos.enthalpy(T_k, P_pa, zs, eos.VAPPH if phase_str == 'gas' else eos.LIQPH, dhdt=True)
+        H = h_molar / molar_mass
+        Cp = cp_molar / molar_mass
+        
+        s_molar, = eos.entropy(T_k, P_pa, zs, eos.VAPPH if phase_str == 'gas' else eos.LIQPH)
+        S = s_molar / molar_mass
+        
+        # Internal energy for Cv
+        u_molar, cv_molar = eos.internal_energy_tv(T_k, v, zs, dedt=True)
+        Cv = cv_molar / molar_mass
+        
+        k = Cp / Cv if Cv > 0 else 1.4
+        
+        # Speed of sound
+        try:
+            speed_of_sound = eos.speed_of_sound_tv(T_k, v, zs)
+        except Exception:
+            speed_of_sound = self._speed_of_sound(k, P_pa, density)
+            
+        return self._build_state(
+            P_pa=P_pa,
+            T_k=T_k,
+            H=H,
+            S=S,
+            Z=Z,
+            k=k,
+            MW=MW_g_mol,
+            Cp=Cp,
+            Cv=Cv,
+            density=density,
+            phase=phase_str,
+            fallback=False,
+            speed_of_sound=speed_of_sound
+        )
+
+    def _solve_ccp(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
+        """ccp (Petrobras) motorunu kullanarak özellikleri çözer."""
+        import ccp
+        from ccp import Q_
+        from kasp.core.mixture import GasMixtureBuilder
+        
+        ids, zs = self._extract_thermo_components(gas_data)
+        
+        CCP_MAPPING = {
+            'METHANE': 'Methane',
+            'ETHANE': 'Ethane',
+            'PROPANE': 'Propane',
+            'BUTANE': 'n-Butane',
+            'ISOBUTANE': 'IsoButane',
+            'PENTANE': 'n-Pentane',
+            'ISOPENTANE': 'Isopentane',
+            'HEXANE': 'n-Hexane',
+            'HEPTANE': 'n-Heptane',
+            'OCTANE': 'n-Octane',
+            'NONANE': 'n-Nonane',
+            'DECANE': 'n-Decane',
+            'NITROGEN': 'Nitrogen',
+            'CARBONDIOXIDE': 'CarbonDioxide',
+            'HYDROGENSULFIDE': 'HydrogenSulfide',
+            'HYDROGEN': 'Hydrogen',
+            'OXYGEN': 'Oxygen',
+            'WATER': 'Water',
+            'HELIUM': 'Helium',
+            'ARGON': 'Argon',
+            'AIR': 'Air',
+        }
+        
+        reverse_map = {
+            thermo_id.lower(): component
+            for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
+        }
+        
+        fluid = {}
+        for c_id, fraction in zip(ids, zs):
+            if fraction <= 1e-6:
+                continue
+            canonical = reverse_map.get(str(c_id).lower(), str(c_id).upper())
+            ccp_name = CCP_MAPPING.get(canonical, canonical)
+            fluid[ccp_name] = fraction
+            
+        # Normalize fluid sum to 1.0
+        total = sum(fluid.values())
+        if total > 0:
+            fluid = {k: v/total for k, v in fluid.items()}
+            
+        state_ccp = ccp.State(
+            fluid=fluid,
+            p=Q_(P_pa, 'Pa'),
+            T=Q_(T_k, 'K'),
+            EOS='PR'
+        )
+        
+        H = state_ccp.h().to('J/kg').magnitude
+        S = state_ccp.s().to('J/kg/K').magnitude
+        Z = state_ccp.z().magnitude
+        
+        cp_val = state_ccp.cp().to('J/kg/K').magnitude
+        cv_val = state_ccp.cv().to('J/kg/K').magnitude
+        k = cp_val / cv_val if cv_val > 0 else 1.4
+        
+        density = state_ccp.rho().to('kg/m**3').magnitude
+        
+        MW_g_mol = sum(zs[i] * MOLAR_MASSES[reverse_map.get(str(ids[i]).lower(), str(ids[i]).upper())] for i in range(len(zs)))
+        
+        phase_str = 'gas'
+        if Z < 0.3:
+            phase_str = 'liquid'
+            
+        speed_of_sound = self._speed_of_sound(k, P_pa, density)
+        
+        return self._build_state(
+            P_pa=P_pa,
+            T_k=T_k,
+            H=H,
+            S=S,
+            Z=Z,
+            k=k,
+            MW=MW_g_mol,
+            Cp=cp_val,
+            Cv=cv_val,
+            density=density,
+            phase=phase_str,
+            fallback=False,
+            speed_of_sound=speed_of_sound
+        )
+
     def _solve_fallback(self, P_pa: float, T_k: float, gas_obj, eos: str) -> ThermodynamicState:
         """Kütüphane başarısız olduğunda ideal gaz yaklaşımı."""
         mw_g_mol = self.infer_mw_g_mol(gas_obj)
         M_kg_mol = (mw_g_mol / 1000.0) if mw_g_mol else 0.02896
         
         R_specific = R_UNIVERSAL_J_MOL_K / M_kg_mol
-        Cp_ideal = 1000 + 0.1 * (T_k - 273.15)
+        
+        # 1. Gaz kompozisyonunu ve Thermo/CoolProp yapısını çözümle
+        ids, zs = [], []
+        if isinstance(gas_obj, dict):
+            ids = gas_obj.get("ids", gas_obj.get("IDs", []))
+            zs = gas_obj.get("mol_fractions", gas_obj.get("zs", []))
+        elif isinstance(gas_obj, str):
+            try:
+                from kasp.core.mixture import GasMixtureBuilder
+                from kasp.core.constants import SUPPORTED_GASES
+                rev_supported = {v.lower(): k for k, v in SUPPORTED_GASES.items()}
+                for part in gas_obj.split('&'):
+                    if '[' in part and part.endswith(']'):
+                        name, frac_str = part[:-1].split('[')
+                        canonical = rev_supported.get(name.lower(), name.upper())
+                        thermo_id = GasMixtureBuilder.THERMO_ID_MAP.get(canonical)
+                        if thermo_id:
+                            ids.append(thermo_id)
+                            zs.append(float(frac_str))
+            except Exception:
+                pass
+
+        # 2. Dinamik Ideal Cp Hesaplama
+        Cp_ideal = 1000.0 # Güvenli taban
+        
+        # A) Thermo kütüphanesi kuruluysa ve bileşenler çözülebildiyse tam polynomial Cp
+        if THERMO_LOADED and ids and zs and len(ids) == len(zs):
+            try:
+                constants, properties = self._get_thermo_package(ids)
+                # J/mol-K molar ideal Cp
+                Cp_ig_molar = sum(
+                    zs[i] * properties.HeatCapacityGases[i](T_k) for i in range(len(zs))
+                )
+                Cp_ideal = Cp_ig_molar / M_kg_mol
+            except Exception:
+                pass
+                
+        # B) Thermo kurulu değilse veya başarısız olursa, 298.15K standart Cp değerleri üzerinden ağırlıklı ortalama + sıcaklık düzeltmesi
+        if Cp_ideal == 1000.0 and ids and zs and len(ids) == len(zs):
+            try:
+                STANDARD_CP_MOLAR = {
+                    'methane': 35.7, 'ethane': 52.6, 'propane': 73.6,
+                    'isobutane': 96.8, 'n_butane': 97.4, 'butane': 97.4,
+                    'isopentane': 120.0, 'n_pentane': 120.0, 'pentane': 120.0,
+                    'hexane': 143.0, 'n_hexane': 143.0,
+                    'heptane': 166.0, 'n_heptane': 166.0,
+                    'octane': 189.0, 'n_octane': 189.0,
+                    'nonane': 212.0, 'decane': 235.0,
+                    'hydrogen': 28.8, 'hydrogen sulfide': 34.2, 'hydrogen_sulfide': 34.2,
+                    'nitrogen': 29.12, 'carbon dioxide': 37.13, 'carbon_dioxide': 37.13,
+                    'water': 33.58, 'oxygen': 29.37, 'argon': 20.786,
+                    'helium': 20.786, 'neon': 20.786, 'krypton': 20.786,
+                    'xenon': 20.786, 'air': 29.07
+                }
+                cp_molar_mix = sum(
+                    zs[i] * STANDARD_CP_MOLAR.get(str(ids[i]).lower(), 29.0)
+                    for i in range(len(zs))
+                )
+                # 298.15K'den uzaklaştıkça ideal Cp artış faktörü
+                temp_factor = 1.0 + 0.001 * (T_k - 298.15)
+                Cp_ideal = (cp_molar_mix * temp_factor) / M_kg_mol
+            except Exception:
+                pass
+
+        # C) Eğer her şey başarısız olursa eski doğrusal formül
+        if Cp_ideal == 1000.0:
+            Cp_ideal = 1000 + 0.1 * (T_k - 273.15)
+        
         Cv_ideal = Cp_ideal - R_specific
         k_ideal = Cp_ideal / Cv_ideal if Cv_ideal > 0 else 1.4
         
@@ -526,3 +814,209 @@ class ThermodynamicSolver:
                 'size': len(self._property_cache),
                 'max_size': self._max_cache_size
             }
+
+    def _load_dwsim_dll(self):
+        """DWSIM Standalone dll'sini bulur ve pythonnet clr ile yükler."""
+        if hasattr(self, "_dwsim_dll_loaded"):
+            return self._dwsim_dll_loaded
+
+        self._dwsim_dll_loaded = False
+        try:
+            import clr
+            import os
+            
+            search_paths = [
+                getattr(sys, '_MEIPASS', ''),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs"),
+                os.path.abspath("."),
+                os.path.abspath("./kasp/libs"),
+                "/Applications/DWSIM.app/Contents/MonoBundle",
+                "C:\\Program Files\\DWSIM",
+                "C:\\Program Files (x86)\\DWSIM",
+            ]
+            
+            dll_name = "DWSIM.Thermodynamics.StandaloneLibrary.dll"
+            loaded = False
+            
+            try:
+                clr.AddReference("DWSIM.Thermodynamics.StandaloneLibrary")
+                loaded = True
+            except Exception:
+                pass
+                
+            if not loaded:
+                for path in search_paths:
+                    full_path = os.path.join(path, dll_name)
+                    if os.path.exists(full_path):
+                        clr.AddReference(full_path)
+                        loaded = True
+                        break
+                        
+            if loaded:
+                from DWSIM.Thermodynamics import PropertyPackages, CalculatorInterface
+                self._dwsim_PropertyPackages = PropertyPackages
+                self._dwsim_Calculator = CalculatorInterface.Calculator()
+                self._dwsim_Calculator.Initialize()
+                self._dwsim_dll_loaded = True
+                logger.info("🎉 DWSIM Standalone Thermodynamics Library başarıyla yüklendi!")
+        except Exception as e:
+            logger.warning(f"⚠️ DWSIM DLL yükleme hatası: {e}")
+            self._dwsim_dll_loaded = False
+            
+        return self._dwsim_dll_loaded
+
+    def _solve_dwsim(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
+        """DWSIM Standalone Thermodynamics Library kullanarak özellikleri çözer."""
+        if not self._load_dwsim_dll():
+            raise RuntimeError("DWSIM Standalone kütüphanesi yüklenemedi.")
+            
+        from System import Array, Double, String
+        
+        ids, zs = self._extract_thermo_components(gas_data)
+        
+        from kasp.core.mixture import GasMixtureBuilder
+        reverse_map = {
+            thermo_id.lower(): component
+            for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
+        }
+        
+        DWSIM_MAPPING = {
+            'METHANE': 'Methane',
+            'ETHANE': 'Ethane',
+            'PROPANE': 'Propane',
+            'BUTANE': 'n-Butane',
+            'ISOBUTANE': 'Isobutane',
+            'PENTANE': 'n-Pentane',
+            'ISOPENTANE': 'Isopentane',
+            'HEXANE': 'n-Hexane',
+            'HEPTANE': 'n-Heptane',
+            'OCTANE': 'n-Octane',
+            'NONANE': 'n-Nonane',
+            'DECANE': 'n-Decane',
+            'NITROGEN': 'Nitrogen',
+            'CARBONDIOXIDE': 'Carbon Dioxide',
+            'HYDROGENSULFIDE': 'Hydrogen Sulfide',
+            'HYDROGEN': 'Hydrogen',
+            'OXYGEN': 'Oxygen',
+            'WATER': 'Water',
+            'HELIUM': 'Helium',
+            'ARGON': 'Argon',
+            'AIR': 'Air',
+        }
+        
+        dwsim_names = []
+        dwsim_fracs = []
+        
+        for c_id, fraction in zip(ids, zs):
+            if fraction <= 1e-6:
+                continue
+            canonical = reverse_map.get(str(c_id).lower(), str(c_id).upper())
+            dw_name = DWSIM_MAPPING.get(canonical, canonical)
+            dwsim_names.append(dw_name)
+            dwsim_fracs.append(fraction)
+            
+        total_frac = sum(dwsim_fracs)
+        if total_frac > 0:
+            dwsim_fracs = [f / total_frac for f in dwsim_fracs]
+            
+        carray = Array[String](dwsim_names)
+        comparray = Array[Double](dwsim_fracs)
+        
+        cache_key = tuple(dwsim_names)
+        if cache_key not in self._package_cache:
+            water_fraction = 0.0
+            if 'Water' in dwsim_names:
+                idx = dwsim_names.index('Water')
+                water_fraction = dwsim_fracs[idx]
+            if water_fraction > 0.05:
+                pp = self._dwsim_PropertyPackages.SteamTablesPropertyPackage(True)
+            else:
+                pp = self._dwsim_PropertyPackages.PRPropertyPackage(True)
+            self._package_cache[cache_key] = pp
+        else:
+            pp = self._package_cache[cache_key]
+            
+        ms = self._dwsim_Calculator.CreateMaterialStream(carray, comparray)
+        ms.SetPropertyPackage(pp)
+        
+        ms.SetTemperature(float(T_k))
+        ms.SetPressure(float(P_pa))
+        ms.SetFlashSpec("PT")
+        ms.Calculate()
+        
+        present_phases = list(ms.GetPresentPhases())
+        phase_label = "Vapor" if "Vapor" in present_phases else "Overall"
+        
+        try:
+            density = float(ms.GetSinglePhaseProp("density", phase_label, "Mass"))
+        except Exception:
+            density = float(ms.GetSinglePhaseProp("density", "Overall", "Mass"))
+            
+        try:
+            H = float(ms.GetSinglePhaseProp("enthalpy", phase_label, "Mass")) * 1000.0
+        except Exception:
+            H = float(ms.GetSinglePhaseProp("enthalpy", "Overall", "Mass")) * 1000.0
+            
+        try:
+            S = float(ms.GetSinglePhaseProp("entropy", phase_label, "Mass")) * 1000.0
+        except Exception:
+            S = float(ms.GetSinglePhaseProp("entropy", "Overall", "Mass")) * 1000.0
+            
+        try:
+            Z = float(ms.GetSinglePhaseProp("compressibilityFactor", phase_label, "Mass"))
+        except Exception:
+            Z = float(ms.GetSinglePhaseProp("compressibilityFactor", "Overall", "Mass"))
+            
+        try:
+            cp_val = float(ms.GetSinglePhaseProp("heatCapacityCp", phase_label, "Mass")) * 1000.0
+        except Exception:
+            cp_val = float(ms.GetSinglePhaseProp("heatCapacityCp", "Overall", "Mass")) * 1000.0
+            
+        try:
+            cv_val = float(ms.GetSinglePhaseProp("heatCapacityCv", phase_label, "Mass")) * 1000.0
+        except Exception:
+            cv_val = float(ms.GetSinglePhaseProp("heatCapacityCv", "Overall", "Mass")) * 1000.0
+            
+        k = cp_val / cv_val if cv_val > 0 else 1.4
+        
+        try:
+            speed_of_sound = float(ms.GetSinglePhaseProp("speedOfSound", phase_label, "Mass"))
+        except Exception:
+            speed_of_sound = self._speed_of_sound(k, P_pa, density)
+
+        try:
+            mu_val = float(ms.GetSinglePhaseProp("viscosity", phase_label, "Mass"))
+        except Exception:
+            try:
+                mu_val = float(ms.GetSinglePhaseProp("viscosity", "Overall", "Mass"))
+            except Exception:
+                mu_val = 1.1e-5
+
+        try:
+            tc_val = float(ms.GetSinglePhaseProp("thermalConductivity", phase_label, "Mass"))
+        except Exception:
+            try:
+                tc_val = float(ms.GetSinglePhaseProp("thermalConductivity", "Overall", "Mass"))
+            except Exception:
+                tc_val = 0.0
+
+        MW_g_mol = sum(zs[i] * MOLAR_MASSES[reverse_map.get(str(ids[i]).lower(), str(ids[i]).upper())] for i in range(len(zs)))
+        phase_str = 'gas' if phase_label == 'Vapor' else 'liquid'
+
+        return self._build_state(
+            P_pa=P_pa,
+            T_k=T_k,
+            H=H,
+            S=S,
+            Z=Z,
+            k=k,
+            MW=MW_g_mol,
+            Cp=cp_val,
+            Cv=cv_val,
+            density=density,
+            phase=phase_str,
+            fallback=False,
+            speed_of_sound=speed_of_sound,
+            mu=mu_val
+        )
+

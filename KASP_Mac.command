@@ -6,7 +6,8 @@ cd "$(dirname "$0")"
 
 echo "=========================================="
 echo "      KASP Compressor Analysis & Selection"
-echo "            macOS Launcher v1.6.1"
+VERSION=$(python3 -c "from release_metadata import RELEASE_VERSION; print(RELEASE_VERSION)")
+echo "            macOS Launcher v${VERSION}"
 echo "=========================================="
 echo ""
 

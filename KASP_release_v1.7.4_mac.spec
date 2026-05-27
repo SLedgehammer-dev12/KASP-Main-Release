@@ -1,7 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Release spec for GitHub release v1.7.0 (Windows).
-# V1.7.0: Responsive UI + QSplitter panels + 8 enhanced graphs.
-# V1.7.4: DWSIM DLL bundle entegrasyonu.
+# macOS release spec for GitHub release v1.7.4.
+# V1.7.4: DWSIM EOS entegrasyonu + gelişmiş kullanıcı yönetimi + 3-layer mimari düzeltmeleri.
 
 import sys
 from pathlib import Path
@@ -12,7 +11,9 @@ ROOT = Path.cwd()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from release_metadata import RELEASE_EXE_STEM
+from release_metadata import RELEASE_TAG
+
+APP_STEM = f"KASP {RELEASE_TAG}"
 
 
 def include_runtime_submodule(name):
@@ -41,7 +42,7 @@ all_datas.extend(thermo_datas)
 all_datas.extend(chemicals_datas)
 all_datas.extend(scipy_datas)
 
-# DWSIM DLL bundle
+# DWSIM DLL bundle — macOS'ta opsiyonel (Mono gerektirir)
 dwsim_binaries = []
 dwsim_dll_dir = ROOT / "kasp" / "core" / "libs"
 if dwsim_dll_dir.exists():
@@ -56,22 +57,21 @@ try:
 except Exception:
     pass
 
-all_hidden = []
-all_hidden.extend([
+all_hidden = [
     "matplotlib.backends.backend_qt5agg",
     "matplotlib.backends.backend_qtagg",
     "matplotlib.backends.qt_compat",
-])
+]
 all_hidden.extend(collect_submodules("thermo", filter=include_runtime_submodule))
 all_hidden.extend(collect_submodules("chemicals", filter=include_runtime_submodule))
 all_hidden.extend(collect_submodules("scipy", filter=include_runtime_submodule))
 
-# pythonnet hidden imports
+# pythonnet hidden imports — macOS'ta sadece pythonnet kuruluysa
 try:
     all_hidden.extend(collect_submodules("pythonnet", filter=include_runtime_submodule))
+    all_hidden.append("clr")
 except Exception:
     pass
-all_hidden.append("clr")
 
 a = Analysis(
     ["main.py"],
@@ -94,7 +94,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name=RELEASE_EXE_STEM,
+    name="KASP-launcher",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -102,10 +102,24 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
-    icon="resources/icon.ico",
+    icon="resources/icon.icns",
     disable_windowed_traceback=False,
-    argv_emulation=False,
+    argv_emulation=True,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+app = BUNDLE(
+    exe,
+    name=APP_STEM + ".app",
+    icon="resources/icon.icns",
+    bundle_identifier="com.kasp.analysis",
+    info_plist={
+        "CFBundleShortVersionString": RELEASE_TAG.lstrip("v"),
+        "CFBundleVersion": RELEASE_TAG.lstrip("v"),
+        "CFBundleDisplayName": f"KASP {RELEASE_TAG}",
+        "NSHighResolutionCapable": True,
+        "LSMinimumSystemVersion": "11.0",
+    },
 )

@@ -203,6 +203,17 @@ class KaspMainWindow(QMainWindow):
         # CRITICAL FIX: Initialize all UI components
         self._initialize_ui()
 
+        # Oturum bilgisini pencere başlığına yansıt
+        try:
+            from kasp.security import Session
+            user = Session.current_user()
+            if user:
+                title = f"KASP v{APP_VERSION} — {user.username} ({user.role})"
+                self.setWindowTitle(title)
+            self._update_admin_menu_visibility()
+        except Exception:
+            pass
+
         self.design_results_presenter = DesignResultsPresenter(
             self,
             engine=self.engine,
@@ -788,6 +799,34 @@ class KaspMainWindow(QMainWindow):
 
     def show_examples(self):
         return self.window_actions.show_examples()
+
+    def show_thermodynamics_handbook(self):
+        return self.window_actions.show_thermodynamics_handbook()
+
+    def _update_admin_menu_visibility(self):
+        from kasp.security import Session
+        menu_bar = self.menuBar()
+        for action in menu_bar.findChildren(QAction):
+            if action.text() == "👥 Kullanıcı Yönetimi":
+                action.setVisible(Session.is_admin())
+                break
+
+    def show_admin_panel(self):
+        from kasp.security import Session
+        if not Session.is_admin():
+            return
+        from kasp.core.user_manager import UserManager
+        from kasp.data.database import UnitDatabase
+        from kasp.ui.admin_panel import AdminPanelDialog
+        db = UnitDatabase()
+        user_manager = UserManager(db)
+        dialog = AdminPanelDialog(user_manager, parent=self)
+        dialog.exec_()
+
+    def logout(self):
+        from kasp.security import Session
+        Session.logout()
+        self.close()
 
     def new_project(self):
         return self.document_workflow.new_project()

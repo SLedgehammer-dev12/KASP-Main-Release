@@ -98,7 +98,7 @@ class ThermoEngine:
         comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
         if eos_method == 'coolprop':
             return GasMixtureBuilder.build_coolprop_string(comp_frac)
-        elif eos_method in ['pr', 'srk', 'aga8']:
+        elif eos_method in ['pr', 'srk', 'aga8', 'thermopack', 'ccp', 'dwsim']:
             return GasMixtureBuilder.build_thermo_data(comp_frac)
         else:
             raise ValueError(f"Bilinmeyen EOS metodu: {eos_method}")
@@ -387,6 +387,8 @@ class ThermoEngine:
         from kasp.core.aerodynamics import reset_fallback_comparisons, set_current_stage, get_fallback_comparisons
         reset_fallback_comparisons()
         set_current_stage("Performans")
+        solver_method = inputs.get("solver_method", "auto")
+        self.thermo_solver.begin_run_tracking(solver_method)
         try:
             p1 = inputs['p1_pa']
             t1 = inputs['t1_k']
@@ -490,6 +492,8 @@ class ThermoEngine:
         except Exception as e:
             self.logger.error(f"Performans değerlendirme hatası: {e}")
             raise
+        finally:
+            self.thermo_solver.end_run_tracking()
 
     def calculate_polytropic_efficiency(self, p1_pa, t1_k, p2_pa, t2_k, gas_comp, eos_method):
         """Basit poli verim hesaplayıcı (UI'da bazı alt panellerde doğrudan çağırılır)"""
@@ -859,7 +863,8 @@ class ThermoEngine:
         reset_fallback_comparisons()
         try:
             fallback_tracking = None
-            self.thermo_solver.begin_run_tracking()
+            solver_method = inputs.get("solver_method", "auto")
+            self.thermo_solver.begin_run_tracking(solver_method)
             try:
                 context = self._prepare_design_context(inputs)
 

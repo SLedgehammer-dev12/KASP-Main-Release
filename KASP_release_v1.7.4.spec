@@ -1,7 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Release spec for GitHub release v1.7.0 (Windows).
-# V1.7.0: Responsive UI + QSplitter panels + 8 enhanced graphs.
-# V1.7.4: DWSIM DLL bundle entegrasyonu.
+# Release spec for GitHub release v1.7.4 (Windows).
+# V1.7.4: DWSIM EOS entegrasyonu + gelişmiş kullanıcı yönetimi + 3-layer mimari düzeltmeleri.
 
 import sys
 from pathlib import Path
