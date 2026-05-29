@@ -874,6 +874,8 @@ class KaspMainWindow(QMainWindow):
         from kasp.core.engineering import run_eos_shootout
         table = self._eng_widgets["eos_table"]
         table.setRowCount(0)
+        prop_table = self._eng_widgets["prop_table"]
+        prop_table.setRowCount(0)
         results = run_eos_shootout(self.engine, self.last_design_inputs)
         for r in results:
             row = table.rowCount()
@@ -888,6 +890,21 @@ class KaspMainWindow(QMainWindow):
                 table.setItem(row, 6, QTableWidgetItem(f"{r.get('elapsed_s', 0):.2f}"))
             else:
                 table.setItem(row, 1, QTableWidgetItem(f"❌ {r.get('error', '')}"))
+
+            # Ham property tablosu
+            raw = r.get("raw_props", {})
+            if r["success"] and raw:
+                prow = prop_table.rowCount()
+                prop_table.insertRow(prow)
+                prop_table.setItem(prow, 0, QTableWidgetItem(r.get("label", "—")))
+                prop_table.setItem(prow, 1, QTableWidgetItem(f"{raw.get('inlet_mw', 0):.2f}" if raw.get('inlet_mw') else "—"))
+                prop_table.setItem(prow, 2, QTableWidgetItem(f"{raw.get('inlet_k', 0):.4f}" if raw.get('inlet_k') else "—"))
+                prop_table.setItem(prow, 3, QTableWidgetItem(f"{raw.get('inlet_z', 0):.4f}" if raw.get('inlet_z') else "—"))
+                prop_table.setItem(prow, 4, QTableWidgetItem(f"{raw.get('inlet_cp', 0):.1f}" if raw.get('inlet_cp') else "—"))
+                prop_table.setItem(prow, 5, QTableWidgetItem(f"{raw.get('inlet_cv', 0):.1f}" if raw.get('inlet_cv') else "—"))
+                prop_table.setItem(prow, 6, QTableWidgetItem(f"{raw.get('inlet_density', 0):.2f}" if raw.get('inlet_density') else "—"))
+                prop_table.setItem(prow, 7, QTableWidgetItem(str(raw.get('inlet_phase', "—"))))
+                prop_table.setItem(prow, 8, QTableWidgetItem(f"{raw.get('mass_flow_kgs', 0):.4f}" if raw.get('mass_flow_kgs') else "—"))
 
     def _run_method_shootout(self):
         if not getattr(self, "last_design_inputs", None):

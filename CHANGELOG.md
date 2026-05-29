@@ -31,6 +31,7 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 - **Level-aware log filter** — hierarchical filtering (DEBUG > ITERATION > INFO > WARNING > ERROR)
 - **EOS Shootout** — compare all 7 EOS engines on identical inputs (head diff %, timing)
 - **Method Shootout** — compare all 4 sizing methods on identical inputs
+- **Raw Property Comparison** — inlet MW, k, Z, Cp, Cv, density, phase per EOS side-by-side
 - **Cache Performance graph** — now selectable from graph dropdown
 - **CSV export** — trace data export button
 
@@ -40,21 +41,23 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 - ThermoHandbook theme — SVG diagram dynamically adapts to Light/Dark/Engineering themes
 - `filter_logs_by_level` — level-aware hierarchical filtering replaces substring matching
 - `update_user` allowed set — `must_change_password` field now writable
+- Test compatibility with Python 3.13 urllib ssl context parameter
 
-### Added: DWSIM Bundle
-- `kasp/core/libs/` directory for DWSIM DLL files
+### Added
+- **Raw Property Comparison table** in Engineering Dashboard — EOS shootout now collects and displays inlet MW, k, Z, Cp, Cv, density, and phase for all 7 EOS backends
+- `_extract_raw_properties()` helper in `kasp/core/engineering.py`
+- DWSIM Bundle — `kasp/core/libs/` directory for DWSIM DLL files
 - `sys._MEIPASS` search path in `_load_dwsim_dll()` for PyInstaller bundle
 - `.spec` files include DWSIM DLL binaries + pythonnet hidden imports
 - `test_dwsim_integration.py` — 7 tests (3 pass + 4 skip on macOS dev)
-- `test_engineering_mode.py` — 18 tests
+- `test_engineering_mode.py` — 18 tests (incl. 2 new graph cache performance tests)
 - `test_engineering_shootout.py` — 7 tests
-- `test_engineering_shootout.py` — EOS/Method shootout core tests
 - `kasp/ui/diagram_svg.py` — theme-aware 3-layer SVG diagram generator
 - Consolidated `CHANGELOG.md`
 
 ### Changed
 - `_create_gas_object()` accepts `'dwsim'` as valid EOS method
-- Test suite: **132 tests** (83% increase from 72), 0 regressions
+- Test suite: **171 tests** (137% increase from 72), 0 regressions, 4 skipped (DWSIM)
 - Release pipeline updated for v2.0.0
 
 ---

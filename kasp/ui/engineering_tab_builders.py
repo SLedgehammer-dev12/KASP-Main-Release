@@ -103,6 +103,20 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     eos_group.setLayout(eos_layout)
     layout.addWidget(eos_group)
 
+    # ── 5b. EOS Ham Property Karşılaştırma ──
+    prop_group = QGroupBox("🔍 Ham Property Karşılaştırması (Raw Props @ Inlet & Outlet)")
+    prop_layout = QVBoxLayout()
+    prop_table = QTableWidget(0, 9)
+    prop_table.setHorizontalHeaderLabels([
+        "EOS", "MW (g/mol)", "k (Cp/Cv)", "Z", "Cp (J/kgK)",
+        "Cv (J/kgK)", "ρ (kg/m³)", "Faz", "Debi (kg/s)"
+    ])
+    prop_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Stretch)
+    prop_table.setObjectName("eng_prop_shootout")
+    prop_layout.addWidget(prop_table)
+    prop_group.setLayout(prop_layout)
+    layout.addWidget(prop_group)
+
     # ── 6. Metot Shootout ──
     method_group = QGroupBox("🧮 Metot Karşılaştırma (Method Shootout)")
     method_layout = QVBoxLayout()
@@ -130,6 +144,7 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
         "fallback_table": fallback_table,
         "eos_table": eos_table,
         "eos_run_btn": eos_run_btn,
+        "prop_table": prop_table,
         "method_table": method_table,
         "method_run_btn": method_run_btn,
         "export_btn": export_btn,

@@ -71,7 +71,7 @@ def test_fetch_releases_parses_assets_and_detects_newer(monkeypatch):
         },
     ]
 
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, **_kw):
         return _FakeResponse(json.dumps(payload).encode("utf-8"))
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -106,7 +106,7 @@ def test_download_asset_writes_file(monkeypatch, tmp_path):
         }
     ).assets[0]
 
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, **_kw):
         return _FakeResponse(b"hello world", headers={"Content-Length": "11"})
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -133,7 +133,7 @@ def test_download_asset_accepts_directory_destination(monkeypatch, tmp_path):
         }
     ).assets[0]
 
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, **_kw):
         return _FakeResponse(b"hello", headers={"Content-Length": "5"})
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -156,7 +156,7 @@ def test_fetch_releases_accepts_single_release_object(monkeypatch):
         "assets": [],
     }
 
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, **_kw):
         return _FakeResponse(json.dumps(payload).encode("utf-8"))
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)

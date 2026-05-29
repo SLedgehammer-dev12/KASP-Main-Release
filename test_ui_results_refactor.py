@@ -61,7 +61,7 @@ def test_main_window_results_methods_delegate_to_presenters(app, monkeypatch):
         monkeypatch.setattr(
             window.graph_workflow,
             "save_current_graph",
-            lambda: calls.append(("save_current_graph",)),
+            lambda fmt="png": calls.append(("save_current_graph",)),
         )
 
         window._update_results_ui({"compression_ratio": 1.5}, [])

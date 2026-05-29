@@ -29,6 +29,23 @@ ALL_METHOD_LABELS = [
 ]
 
 
+def _extract_raw_properties(output: dict) -> dict:
+    """Hesaplama sonuclarindan ham property degerlerini cikarir."""
+    props = {}
+    for point, key in [("inlet", "inlet_properties"), ("outlet", "outlet_properties")]:
+        data = output.get(key, {}) or {}
+        props[f"{point}_mw"] = data.get("M_kg_mol", 0) * 1000.0 if data.get("M_kg_mol") else None
+        props[f"{point}_k"] = data.get("k")
+        props[f"{point}_z"] = data.get("Z")
+        props[f"{point}_cp"] = data.get("Cp")
+        props[f"{point}_cv"] = data.get("Cv")
+        props[f"{point}_density"] = data.get("rho")
+        props[f"{point}_phase"] = data.get("phase")
+    props["mass_flow_kgs"] = output.get("mass_flow_total_kgs")
+    props["fallback_used"] = output.get("fallback_used", False)
+    return props
+
+
 def run_eos_shootout(engine, base_inputs: dict) -> list[dict]:
     """Tüm EOS motorlarını aynı girdilerle çalıştırır, sonuçları karşılaştırır."""
     results = []
@@ -40,6 +57,7 @@ def run_eos_shootout(engine, base_inputs: dict) -> list[dict]:
         try:
             output = engine.calculate_design_performance(inputs)
             elapsed = time.perf_counter() - t0
+            raw = _extract_raw_properties(output)
             results.append({
                 "eos": eos,
                 "label": ALL_EOS_LABELS.get(eos, eos),
@@ -51,6 +69,7 @@ def run_eos_shootout(engine, base_inputs: dict) -> list[dict]:
                 "z_avg": output.get("z_avg", None),
                 "elapsed_s": elapsed,
                 "fallback_used": output.get("fallback_used", None),
+                "raw_props": raw,
                 "error": None,
             })
             if eos == "coolprop" and reference is None:
