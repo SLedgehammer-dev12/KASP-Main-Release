@@ -49,8 +49,9 @@ def _register_template_fonts():
             pdfmetrics.registerFont(TTFont("DejaVuSans", regular))
         if os.path.exists(bold):
             pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", bold))
-    except Exception:
-        pass
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Template DejaVuSans font registration failed: {e}")
 
 
 _register_template_fonts()

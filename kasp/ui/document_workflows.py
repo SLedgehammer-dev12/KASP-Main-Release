@@ -216,7 +216,8 @@ class DocumentWorkflowController:
 
     def export_results(self):
         QFileDialog, QMessageBox = self._qt_widgets()
-        if not self.window.last_design_results_raw:
+        results = self.window.last_design_results_raw
+        if results is None or (isinstance(results, dict) and not results):
             QMessageBox.warning(self.window, "Uyarı", "Önce bir hesaplama yapın.")
             return
 

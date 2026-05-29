@@ -26,17 +26,36 @@ def _get_font_path(filename):
 
 
 def _register_dejavu_fonts():
+    global DEJAVU_SANS_REGISTERED
+    DEJAVU_SANS_REGISTERED = False
     if not REPORTLAB_LOADED:
         return
+    regular_ok = False
+    bold_ok = False
     try:
         regular = _get_font_path("DejaVuSans.ttf")
         bold = _get_font_path("DejaVuSans-Bold.ttf")
         if os.path.exists(regular):
             pdfmetrics.registerFont(TTFont("DejaVuSans", regular))
+            regular_ok = True
         if os.path.exists(bold):
             pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", bold))
-    except Exception:
-        pass
+            bold_ok = True
+    except Exception as e:
+        logger.warning(f"DejaVuSans font registration failed: {e}")
+
+    DEJAVU_SANS_REGISTERED = regular_ok
+    if not regular_ok:
+        logger.info("DejaVuSans font not available — PDF reports will use Helvetica")
+
+
+DEJAVU_SANS_REGISTERED = False
+
+
+def _set_pdf_fonts(styles):
+    if DEJAVU_SANS_REGISTERED:
+        for style_name in styles.byName:
+            styles[style_name].fontName = "DejaVuSans"
 
 
 def _is_english():
@@ -101,8 +120,7 @@ class ReportGenerator:
             doc = SimpleDocTemplate(self.file_path, pagesize=A4)
             story = []
             styles = getSampleStyleSheet()
-            for style_name in styles.byName:
-                styles[style_name].fontName = "DejaVuSans"
+            _set_pdf_fonts(styles)
             
             # Başlık
             title = Paragraph(
@@ -672,8 +690,7 @@ class ReportGenerator:
             doc = SimpleDocTemplate(self.file_path, pagesize=A4)
             story = []
             styles = getSampleStyleSheet()
-            for style_name in styles.byName:
-                styles[style_name].fontName = "DejaVuSans"
+            _set_pdf_fonts(styles)
             
             # Başlık
             title = Paragraph(f"KASP v{APP_VERSION} - Performans Degerlendirme Raporu<br/>{inputs['unit_name']}", styles['Title'])

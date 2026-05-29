@@ -39,7 +39,7 @@ class ConfigManager:
         "ui": {
             "window_width": 1200,
             "window_height": 800,
-            "font_family": "Segoe UI",
+            "font_family": "SF Pro",
             "font_size": 9,
             "show_tooltips": True,
             "confirm_on_delete": True

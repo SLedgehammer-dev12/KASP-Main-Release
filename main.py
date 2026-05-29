@@ -134,7 +134,7 @@ def main():
             apply_responsive_font(app, base_pt=9)
         except Exception:
             from PyQt5.QtGui import QFont
-            app.setFont(QFont("Segoe UI", 9))
+            app.setFont(QFont("SF Pro, Segoe UI, Helvetica Neue", 9))
             logger.info("✓ Application font set to Segoe UI 9pt (fallback)")
         
         # Set application icon if exists

@@ -233,10 +233,10 @@ def apply_responsive_font(app, base_pt: int = 9):
         from PyQt5.QtGui import QFont
 
         pt = scaled_font_pt(base_pt)
-        font = QFont("Segoe UI", pt)
+        font = QFont("SF Pro, Segoe UI, Helvetica Neue, Arial", pt)
         app.setFont(font)
         logger.info(
-            f"✓ Responsive font: Segoe UI {pt}pt "
+            f"✓ Responsive font: SF Pro/Segoe UI {pt}pt "
             f"(base={base_pt}, DPI={get_dpi():.0f}, "
             f"cat={get_screen_category()})"
         )

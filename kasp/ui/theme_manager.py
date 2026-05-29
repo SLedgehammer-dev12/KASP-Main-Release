@@ -508,43 +508,47 @@ class ThemeManager:
                 border-radius: 3px;
             }}
             
-            /* Scroll Bars */
+            /* Scroll Bars — Yüksek görünürlük */
             QScrollBar:vertical {{
                 background-color: {theme['surface']};
-                width: {_px(8)}px;
-                border-radius: 4px;
+                width: {_px(14)}px;
+                border-radius: 7px;
+                margin: 2px;
             }}
-            
+
             QScrollBar::handle:vertical {{
-                background-color: {theme['text_secondary']};
-                border-radius: 4px;
-                min-height: {_px(20)}px;
+                background-color: {theme['border']};
+                border-radius: 7px;
+                min-height: {_px(30)}px;
             }}
-            
+
             QScrollBar::handle:vertical:hover {{
                 background-color: {theme['primary']};
             }}
-            
+
             QScrollBar:horizontal {{
                 background-color: {theme['surface']};
-                height: {_px(8)}px;
-                border-radius: 4px;
+                height: {_px(14)}px;
+                border-radius: 7px;
+                margin: 2px;
             }}
-            
+
             QScrollBar::handle:horizontal {{
-                background-color: {theme['text_secondary']};
-                border-radius: 4px;
-                min-width: {_px(20)}px;
+                background-color: {theme['border']};
+                border-radius: 7px;
+                min-width: {_px(30)}px;
             }}
-            
+
             QScrollBar::handle:horizontal:hover {{
                 background-color: {theme['primary']};
             }}
-            
+
             QScrollBar::add-line, QScrollBar::sub-line,
             QScrollBar::add-page, QScrollBar::sub-page {{
                 background: none;
                 border: none;
+                width: 0px;
+                height: 0px;
             }}
             
             /* Tool Tips */
