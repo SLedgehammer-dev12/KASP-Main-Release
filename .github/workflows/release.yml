@@ -32,17 +32,26 @@ jobs:
         run: |
           python -c "from release_metadata import RELEASE_SPEC_FILENAME; import subprocess; subprocess.run(['pyinstaller', '--clean', RELEASE_SPEC_FILENAME], check=True)"
 
-      - name: Identify Asset
+      - name: Identify Asset & Release Notes
         shell: bash
         run: |
           EXE_NAME=$(python -c "from release_metadata import RELEASE_EXE_NAME; print(RELEASE_EXE_NAME)")
+          RELEASE_TAG=$(python -c "from release_metadata import RELEASE_TAG; print(RELEASE_TAG)")
+          NOTES_FILE="${RELEASE_TAG}_release_notes.md"
           echo "EXE_PATH=dist/${EXE_NAME}" >> $GITHUB_ENV
+          if [ -f "${NOTES_FILE}" ]; then
+            echo "NOTES_PATH=${NOTES_FILE}" >> $GITHUB_ENV
+            echo "NOTES_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "NOTES_FOUND=false" >> $GITHUB_ENV
+          fi
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.EXE_PATH }}
-          generate_release_notes: true
+          body_path: ${{ env.NOTES_PATH }}
+          generate_release_notes: ${{ env.NOTES_FOUND == 'false' }}
 
   # ── macOS .app → .dmg ──────────────────────────────────────────────
   release-mac:
