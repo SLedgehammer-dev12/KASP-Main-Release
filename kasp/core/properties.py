@@ -49,8 +49,10 @@ class ThermodynamicSolver:
         self._package_cache = {}
         self._run_tracking = threading.local()
         
-        # Fallback warning rate-limit: track warned EOS per run
-        self._warned_eos_fallbacks = set()
+        # Akilli fallback takipcisi
+        from kasp.core.fallback import FallbackTracker
+        self._fallback_tracker = FallbackTracker()
+        self._active_eos_chain = None
 
     @staticmethod
     def _coerce_cache_size(value, default=2000):
@@ -152,7 +154,7 @@ class ThermodynamicSolver:
             "fallback_events": OrderedDict(),
             "solver_method": solver_method,
         }
-        self._warned_eos_fallbacks.clear()
+        self._fallback_tracker.reset()
 
     def end_run_tracking(self):
         context = getattr(self._run_tracking, "context", None)
@@ -194,10 +196,29 @@ class ThermodynamicSolver:
             "phase": state.phase,
         }
         
-    def get_properties(self, P_pa: float, T_k: float, gas_obj, eos_method: str) -> ThermodynamicState:
+    def _dispatch(self, P_pa: float, T_k: float, gas_obj, eos_method: str) -> ThermodynamicState:
+        """EOS'a ozgu cozucuyu cagirir. Fallback yapmaz, saf dispatch."""
+        if eos_method == 'coolprop':
+            return self._solve_coolprop(P_pa, T_k, gas_obj)
+        elif eos_method in ['pr', 'srk']:
+            return self._solve_thermo_eos(P_pa, T_k, gas_obj, eos_method)
+        elif eos_method == 'aga8':
+            return self._solve_aga8(P_pa, T_k, gas_obj)
+        elif eos_method == 'thermopack':
+            return self._solve_thermopack(P_pa, T_k, gas_obj)
+        elif eos_method == 'ccp':
+            return self._solve_ccp(P_pa, T_k, gas_obj)
+        elif eos_method == 'dwsim':
+            return self._solve_dwsim(P_pa, T_k, gas_obj)
+        else:
+            raise ValueError(f"Desteklenmeyen EOS: {eos_method}")
+        
+    def get_properties(self, P_pa: float, T_k: float, gas_obj, eos_method: str, *, eos_chain=None) -> ThermodynamicState:
         """
         Giriş basınç ve sıcaklığına bağli olarak durumu çözer. Cache mimarisi kullanir.
         gas_obj: Eğer coolprop ise string, thermo ise dict objesidir (mixture.py tarafindan uretilir)
+        
+        eos_chain: Opsiyonel EosChain objesi. Verilirse akilli EOS fallback zinciri kullanilir.
         """
         cache_key = self._build_cache_key(P_pa, T_k, gas_obj, eos_method)
 
@@ -207,42 +228,34 @@ class ThermodynamicSolver:
                 
         self._record_cache_miss()
         
-        # 2. Ana Hesaplama Döngüsü
-        try:
-            if eos_method == 'coolprop':
-                state = self._solve_coolprop(P_pa, T_k, gas_obj)
-            elif eos_method in ['pr', 'srk']:
-                state = self._solve_thermo_eos(P_pa, T_k, gas_obj, eos_method)
-            elif eos_method == 'aga8':
-                state = self._solve_aga8(P_pa, T_k, gas_obj)
-            elif eos_method == 'thermopack':
-                state = self._solve_thermopack(P_pa, T_k, gas_obj)
-            elif eos_method == 'ccp':
-                state = self._solve_ccp(P_pa, T_k, gas_obj)
-            elif eos_method == 'dwsim':
-                state = self._solve_dwsim(P_pa, T_k, gas_obj)
-            else:
-                raise ValueError(f"Desteklenmeyen EOS: {eos_method}")
-                
-        except Exception as e:
-            # Rate-limited fallback uyarisi: Her EOS icin run basina 1 kez
-            warned_key = eos_method
-            if warned_key not in self._warned_eos_fallbacks:
-                logger.warning(f"⚠️ {eos_method.upper()} EOS hatası: {e}. Fallback (PR) kullanılıyor.")
-                self._warned_eos_fallbacks.add(warned_key)
-            else:
-                logger.debug(f"⚠️ {eos_method.upper()} EOS hatası (onceki gibi): {e}. Fallback (PR) kullanılıyor.")
-            if eos_method == 'aga8':
-                # AGA8 → PR fallback (iki model de thermo dict formatını kullanır)
+        # Aktif EosChain varsa (parametre veya global) akilli fallback kullan
+        chain = eos_chain or self._active_eos_chain
+        if chain is not None:
+            state = chain.get_properties(P_pa, T_k, eos_method)
+        else:
+            # Geriye donuk uyumlu: direkt dispatch + PR fallback + ideal gaz son care
+            try:
+                state = self._dispatch(P_pa, T_k, gas_obj, eos_method)
+            except Exception as e:
+                logger.warning(
+                    "⚠️ %s EOS hatasi: %s. PR fallback deneniyor.",
+                    eos_method.upper(),
+                    e,
+                )
                 try:
                     state = self._solve_thermo_eos(P_pa, T_k, gas_obj, 'pr')
                     state.raw_props['fallback'] = True
+                    state.raw_props['fallback_layer'] = 'eos'
+                    state.raw_props['fallback_from'] = eos_method
+                    state.raw_props['fallback_to'] = 'pr'
                     state.raw_props['fallback_type'] = 'pr_fallback'
+                    state.raw_props['fallback_reason'] = str(e)
                 except Exception as fallback_err:
-                    logger.warning(f"⚠️ Fallback PR da başarısız: {fallback_err}. İdeal Gaz'a geçiliyor.")
+                    logger.warning(
+                        "⚠️ PR fallback da başarısız: %s. Ideal gaz'a geçiliyor.",
+                        fallback_err,
+                    )
                     state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
-            else:
-                state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
             
         # Z-Factor Uyarısı ve Teşhis Entegrasyonu
         thermo_health = "HEALTHY"
@@ -794,7 +807,7 @@ class ThermodynamicSolver:
         Z_ideal = max(0.5, min(1.5, 1.0 - 0.1 * (P_pa / (STD_PRESS_PA * 10))))
         rho_ideal = P_pa / (R_specific * T_k * Z_ideal) if T_k > 0 and R_specific > 0 else 1.0
         
-        H_ideal = Cp_ideal * (T_k - 273.15)
+        H_ideal = Cp_ideal * (T_k - 298.15)
         S_ideal = Cp_ideal * math.log(T_k / 273.15) if T_k > 0 else 0
         
         return self._build_state(

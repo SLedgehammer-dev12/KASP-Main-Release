@@ -580,7 +580,29 @@ class CompressorAerodynamics:
                 state_in, p_out, thermo_solver, gas_obj, eos
             )
             return t_brent
+        elif solver_method == "benchmark":
+            return CompressorAerodynamics.run_isentropic_fallback_comparison(
+                state_in, p_out, thermo_solver, gas_obj, eos
+            )
         else:
+            # "auto" mod: Akilli sequential fallback + benchmark verisi topla
+            from kasp.core.fallback import SolverChain
+            tracker = getattr(thermo_solver, "_fallback_tracker", None)
+            if tracker is not None:
+                chain = SolverChain(tracker)
+                result = chain.find_isentropic_temp(
+                    state_in, p_out, thermo_solver, gas_obj, eos,
+                    solver_method="auto",
+                )
+                # Benchmark verisini de arka planda topla (diagnostik icin)
+                try:
+                    CompressorAerodynamics.run_isentropic_fallback_comparison(
+                        state_in, p_out, thermo_solver, gas_obj, eos
+                    )
+                except Exception:
+                    pass
+                return result
+            # FallbackTracker yoksa eski benchmark davranisi
             return CompressorAerodynamics.run_isentropic_fallback_comparison(
                 state_in, p_out, thermo_solver, gas_obj, eos
             )

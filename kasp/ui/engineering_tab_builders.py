@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -18,8 +19,14 @@ from kasp.i18n import tr
 
 
 def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
-    """Engineering Dashboard sekmesini oluşturur."""
-    layout = QVBoxLayout(parent_widget)
+    """Engineering Dashboard sekmesini oluşturur. Scrollable yapıdadır."""
+    
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setObjectName("eng_scroll")
+    
+    container = QWidget()
+    layout = QVBoxLayout(container)
     layout.setSpacing(8)
 
     # ── 1. Hesaplama İzleme Ağacı ──
@@ -90,12 +97,17 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     fallback_group.setLayout(fallback_layout)
     layout.addWidget(fallback_group)
 
-    # ── 5. EOS Shootout ──
+    # ── 5. EOS Shootout (genişletilmiş) ──
     eos_group = QGroupBox("🧪 EOS Karşılaştırma (EOS Shootout)")
     eos_layout = QVBoxLayout()
-    eos_table = QTableWidget(0, 7)
-    eos_table.setHorizontalHeaderLabels(["EOS", "T_out (°C)", "Head (kJ/kg)", "Power (kW)", "η_poly", "Head Δ%", "Süre (s)"])
+    eos_table = QTableWidget(0, 10)
+    eos_table.setHorizontalHeaderLabels([
+        "EOS", "Durum", "Fallback\nKatmanı", "Fallback\nZinciri",
+        "T_out (°C)", "Head (kJ/kg)", "Power (kW)", "η_poly", "Head Δ%", "Süre (s)"
+    ])
     eos_table.setObjectName("eng_eos_shootout")
+    eos_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+    eos_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
     eos_layout.addWidget(eos_table)
     eos_run_btn = QPushButton("🔄 EOS Shootout Çalıştır")
     eos_run_btn.setObjectName("eng_eos_shootout_btn")
@@ -117,6 +129,17 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     prop_group.setLayout(prop_layout)
     layout.addWidget(prop_group)
 
+    # ── 5c. Fallback Zincir Kaydı ──
+    chain_group = QGroupBox("🔄 Fallback Zincir Kaydı (Run Bazında)")
+    chain_layout = QVBoxLayout()
+    chain_table = QTableWidget(0, 4)
+    chain_table.setHorizontalHeaderLabels(["Katman", "Kimden → Kime", "Sebep", "Çağrı"])
+    chain_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+    chain_table.setObjectName("eng_chain_table")
+    chain_layout.addWidget(chain_table)
+    chain_group.setLayout(chain_layout)
+    layout.addWidget(chain_group)
+
     # ── 6. Metot Shootout ──
     method_group = QGroupBox("🧮 Metot Karşılaştırma (Method Shootout)")
     method_layout = QVBoxLayout()
@@ -129,6 +152,14 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     method_layout.addWidget(method_run_btn)
     method_group.setLayout(method_layout)
     layout.addWidget(method_group)
+
+    # ScrollArea'ya container'ı ata
+    scroll.setWidget(container)
+    
+    # Parent'a scroll ekle
+    outer_layout = QVBoxLayout(parent_widget)
+    outer_layout.setContentsMargins(0, 0, 0, 0)
+    outer_layout.addWidget(scroll)
 
     # Verileri doldur
     if last_results is not None:
@@ -145,6 +176,7 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
         "eos_table": eos_table,
         "eos_run_btn": eos_run_btn,
         "prop_table": prop_table,
+        "chain_table": chain_table,
         "method_table": method_table,
         "method_run_btn": method_run_btn,
         "export_btn": export_btn,

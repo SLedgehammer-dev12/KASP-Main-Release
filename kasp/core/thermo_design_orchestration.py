@@ -47,6 +47,59 @@ class ThermoDesignOrchestrator:
         tolerance,
         step_count,
         mass_flow_per_unit,
+        eos_chain=None,
+        method_average_fn,
+        method_endpoint_fn,
+        method_incremental_fn,
+        method_direct_hs_fn,
+    ):
+        # EosChain'i solver'a bagla — get_properties otomatik kullanir
+        if eos_chain is not None:
+            self.thermo_solver._active_eos_chain = eos_chain
+        try:
+            return self._run_stage_loop_inner(
+                p_in_pa=p_in_pa,
+                t_in_k=t_in_k,
+                p_out_pa=p_out_pa,
+                stage_pr=stage_pr,
+                num_stages=num_stages,
+                intercooler_dp=intercooler_dp,
+                ic_t_k=ic_t_k,
+                method_key=method_key,
+                poly_eff_tgt=poly_eff_tgt,
+                gas_obj=gas_obj,
+                eos=eos,
+                max_iter=max_iter,
+                tolerance=tolerance,
+                step_count=step_count,
+                mass_flow_per_unit=mass_flow_per_unit,
+                method_average_fn=method_average_fn,
+                method_endpoint_fn=method_endpoint_fn,
+                method_incremental_fn=method_incremental_fn,
+                method_direct_hs_fn=method_direct_hs_fn,
+            )
+        finally:
+            if eos_chain is not None:
+                self.thermo_solver._active_eos_chain = None
+
+    def _run_stage_loop_inner(
+        self,
+        *,
+        p_in_pa,
+        t_in_k,
+        p_out_pa,
+        stage_pr,
+        num_stages,
+        intercooler_dp,
+        ic_t_k,
+        method_key,
+        poly_eff_tgt,
+        gas_obj,
+        eos,
+        max_iter,
+        tolerance,
+        step_count,
+        mass_flow_per_unit,
         method_average_fn,
         method_endpoint_fn,
         method_incremental_fn,

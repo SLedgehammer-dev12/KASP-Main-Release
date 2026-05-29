@@ -876,20 +876,38 @@ class KaspMainWindow(QMainWindow):
         table.setRowCount(0)
         prop_table = self._eng_widgets["prop_table"]
         prop_table.setRowCount(0)
+        chain_table = self._eng_widgets.get("chain_table")
+        if chain_table:
+            chain_table.setRowCount(0)
         results = run_eos_shootout(self.engine, self.last_design_inputs)
         for r in results:
             row = table.rowCount()
             table.insertRow(row)
             table.setItem(row, 0, QTableWidgetItem(r.get("label", "—")))
             if r["success"]:
-                table.setItem(row, 1, QTableWidgetItem(f"{r.get('t_out', 0) - 273.15:.1f}" if r.get('t_out') else "—"))
-                table.setItem(row, 2, QTableWidgetItem(f"{r.get('head_kj_kg', 0):.1f}" if r.get('head_kj_kg') else "—"))
-                table.setItem(row, 3, QTableWidgetItem(f"{r.get('power_kw', 0):.1f}" if r.get('power_kw') else "—"))
-                table.setItem(row, 4, QTableWidgetItem(f"{r.get('poly_eff_actual', 0):.1f}%" if r.get('poly_eff_actual') else "—"))
-                table.setItem(row, 5, QTableWidgetItem(f"{r.get('head_diff_pct', 0):+.2f}%" if r.get('head_diff_pct') is not None else "—"))
-                table.setItem(row, 6, QTableWidgetItem(f"{r.get('elapsed_s', 0):.2f}"))
+                raw = r.get("raw_props", {})
+                fallback_layer = raw.get("fallback_layer", "")
+                fallback_from = raw.get("fallback_from", "")
+                fallback_to = raw.get("fallback_to", "")
+                if fallback_from:
+                    status = "⚠️ Fallback"
+                    chain_str = f"{fallback_from}→{fallback_to}"
+                else:
+                    status = "✅ Doğrudan"
+                    chain_str = "—"
+                table.setItem(row, 1, QTableWidgetItem(status))
+                table.setItem(row, 2, QTableWidgetItem(fallback_layer or "—"))
+                table.setItem(row, 3, QTableWidgetItem(chain_str))
+                table.setItem(row, 4, QTableWidgetItem(f"{r.get('t_out', 0) - 273.15:.1f}" if r.get('t_out') else "—"))
+                table.setItem(row, 5, QTableWidgetItem(f"{r.get('head_kj_kg', 0):.1f}" if r.get('head_kj_kg') else "—"))
+                table.setItem(row, 6, QTableWidgetItem(f"{r.get('power_kw', 0):.1f}" if r.get('power_kw') else "—"))
+                table.setItem(row, 7, QTableWidgetItem(f"{r.get('poly_eff_actual', 0):.1f}%" if r.get('poly_eff_actual') else "—"))
+                table.setItem(row, 8, QTableWidgetItem(f"{r.get('head_diff_pct', 0):+.2f}%" if r.get('head_diff_pct') is not None else "—"))
+                table.setItem(row, 9, QTableWidgetItem(f"{r.get('elapsed_s', 0):.2f}"))
             else:
-                table.setItem(row, 1, QTableWidgetItem(f"❌ {r.get('error', '')}"))
+                table.setItem(row, 1, QTableWidgetItem(f"❌ Hata"))
+                table.setItem(row, 2, QTableWidgetItem("—"))
+                table.setItem(row, 3, QTableWidgetItem(r.get('error', '—')[:50]))
 
             # Ham property tablosu
             raw = r.get("raw_props", {})
@@ -905,6 +923,20 @@ class KaspMainWindow(QMainWindow):
                 prop_table.setItem(prow, 6, QTableWidgetItem(f"{raw.get('inlet_density', 0):.2f}" if raw.get('inlet_density') else "—"))
                 prop_table.setItem(prow, 7, QTableWidgetItem(str(raw.get('inlet_phase', "—"))))
                 prop_table.setItem(prow, 8, QTableWidgetItem(f"{raw.get('mass_flow_kgs', 0):.4f}" if raw.get('mass_flow_kgs') else "—"))
+
+        # Fallback zincir kaydi
+        if chain_table:
+            chain_table.setRowCount(0)
+            for r in results:
+                chain_log = r.get("_fallback_chain_log", [])
+                if chain_log:
+                    for log_entry in chain_log:
+                        crow = chain_table.rowCount()
+                        chain_table.insertRow(crow)
+                        chain_table.setItem(crow, 0, QTableWidgetItem(log_entry.get("layer", "eos")))
+                        chain_table.setItem(crow, 1, QTableWidgetItem(f"{log_entry.get('from', '?')} → {log_entry.get('to', '?')}"))
+                        chain_table.setItem(crow, 2, QTableWidgetItem(log_entry.get("reason", "—")))
+                        chain_table.setItem(crow, 3, QTableWidgetItem(str(log_entry.get("count", 1))))
 
     def _run_method_shootout(self):
         if not getattr(self, "last_design_inputs", None):

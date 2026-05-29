@@ -511,18 +511,7 @@ class ThermoMethodSuite:
         return t2_guess, poly_head, z_avg, history
 
     def find_isentropic_temperature(self, p_in, t_in, p_out, s_target, gas_obj, eos, state_in):
-        if eos == "coolprop":
-            try:
-                import CoolProp.CoolProp as CP
-
-                t_isen = CP.PropsSI("T", "P", p_out, "Smass", s_target, gas_obj)
-                if t_isen > 0 and t_isen < t_in * 10:
-                    self.logger.debug(f"CoolProp izentropik flash: T_isen={t_isen:.1f} K")
-                    return t_isen
-            except Exception as error:
-                self.logger.debug(f"CoolProp izentropik flash başarısız: {error}")
-
-        # CoolProp başarısız olduğunda veya diğer EoS metotlarında kullanıcı seçimine saygılı dispatcher
+        # CoolProp direkt flash kaldirildi — sayisal cozucu (SolverChain) daha guvenilir
         from kasp.core.aerodynamics import CompressorAerodynamics
         return CompressorAerodynamics.calculate_isentropic_temp_fallback(
             state_in, p_out, self.thermo_solver, gas_obj, eos

@@ -666,6 +666,14 @@ class ThermoEngine:
             eos,
         )
 
+        # Akilli EOS fallback zinciri olustur
+        from kasp.core.fallback import EosChain
+        eos_chain = EosChain(
+            self.thermo_solver._fallback_tracker,
+            self.thermo_solver,
+            raw_composition=inputs.get("gas_comp", {}),
+        )
+
         num_units = max(1, int(inputs.get("num_units", 1)))
         mass_flow_per_unit = total_mass_flow_kgs / num_units
         method = inputs.get("method", "Metot 1: Ortalama Ozellikler")
@@ -687,6 +695,7 @@ class ThermoEngine:
             "p_out_pa": p_out_pa,
             "eos": eos,
             "gas_obj": gas_obj,
+            "eos_chain": eos_chain,
             "total_mass_flow_kgs": total_mass_flow_kgs,
             "num_units": num_units,
             "mass_flow_per_unit": mass_flow_per_unit,
@@ -890,6 +899,7 @@ class ThermoEngine:
                     tolerance=context["tolerance"],
                     step_count=context["step_count"],
                     mass_flow_per_unit=context["mass_flow_per_unit"],
+                    eos_chain=context.get("eos_chain"),
                     method_average_fn=self.method_suite.method_average_properties,
                     method_endpoint_fn=self.method_suite.method_endpoint,
                     method_incremental_fn=self.method_suite.method_incremental_pressure,

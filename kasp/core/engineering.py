@@ -92,6 +92,31 @@ def run_eos_shootout(engine, base_inputs: dict) -> list[dict]:
             r["head_diff_pct"] = (r["head_kj_kg"] - ref_head) / ref_head * 100
             r["power_diff_pct"] = (r["power_kw"] - ref_power) / ref_power * 100 if ref_power else 0
 
+    # Fallback zincir kaydini ilk sonuca ekle
+    try:
+        tracker = engine.thermo_solver._fallback_tracker
+        chain_log = []
+        for entry in tracker.eos_chain_log:
+            chain_log.append({
+                "layer": "eos",
+                "from": entry.get("from", "?"),
+                "to": entry.get("to", "?"),
+                "reason": entry.get("reason", "—"),
+                "count": 1,
+            })
+        for entry in tracker.solver_chain_log:
+            chain_log.append({
+                "layer": "solver",
+                "from": entry.get("from", "?"),
+                "to": entry.get("to", "?"),
+                "reason": entry.get("reason", "—"),
+                "count": 1,
+            })
+        if chain_log and results:
+            results[0]["_fallback_chain_log"] = chain_log
+    except Exception:
+        pass
+
     return results
 
 
