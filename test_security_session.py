@@ -155,3 +155,59 @@ def test_user_roles_read_and_export():
     assert "export" in perms
     assert "write" not in perms
     assert "delete" not in perms
+
+
+# ─────────────────────── Engineering Mode ───────────────────────
+
+def test_session_is_engineering_mode_no_user():
+    Session.logout()
+    assert Session.is_engineering_mode() is False
+
+
+def test_session_is_engineering_mode_non_admin():
+    user = _make_user("engineer1", "engineer")
+    Session.login(user)
+    assert Session.is_engineering_mode() is False
+
+
+def test_session_is_engineering_mode_admin_no_flag():
+    from kasp.config_manager import get_config_manager
+    user = _make_user("admin1", "admin")
+    Session.login(user)
+    cfg = get_config_manager()
+    original = cfg.get("updates.engineering_mode", False)
+    try:
+        cfg.set("updates.engineering_mode", False)
+        assert Session.is_engineering_mode() is False
+    finally:
+        cfg.set("updates.engineering_mode", original)
+
+
+def test_session_is_engineering_mode_admin_with_flag():
+    from kasp.config_manager import get_config_manager
+    user = _make_user("admin2", "admin")
+    Session.login(user)
+    cfg = get_config_manager()
+    original = cfg.get("updates.engineering_mode", False)
+    try:
+        cfg.set("updates.engineering_mode", True)
+        assert Session.is_engineering_mode() is True
+    finally:
+        cfg.set("updates.engineering_mode", original)
+
+
+def test_admin_has_manage_users():
+    assert "manage_users" in PermissionManager.ROLES["admin"]
+
+
+def test_engineer_lacks_manage_users():
+    assert "manage_users" not in PermissionManager.ROLES["engineer"]
+
+
+def test_permission_defaults_match_plan():
+    """Planlanan roller ve izinler kodla eşleşmeli."""
+    roles = PermissionManager.ROLES
+    assert "read" in roles["admin"] and "write" in roles["admin"] and "manage_users" in roles["admin"]
+    assert "read" in roles["engineer"] and "write" in roles["engineer"]
+    assert "manage_users" not in roles["engineer"]
+    assert "read" in roles["viewer"] and "write" not in roles["viewer"]

@@ -170,6 +170,14 @@ def main():
         Session.login(authenticated_user)
         logger.info(f"✓ Login successful — user: {authenticated_user.username} ({authenticated_user.role})")
 
+        # Must-change-password kontrolü
+        if authenticated_user.must_change_password:
+            logger.info(f"User '{authenticated_user.username}' must change password — forcing dialog.")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(None, "Şifre Değişikliği Zorunlu",
+                                    "Şifreniz bir admin tarafından sıfırlandı.\n"
+                                    "Devam etmek için yeni bir şifre belirlemelisiniz.")
+
         # Create main window
         logger.info("Creating main window...")
         window = KaspMainWindow()

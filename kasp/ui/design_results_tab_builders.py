@@ -39,12 +39,12 @@ def get_graph_option_labels():
         return [
             "T-s Diagram", "P-v Diagram", "H-S (Mollier)",
             "Power Flow (Sankey)", "k-Z Pressure Path", "Stage Overview",
-            "Turbine Radar", "Convergence Dashboard",
+            "Turbine Radar", "Convergence Dashboard", "Cache Performance",
         ]
     return [
         "T-s Diyagramı", "P-v Diyagramı", "H-S (Mollier)",
         "Güç Dağılımı (Sankey)", "k-Z Basınç Yolu", "Kademe Özeti",
-        "Türbin Radarı", "Yakınsama Dashboard",
+        "Türbin Radarı", "Yakınsama Dashboard", "Cache Performansı",
     ]
 
 

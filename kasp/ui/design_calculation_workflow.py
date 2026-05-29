@@ -139,6 +139,10 @@ class DesignCalculationController:
         self.window.last_selected_units = selected_units
         self.window._update_results_ui(results_raw, selected_units)
 
+        # Engineering Dashboard güncelle (engineering mode açıksa)
+        if hasattr(self.window, "_populate_engineering_dashboard"):
+            self.window._populate_engineering_dashboard(results_raw)
+
         if self.window.last_design_inputs:
             self.db.save_calculation_history(
                 self.window.last_design_inputs.get("project_name", ""),

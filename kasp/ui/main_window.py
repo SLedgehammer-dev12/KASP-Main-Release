@@ -214,6 +214,9 @@ class KaspMainWindow(QMainWindow):
         except Exception:
             pass
 
+        # Zorunlu şifre değiştirme
+        self._check_must_change_password()
+
         self.design_results_presenter = DesignResultsPresenter(
             self,
             engine=self.engine,
@@ -312,6 +315,7 @@ class KaspMainWindow(QMainWindow):
         """UI bileşenlerini başlatır"""
         self._create_menu()
         self._create_tabs()
+        self._apply_tab_visibility()
         self._setup_design_tab()
         self._setup_performance_tab()
         self._setup_log_tab()
@@ -811,6 +815,131 @@ class KaspMainWindow(QMainWindow):
                 action.setVisible(Session.is_admin())
                 break
 
+    def _check_must_change_password(self):
+        from kasp.security import Session
+        user = Session.current_user()
+        if user is None or not user.must_change_password:
+            return
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(500, self.change_password)
+        from kasp.core.user_manager import UserManager
+        from kasp.data.database import UnitDatabase
+
+    def _apply_tab_visibility(self):
+        from kasp.security import Session
+        tabs = getattr(self, "_main_tabs", None)
+        if tabs is None:
+            return
+
+        # Log sekmesi — sadece admin
+        if hasattr(self, "log_tab"):
+            idx = tabs.indexOf(self.log_tab)
+            if idx >= 0:
+                tabs.setTabVisible(idx, Session.is_admin())
+
+        # Engineering sekmesi — sadece admin + engineering mode
+        if hasattr(self, "engineering_tab"):
+            idx = tabs.indexOf(self.engineering_tab)
+            if idx >= 0:
+                tabs.setTabVisible(idx, Session.is_engineering_mode())
+        elif Session.is_engineering_mode():
+            self._add_engineering_tab(tabs)
+
+    def _add_engineering_tab(self, tabs):
+        from PyQt5.QtWidgets import QWidget
+        self.engineering_tab = QWidget()
+        tabs.addTab(self.engineering_tab, "🛠️ Engineering")
+        self._setup_engineering_tab()
+
+    def _setup_engineering_tab(self):
+        from kasp.ui.engineering_tab_builders import build_engineering_dashboard
+        self._eng_widgets = build_engineering_dashboard(
+            self.engineering_tab,
+            engine=self.engine,
+            last_results=getattr(self, "last_design_results_raw", None)
+        )
+        export_btn = self._eng_widgets.get("export_btn")
+        if export_btn:
+            export_btn.clicked.connect(self._export_engineering_trace)
+        eos_btn = self._eng_widgets.get("eos_run_btn")
+        if eos_btn:
+            eos_btn.clicked.connect(self._run_eos_shootout)
+        method_btn = self._eng_widgets.get("method_run_btn")
+        if method_btn:
+            method_btn.clicked.connect(self._run_method_shootout)
+
+    def _run_eos_shootout(self):
+        if not getattr(self, "last_design_inputs", None):
+            return
+        from kasp.core.engineering import run_eos_shootout
+        table = self._eng_widgets["eos_table"]
+        table.setRowCount(0)
+        results = run_eos_shootout(self.engine, self.last_design_inputs)
+        for r in results:
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(r.get("label", "—")))
+            if r["success"]:
+                table.setItem(row, 1, QTableWidgetItem(f"{r.get('t_out', 0) - 273.15:.1f}" if r.get('t_out') else "—"))
+                table.setItem(row, 2, QTableWidgetItem(f"{r.get('head_kj_kg', 0):.1f}" if r.get('head_kj_kg') else "—"))
+                table.setItem(row, 3, QTableWidgetItem(f"{r.get('power_kw', 0):.1f}" if r.get('power_kw') else "—"))
+                table.setItem(row, 4, QTableWidgetItem(f"{r.get('poly_eff_actual', 0):.1f}%" if r.get('poly_eff_actual') else "—"))
+                table.setItem(row, 5, QTableWidgetItem(f"{r.get('head_diff_pct', 0):+.2f}%" if r.get('head_diff_pct') is not None else "—"))
+                table.setItem(row, 6, QTableWidgetItem(f"{r.get('elapsed_s', 0):.2f}"))
+            else:
+                table.setItem(row, 1, QTableWidgetItem(f"❌ {r.get('error', '')}"))
+
+    def _run_method_shootout(self):
+        if not getattr(self, "last_design_inputs", None):
+            return
+        from kasp.core.engineering import run_method_shootout
+        table = self._eng_widgets["method_table"]
+        table.setRowCount(0)
+        results = run_method_shootout(self.engine, self.last_design_inputs)
+        for r in results:
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(r.get("label", "—")))
+            if r["success"]:
+                table.setItem(row, 1, QTableWidgetItem(f"{r.get('t_out', 0) - 273.15:.1f}" if r.get('t_out') else "—"))
+                table.setItem(row, 2, QTableWidgetItem(f"{r.get('head_kj_kg', 0):.1f}" if r.get('head_kj_kg') else "—"))
+                table.setItem(row, 3, QTableWidgetItem(f"{r.get('power_kw', 0):.1f}" if r.get('power_kw') else "—"))
+                table.setItem(row, 4, QTableWidgetItem(f"{r.get('poly_eff_actual', 0):.1f}%" if r.get('poly_eff_actual') else "—"))
+                table.setItem(row, 5, QTableWidgetItem("✓" if r.get('convergence') else "✗"))
+                table.setItem(row, 6, QTableWidgetItem(f"{r.get('elapsed_s', 0):.2f}"))
+            else:
+                table.setItem(row, 1, QTableWidgetItem(f"❌ {r.get('error', '')}"))
+
+    def _populate_engineering_dashboard(self, results):
+        if not hasattr(self, "_eng_widgets") or not self._eng_widgets:
+            return
+        from kasp.ui.engineering_tab_builders import _populate_trace_tree, _populate_performance, _populate_health, _populate_fallback
+        _populate_trace_tree(self._eng_widgets["trace_tree"], results)
+        _populate_performance(self._eng_widgets["perf_labels"], self.engine)
+        _populate_health(self._eng_widgets["health_table"], results)
+        _populate_fallback(self._eng_widgets["fallback_table"], results)
+
+    def _export_engineering_trace(self):
+        from PyQt5.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "İzleme Verisini Dışa Aktar", "kasp_trace.csv", "CSV (*.csv)")
+        if not path:
+            return
+        import csv
+        tree = self._eng_widgets.get("trace_tree")
+        if tree is None:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["Seviye", "Aşama/Iterasyon", "Detay"])
+
+            def walk(item, level=""):
+                w.writerow([level, item.text(0), item.text(1)])
+                for i in range(item.childCount()):
+                    walk(item.child(i), level + "  ")
+
+            for i in range(tree.topLevelItemCount()):
+                walk(tree.topLevelItem(i))
+
     def show_admin_panel(self):
         from kasp.security import Session
         if not Session.is_admin():
@@ -822,6 +951,39 @@ class KaspMainWindow(QMainWindow):
         user_manager = UserManager(db)
         dialog = AdminPanelDialog(user_manager, parent=self)
         dialog.exec_()
+
+    def change_password(self):
+        from kasp.security import Session
+        from kasp.core.user_manager import UserManager
+        from kasp.data.database import UnitDatabase
+        from kasp.ui.dialogs import ChangePasswordDialog
+        user = Session.current_user()
+        if user is None:
+            return
+        forced = user.must_change_password
+        while True:
+            dialog = ChangePasswordDialog(self)
+            if forced:
+                dialog.setWindowTitle("🔑 Zorunlu Şifre Değişikliği")
+            if dialog.exec_() != ChangePasswordDialog.Accepted:
+                if forced:
+                    QMessageBox.critical(self, "Zorunlu",
+                                         "Programı kullanmak için şifrenizi değiştirmelisiniz.")
+                    continue
+                return
+            old_pw, new_pw = dialog.get_passwords()
+            db = UnitDatabase()
+            user_mgr = UserManager(db)
+            ok, err = user_mgr.change_password(user.id, old_pw, new_pw)
+            if ok:
+                if forced:
+                    user_mgr.update_user(user.id, must_change_password=0)
+                QMessageBox.information(self, "Başarılı", "Şifre başarıyla değiştirildi.")
+                return
+            else:
+                QMessageBox.warning(self, "Hata", err or "Şifre değiştirilemedi.")
+                if not forced:
+                    return
 
     def logout(self):
         from kasp.security import Session

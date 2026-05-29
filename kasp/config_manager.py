@@ -60,6 +60,7 @@ class ConfigManager:
             "repo_owner": RELEASE_REPOSITORY_OWNER,
             "repo_name": RELEASE_REPOSITORY_NAME,
             "last_dismissed_tag": "",
+            "engineering_mode": False,
             "last_seen_release_notes_tag": ""
         }
     }

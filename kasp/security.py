@@ -228,6 +228,16 @@ class Session:
     def is_admin(cls):
         return cls._permission_manager.is_admin() if cls._permission_manager else False
 
+    @classmethod
+    def is_engineering_mode(cls):
+        if not cls.is_admin():
+            return False
+        try:
+            from kasp.config_manager import get_config_manager
+            return get_config_manager().get("updates.engineering_mode", False)
+        except Exception:
+            return False
+
 
 _permission_manager = None
 

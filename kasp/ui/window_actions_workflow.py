@@ -8,10 +8,20 @@ from kasp.i18n import ALL_LOGS_LABEL, APP_VERSION, tr, is_english
 
 
 def filter_logs_by_level(logs, selected_level):
-    """Return logs visible for the requested filter level."""
+    """Return logs visible for the requested filter level — level-aware matching."""
     if selected_level in {"TÃœM LOGLAR", "TÜM LOGLAR", ALL_LOGS_LABEL}:
         return list(logs)
-    return [log for log in logs if selected_level in log]
+    level_markers = ["DEBUG", "ITERATION", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    level_idx = level_markers.index(selected_level) if selected_level in level_markers else -1
+    if level_idx < 0:
+        return [log for log in logs if selected_level in log]
+    result = []
+    for log in logs:
+        for marker in level_markers[level_idx:]:
+            if marker in log:
+                result.append(log)
+                break
+    return result
 
 
 def build_about_dialog_text(version=APP_VERSION):
@@ -130,8 +140,12 @@ class WindowActionController:
     def append_log(self, message):
         self.window.all_logs.append(message)
         current_level = self.window.log_level_combo.currentText()
-        if current_level in {"TÃœM LOGLAR", "TÜM LOGLAR", ALL_LOGS_LABEL} or current_level in message:
+        if current_level in {"TÃœM LOGLAR", "TÜM LOGLAR", ALL_LOGS_LABEL}:
             self.window.log_text.append(message)
+        else:
+            visible = filter_logs_by_level([message], current_level)
+            if visible:
+                self.window.log_text.append(message)
 
     def filter_logs(self, selected_level):
         self.window.log_text.clear()

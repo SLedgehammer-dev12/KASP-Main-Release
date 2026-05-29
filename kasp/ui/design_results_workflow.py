@@ -21,6 +21,8 @@ GRAPH_KEY_BY_LABEL = {
     "Turbine Radar": "performance_comparison",
     "Yakınsama Dashboard": "convergence",
     "Convergence Dashboard": "convergence",
+    "Cache Performansı": "cache_performance",
+    "Cache Performance": "cache_performance",
 }
 
 

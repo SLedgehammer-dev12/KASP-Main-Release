@@ -13,6 +13,7 @@ class User:
     full_name: str = ""
     email: str = ""
     is_active: bool = True
+    must_change_password: bool = False
     created_at: str = ""
     last_login: str = ""
 
@@ -47,6 +48,7 @@ class UserManager:
             full_name=user_dict.get("full_name", ""),
             email=user_dict.get("email", ""),
             is_active=bool(user_dict.get("is_active", 1)),
+            must_change_password=bool(user_dict.get("must_change_password", 0)),
             created_at=user_dict.get("created_at", ""),
             last_login=user_dict.get("last_login", ""),
         )
@@ -71,6 +73,7 @@ class UserManager:
             id=u["id"], username=u["username"], role=u.get("role", "user"),
             full_name=u.get("full_name", ""), email=u.get("email", ""),
             is_active=bool(u.get("is_active", 1)),
+            must_change_password=bool(u.get("must_change_password", 0)),
             created_at=u.get("created_at", ""), last_login=u.get("last_login", "")
         ) for u in users]
 
@@ -91,9 +94,10 @@ class UserManager:
 
     def admin_reset_password(self, user_id, new_password):
         if len(new_password) < 4:
-            return False, "Yeni sifre en az 4 karakter olmalidir."
+            return False, "Yeni şifre en az 4 karakter olmalidir."
         new_hash = hash_password(new_password)
-        return self.db.update_user(user_id, password_hash=new_hash), None
+        ok = self.db.update_user(user_id, password_hash=new_hash, must_change_password=1)
+        return ok, (None if ok else "Şifre sıfırlanamadı.")
 
     def delete_user(self, user_id):
         return self.db.delete_user(user_id)

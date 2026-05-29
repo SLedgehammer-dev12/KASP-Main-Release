@@ -4,6 +4,61 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.0.0] — 2026-05-29
+
+### Major: DWSIM EOS Integration
+- **DWSIM Standalone Thermodynamics Engine** — 7th EOS option with 16+ models
+- Steam Tables (IAPWS-IF97) auto-detection when water fraction > 5%
+- NRTL/UNIQUAC activity coefficient models for wet gas and polar mixtures
+- Viscosity and thermal conductivity from DWSIM API
+- Graceful fallback when pythonnet/DLL is missing — no crash
+
+### Major: Advanced User Management
+- Multi-user login with username + password (4 roles: Admin, Engineer, User, Viewer)
+- Admin Panel — add/edit/delete users, reset passwords, toggle active/inactive
+- Session management with login/logout, last-login tracking
+- Role-based menu visibility: Log tab and Admin panel hidden for non-admins
+- Forced password change after admin reset (`must_change_password` flag)
+- `ChangePasswordDialog` — user self-service password change
+- PBKDF2-SHA256 (600K iterations) secure password hashing
+
+### Major: Engineering Mode (Admin Only)
+- Toggle via Admin Panel checkbox (`updates.engineering_mode` config)
+- **Calculation Trace Tree** — per-stage/iteration T, P, Z, k values in expandable tree
+- **Performance Metrics** — cache hit rate, EOS call count, calculation time, success rate
+- **Thermo Health Panel** — Z-factor anomalies, phase warnings (color-coded: green/yellow/red)
+- **DEBUG log level** — 36 debug messages become visible in UI when engineering mode is active
+- **Level-aware log filter** — hierarchical filtering (DEBUG > ITERATION > INFO > WARNING > ERROR)
+- **EOS Shootout** — compare all 7 EOS engines on identical inputs (head diff %, timing)
+- **Method Shootout** — compare all 4 sizing methods on identical inputs
+- **Cache Performance graph** — now selectable from graph dropdown
+- **CSV export** — trace data export button
+
+### Fixed
+- Method 4 solver bypass — user-selected State Solver now properly dispatched in Direct H-S
+- BRENT root bracket safety — bisection fallback when bracket fails
+- ThermoHandbook theme — SVG diagram dynamically adapts to Light/Dark/Engineering themes
+- `filter_logs_by_level` — level-aware hierarchical filtering replaces substring matching
+- `update_user` allowed set — `must_change_password` field now writable
+
+### Added: DWSIM Bundle
+- `kasp/core/libs/` directory for DWSIM DLL files
+- `sys._MEIPASS` search path in `_load_dwsim_dll()` for PyInstaller bundle
+- `.spec` files include DWSIM DLL binaries + pythonnet hidden imports
+- `test_dwsim_integration.py` — 7 tests (3 pass + 4 skip on macOS dev)
+- `test_engineering_mode.py` — 18 tests
+- `test_engineering_shootout.py` — 7 tests
+- `test_engineering_shootout.py` — EOS/Method shootout core tests
+- `kasp/ui/diagram_svg.py` — theme-aware 3-layer SVG diagram generator
+- Consolidated `CHANGELOG.md`
+
+### Changed
+- `_create_gas_object()` accepts `'dwsim'` as valid EOS method
+- Test suite: **132 tests** (83% increase from 72), 0 regressions
+- Release pipeline updated for v2.0.0
+
+---
+
 ## [v1.7.4] — 2026-05-27
 
 ### Added

@@ -1,6 +1,6 @@
 {
     "app": {
-        "version": "1.7.4",
+        "version": "2.0.0",
         "language": "tr",
         "theme": "engineering",
         "auto_save": true,
@@ -40,6 +40,7 @@
         "repo_owner": "SLedgehammer-dev12",
         "repo_name": "KASP-Main-Release",
         "last_dismissed_tag": "",
+        "engineering_mode": false,
         "last_seen_release_notes_tag": ""
     },
     "auth": {

@@ -119,6 +119,7 @@ class UnitDatabase:
                     full_name TEXT DEFAULT '',
                     email TEXT DEFAULT '',
                     is_active INTEGER DEFAULT 1,
+                    must_change_password INTEGER DEFAULT 0,
                     created_at TEXT DEFAULT (datetime('now')),
                     last_login TEXT
                 )
@@ -157,7 +158,8 @@ class UnitDatabase:
         self._add_column_if_not_exists('Turbines', 'min_flow_kgs', 'REAL DEFAULT 0')
         self._add_column_if_not_exists('Turbines', 'max_flow_kgs', 'REAL DEFAULT 1000')
         self._add_column_if_not_exists('Turbines', 'fuel_type', 'TEXT DEFAULT "Natural Gas"')
-        
+        self._add_column_if_not_exists('Users', 'must_change_password', 'INTEGER DEFAULT 0')
+
         self.logger.info("VT Şema Güncellemesi Tamamlandı.")
     
     def insert_sample_data(self):
@@ -496,7 +498,7 @@ class UnitDatabase:
             return None
 
     def update_user(self, user_id, **kwargs):
-        allowed = {"role", "full_name", "email", "is_active", "password_hash"}
+        allowed = {"role", "full_name", "email", "is_active", "password_hash", "must_change_password"}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False

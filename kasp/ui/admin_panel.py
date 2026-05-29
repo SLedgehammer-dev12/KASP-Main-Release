@@ -3,7 +3,12 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -13,11 +18,6 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
-    QComboBox,
-    QCheckBox,
-    QFormLayout,
-    QDialogButtonBox,
-    QGroupBox,
 )
 from kasp.i18n import tr
 from kasp.security import Session
@@ -80,9 +80,20 @@ class AdminPanelDialog(QDialog):
         btn_layout.addWidget(self._delete_btn)
         layout.addLayout(btn_layout)
 
+        from kasp.config_manager import get_config_manager
+        eng_mode = get_config_manager().get("updates.engineering_mode", False)
+        self._eng_cb = QCheckBox("🛠️ Engineering Mode — detaylı hesaplama diagnoztiği (sadece admin)")
+        self._eng_cb.setChecked(eng_mode)
+        self._eng_cb.toggled.connect(self._toggle_engineering_mode)
+        layout.addWidget(self._eng_cb)
+
         button_box = QDialogButtonBox(QDialogButtonBox.Close)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _toggle_engineering_mode(self, checked):
+        from kasp.config_manager import get_config_manager
+        get_config_manager().set("updates.engineering_mode", checked)
 
     def _refresh_table(self):
         users = self._user_manager.list_users()

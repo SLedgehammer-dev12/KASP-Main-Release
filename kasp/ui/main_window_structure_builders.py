@@ -27,6 +27,7 @@ def get_main_menu_specs():
         "🛠️ Araçlar": [
             ("📚 Kütüphane Yöneticisi", None, "open_library_manager"),
             ("🧹 Önbelleği Temizle", None, "clear_engine_cache"),
+            ("🔑 Şifre Değiştir", None, "change_password"),
             None,
             ("👥 Kullanıcı Yönetimi", None, "show_admin_panel"),
         ],
@@ -128,4 +129,5 @@ def build_main_tabs(window):
         setattr(window, attr_name, tab)
         tabs.addTab(tab, title)
 
+    window._main_tabs = tabs
     window.main_layout.addWidget(tabs)

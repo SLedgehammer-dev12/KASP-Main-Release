@@ -207,3 +207,58 @@ def test_authenticate_updates_last_login(user_mgr):
     user = user_mgr.authenticate("login_tester", "pw1234")
     assert user.last_login is not None
     assert len(user.last_login) > 0
+
+
+# ─────────────────────── must_change_password ───────────────────────
+
+def test_create_user_must_change_password_default(user_mgr):
+    """Yeni kullanıcının must_change_password varsayılanı False olmalı."""
+    user, _ = user_mgr.create_user("fresh_user", "password123")
+    assert user.must_change_password is False
+
+
+def test_admin_reset_sets_must_change_password(user_mgr):
+    """Admin şifre sıfırlayınca must_change_password True olmalı."""
+    user, _ = user_mgr.create_user("resettable", "oldpw1234")
+    ok, err = user_mgr.admin_reset_password(user.id, "newpw5678")
+    assert ok
+
+    users = user_mgr.list_users()
+    updated = next(u for u in users if u.username == "resettable")
+    assert updated.must_change_password is True
+
+    auth = user_mgr.authenticate("resettable", "newpw5678")
+    assert auth is not None
+    assert auth.must_change_password is True
+
+
+def test_admin_reset_old_password_no_longer_works(user_mgr):
+    """Admin sıfırlaması sonrası eski şifre çalışmamalı."""
+    user, _ = user_mgr.create_user("pw_reset", "oldpw1234")
+    user_mgr.admin_reset_password(user.id, "newpw9999")
+    assert user_mgr.authenticate("pw_reset", "oldpw1234") is None
+    assert user_mgr.authenticate("pw_reset", "newpw9999") is not None
+
+
+def test_normal_password_change_does_not_set_flag(user_mgr):
+    """Kendi şifresini değiştiren kullanıcıda must_change_password değişmemeli."""
+    user, _ = user_mgr.create_user("self_change", "original1")
+    ok, _ = user_mgr.change_password(user.id, "original1", "updated12")
+    assert ok
+    users = user_mgr.list_users()
+    updated = next(u for u in users if u.username == "self_change")
+    assert updated.must_change_password is False
+
+
+def test_admin_can_clear_must_change_password(user_mgr):
+    """Admin must_change_password flag'ini temizleyebilmeli."""
+    user, _ = user_mgr.create_user("flagged", "pw12345")
+    user_mgr.admin_reset_password(user.id, "newpw9999")
+    users = user_mgr.list_users()
+    u = next(u for u in users if u.username == "flagged")
+    assert u.must_change_password is True
+
+    user_mgr.update_user(u.id, must_change_password=0)
+    users = user_mgr.list_users()
+    u2 = next(u for u in users if u.username == "flagged")
+    assert u2.must_change_password is False

@@ -527,6 +527,92 @@ class ThermodynamicsHandbookDialog(QDialog):
         self.browser.setHtml(html_content)
         layout.addWidget(self.browser)
 
+        diagram_label = QLabel("📐 3-Katmanlı Termodinamik Mimari Diyagramı &mdash; 3-Layer Thermodynamic Architecture")
+        diagram_label.setAlignment(Qt.AlignCenter)
+        diagram_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(diagram_label)
+
+        self._setup_diagram(layout, t)
+
         button_box = QDialogButtonBox(QDialogButtonBox.Close)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _setup_diagram(self, layout, theme):
+        from PyQt5.QtSvg import QSvgWidget
+        from PyQt5.QtWidgets import QScrollArea
+        from kasp.ui.diagram_svg import generate_3layer_diagram_svg
+
+        svg_content = generate_3layer_diagram_svg(theme)
+        svg_bytes = bytearray(svg_content, encoding='utf-8')
+
+        self.svg_widget = QSvgWidget()
+        self.svg_widget.load(svg_bytes)
+        self.svg_widget.setMinimumHeight(420)
+        self.svg_widget.setMaximumHeight(520)
+        self.svg_widget.setStyleSheet(f"background-color: {theme.get('background', '#1F1F1F')}; border: 1px solid {theme.get('border', '#334155')}; border-radius: 6px;")
+
+        layout.addWidget(self.svg_widget)
+
+
+class ChangePasswordDialog(QDialog):
+    """Kullanıcının kendi şifresini değiştirmesi için dialog."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔑 Şifre Değiştir")
+        self.resize(380, 200)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QFormLayout(self)
+        layout.setSpacing(10)
+
+        self._old_pw = QLineEdit()
+        self._old_pw.setEchoMode(QLineEdit.Password)
+        self._old_pw.setPlaceholderText("Mevcut şifre")
+        layout.addRow("Mevcut Şifre:", self._old_pw)
+
+        self._new_pw = QLineEdit()
+        self._new_pw.setEchoMode(QLineEdit.Password)
+        self._new_pw.setPlaceholderText("En az 4 karakter")
+        layout.addRow("Yeni Şifre:", self._new_pw)
+
+        self._confirm_pw = QLineEdit()
+        self._confirm_pw.setEchoMode(QLineEdit.Password)
+        self._confirm_pw.setPlaceholderText("Yeni şifre tekrar")
+        layout.addRow("Yeni Şifre Tekrar:", self._confirm_pw)
+
+        self._error_label = QLabel("")
+        self._error_label.setStyleSheet("color: #c62828;")
+        self._error_label.setWordWrap(True)
+        layout.addRow(self._error_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def _validate_and_accept(self):
+        old = self._old_pw.text()
+        new = self._new_pw.text()
+        confirm = self._confirm_pw.text()
+
+        if not old or not new:
+            self._error_label.setText("Tüm alanlar zorunludur.")
+            return
+        if len(new) < 4:
+            self._error_label.setText("Yeni şifre en az 4 karakter olmalıdır.")
+            return
+        if new != confirm:
+            self._error_label.setText("Yeni şifre ve tekrarı eşleşmiyor.")
+            return
+        if old == new:
+            self._error_label.setText("Yeni şifre mevcut şifre ile aynı olamaz.")
+            return
+        self._old_password = old
+        self._new_password = new
+        self.accept()
+
+    def get_passwords(self):
+        return getattr(self, "_old_password", ""), getattr(self, "_new_password", "")

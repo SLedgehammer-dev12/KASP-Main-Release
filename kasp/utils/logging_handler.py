@@ -60,8 +60,13 @@ def setup_logging(log_widget_handler):
     ))
     root_logger.addHandler(file_handler)
     
-    # Widget handler - UI'da gösterim
-    log_widget_handler.setLevel(logging.INFO)
+    # Widget handler - UI'da gösterim (seviye engineering mode'a göre dinamik)
+    try:
+        from kasp.config_manager import get_config_manager
+        eng_mode = get_config_manager().get("updates.engineering_mode", False)
+    except Exception:
+        eng_mode = False
+    log_widget_handler.setLevel(logging.DEBUG if eng_mode else logging.INFO)
     root_logger.addHandler(log_widget_handler)
     
     # Console handler - debug için
