@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-# macOS release spec for GitHub release v2.0.0.
-# V2.0.0: DWSIM EOS entegrasyonu + gelişmiş kullanıcı yönetimi + DWSIM + Kullanıcı Yönetimi + Engineering Mode.
+# macOS release spec for GitHub release v2.0.1.
+# V2.0.1: Thermopack bundle fix + fallback log spam suppression.
 
 import sys
 from pathlib import Path

@@ -28,6 +28,7 @@ def include_runtime_submodule(name):
 thermo_datas = collect_data_files("thermo")
 chemicals_datas = collect_data_files("chemicals")
 scipy_datas = collect_data_files("scipy")
+thermopack_datas = collect_data_files("thermopack")
 
 all_datas = [
     ("kasp", "kasp"),
@@ -39,6 +40,7 @@ all_datas = [
 all_datas.extend(thermo_datas)
 all_datas.extend(chemicals_datas)
 all_datas.extend(scipy_datas)
+all_datas.extend(thermopack_datas)
 
 # DWSIM DLL bundle
 dwsim_binaries = []
@@ -70,6 +72,7 @@ all_hidden.extend([
 all_hidden.extend(collect_submodules("thermo", filter=include_runtime_submodule))
 all_hidden.extend(collect_submodules("chemicals", filter=include_runtime_submodule))
 all_hidden.extend(collect_submodules("scipy", filter=include_runtime_submodule))
+all_hidden.extend(collect_submodules("thermopack", filter=include_runtime_submodule))
 
 # pythonnet hidden imports
 try:

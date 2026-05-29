@@ -48,6 +48,9 @@ class ThermodynamicSolver:
         # Cache for thermo packages to avoid expensive instantiation
         self._package_cache = {}
         self._run_tracking = threading.local()
+        
+        # Fallback warning rate-limit: track warned EOS per run
+        self._warned_eos_fallbacks = set()
 
     @staticmethod
     def _coerce_cache_size(value, default=2000):
@@ -149,6 +152,7 @@ class ThermodynamicSolver:
             "fallback_events": OrderedDict(),
             "solver_method": solver_method,
         }
+        self._warned_eos_fallbacks.clear()
 
     def end_run_tracking(self):
         context = getattr(self._run_tracking, "context", None)
@@ -221,7 +225,13 @@ class ThermodynamicSolver:
                 raise ValueError(f"Desteklenmeyen EOS: {eos_method}")
                 
         except Exception as e:
-            logger.warning(f"⚠️ {eos_method.upper()} EOS hatası: {e}. Fallback (PR) kullanılıyor.")
+            # Rate-limited fallback uyarisi: Her EOS icin run basina 1 kez
+            warned_key = eos_method
+            if warned_key not in self._warned_eos_fallbacks:
+                logger.warning(f"⚠️ {eos_method.upper()} EOS hatası: {e}. Fallback (PR) kullanılıyor.")
+                self._warned_eos_fallbacks.add(warned_key)
+            else:
+                logger.debug(f"⚠️ {eos_method.upper()} EOS hatası (onceki gibi): {e}. Fallback (PR) kullanılıyor.")
             if eos_method == 'aga8':
                 # AGA8 → PR fallback (iki model de thermo dict formatını kullanır)
                 try:

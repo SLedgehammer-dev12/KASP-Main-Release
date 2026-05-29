@@ -4,6 +4,14 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.0.1] — 2026-05-29
+
+### Fixed
+- **Thermopack PyInstaller Bundle** — `collect_data_files('thermopack')` ve `collect_submodules('thermopack')` eklendi. Binary olmadan "No such file or directory" hatası alınıyordu
+- **Fallback log spam** — Rate-limit eklendi: her EOS için run başına 1 WARNING, sonrakiler DEBUG
+
+---
+
 ## [v2.0.0] — 2026-05-29
 
 ### Major: DWSIM EOS Integration
