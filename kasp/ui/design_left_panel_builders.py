@@ -66,7 +66,7 @@ def get_eos_display_items(coolprop_loaded, thermo_loaded):
     try:
         import clr
         dwsim_available = True
-    except ImportError:
+    except (ImportError, RuntimeError):
         pass
         
     if dwsim_available:
@@ -329,7 +329,7 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     try:
         import clr
         dwsim_available = True
-    except ImportError:
+    except (ImportError, RuntimeError):
         pass
     if not dwsim_available:
         for index in range(window.eos_method_combo.count()):

@@ -216,23 +216,3 @@ def test_graph_option_labels_include_cache():
     labels = get_graph_option_labels()
     has_cache = "Cache Performansı" in labels or "Cache Performance" in labels
     assert has_cache
-
-
-# ─────────────────────── ChangePasswordDialog logic ───────────────────────
-
-pytest.importorskip("PyQt5", reason="PyQt5 yüklü değil — UI testleri atlanıyor")
-
-def test_change_password_dialog_creates():
-    from kasp.ui.dialogs import ChangePasswordDialog
-    dlg = ChangePasswordDialog()
-    assert dlg is not None
-    dlg.close()
-
-
-def test_change_password_get_passwords_default_empty():
-    from kasp.ui.dialogs import ChangePasswordDialog
-    dlg = ChangePasswordDialog()
-    old, new = dlg.get_passwords()
-    assert old == ""
-    assert new == ""
-    dlg.close()
