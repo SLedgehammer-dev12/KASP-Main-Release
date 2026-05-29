@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -13,6 +15,48 @@ from typing import Callable
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from release_metadata import RELEASES_API_URL
+
+logger = logging.getLogger(__name__)
+
+
+def _create_ssl_context() -> ssl.SSLContext:
+    """Güvenli SSL bağlamı oluşturur — PyInstaller bundle uyumlu."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except (ImportError, Exception):
+        pass
+
+    try:
+        import sys
+        if sys.platform == "darwin" and getattr(sys, "frozen", False):
+            import os
+            bundle_certs = os.path.join(sys._MEIPASS, "certifi", "cacert.pem")
+            if os.path.exists(bundle_certs):
+                return ssl.create_default_context(cafile=bundle_certs)
+    except Exception:
+        pass
+
+    try:
+        return ssl.create_default_context()
+    except Exception:
+        pass
+
+    logger.warning("SSL sertifika doğrulaması devre dışı — güvenli olmayan bağlantı kullanılıyor.")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+_ssl_context: ssl.SSLContext | None = None
+
+
+def _get_ssl_context() -> ssl.SSLContext:
+    global _ssl_context
+    if _ssl_context is None:
+        _ssl_context = _create_ssl_context()
+    return _ssl_context
 
 
 def parse_release_tag(tag: str) -> tuple[int, ...]:
@@ -91,7 +135,7 @@ class GitHubReleaseClient:
     def fetch_releases(self, *, include_prereleases: bool = False) -> list[ReleaseInfo]:
         request = urllib.request.Request(self.api_url, headers=self.headers)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout, context=_get_ssl_context()) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Release listesi alinamadi: {exc}") from exc
@@ -123,7 +167,7 @@ class GitHubReleaseClient:
 
         request = urllib.request.Request(asset.download_url, headers=self.headers)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout, context=_get_ssl_context()) as response:
                 total_size = int(response.headers.get("Content-Length") or asset.size or 0)
                 downloaded = 0
                 with destination_path.open("wb") as output_file:

@@ -56,6 +56,12 @@ try:
 except Exception:
     pass
 
+try:
+    certifi_datas = collect_data_files("certifi")
+    all_datas.extend(certifi_datas)
+except Exception:
+    pass
+
 all_hidden = []
 all_hidden.extend([
     "matplotlib.backends.backend_qt5agg",

@@ -14,3 +14,4 @@ pyinstaller>=6.0,<7
 ccp>=0.1.5
 thermopack>=2.2.0
 pythonnet>=3.0.0
+certifi>=2024.0
