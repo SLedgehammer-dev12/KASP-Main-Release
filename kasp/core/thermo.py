@@ -763,6 +763,26 @@ class ThermoEngine:
             results["uncertainty"] = None
             return
 
+        def recalc_poly_eff(perturbed_measurements):
+            """Pertürbe edilmiş ölçümlerle tasarım hesaplamasını yeniden çalıştırır."""
+            modified_inputs = dict(inputs)
+            modified_inputs.update({
+                "p_in": float(perturbed_measurements["p_in"]),
+                "p_in_unit": "bara",
+                "p_out": float(perturbed_measurements["p_out"]),
+                "p_out_unit": "bara",
+                "t_in": float(perturbed_measurements["t_in"]),
+                "t_in_unit": "K",
+                "flow": float(perturbed_measurements["flow"]),
+                "flow_unit": "kg/s",
+                "enable_uncertainty": False,
+            })
+            try:
+                recalc_result = self.calculate_design_performance(modified_inputs)
+                return recalc_result.get("actual_poly_efficiency", 0.0)
+            except Exception:
+                return results["actual_poly_efficiency"]
+
         try:
             uncertainty_result = self.uncertainty_analyzer.analyze_uncertainty(
                 build_uncertainty_measurements(
@@ -779,7 +799,7 @@ class ThermoEngine:
                     "t_in": "temperature_rtd_pt100",
                     "flow": "flow_orifice",
                 },
-                lambda _: results["actual_poly_efficiency"],
+                recalc_poly_eff,
                 "polytropic_efficiency",
             )
             results["uncertainty"] = build_uncertainty_payload(
@@ -906,45 +926,54 @@ class ThermoEngine:
                     method_direct_hs_fn=self.method_suite.method_direct_hs,
                 )
 
-                energy = self._calculate_design_energy_context(inputs, context, stage_loop)
-                staged_results = energy["staged_results"]
+                # run_stage_loop temizledigi _active_eos_chain'i post-processing icin tekrar aktiflestir
+                eos_chain = context.get("eos_chain")
+                if eos_chain is not None:
+                    self.thermo_solver._active_eos_chain = eos_chain
 
-                results = build_design_results_payload(
-                    p_in_pa=context["p_in_pa"],
-                    t_in_k=context["t_in_k"],
-                    p_out_pa=context["p_out_pa"],
-                    final_t_out_k=energy["final_t_out_k"],
-                    total_poly_head_kj_kg=energy["total_poly_head_kj_kg"],
-                    poly_eff_tgt=context["poly_eff_tgt"],
-                    total_stage_gas_power_kw=energy["total_stage_gas_power_kw"],
-                    total_shaft_kw=energy["total_shaft_kw"],
-                    motor_kw=energy["motor_kw"],
-                    unit_kw=energy["unit_kw"],
-                    mech_loss_kw=energy["mech_loss_kw"],
-                    fuel_kgh=energy["fuel_kgh"],
-                    mass_flow_per_unit=context["mass_flow_per_unit"],
-                    inlet_acmh=energy["inlet_acmh"],
-                    num_units=context["num_units"],
-                    total_mass_flow_kgs=context["total_mass_flow_kgs"],
-                    heat_rate=energy["heat_rate"],
-                    lhv=energy["lhv"],
-                    hhv=energy["hhv"],
-                    inlet_properties=energy["inlet_properties"],
-                    outlet_properties=energy["outlet_properties"],
-                    num_stages=context["num_stages"],
-                    staged_results=staged_results,
-                    method=context["method"],
-                )
+                try:
+                    energy = self._calculate_design_energy_context(inputs, context, stage_loop)
+                    staged_results = energy["staged_results"]
 
-                self._add_fuel_standard_density(results, energy["fuel_composition"], context["eos"])
-                self._add_uncertainty_result(
-                    results,
-                    inputs,
-                    context["p_in_pa"],
-                    context["p_out_pa"],
-                    context["t_in_k"],
-                    context["mass_flow_per_unit"],
-                )
+                    results = build_design_results_payload(
+                        p_in_pa=context["p_in_pa"],
+                        t_in_k=context["t_in_k"],
+                        p_out_pa=context["p_out_pa"],
+                        final_t_out_k=energy["final_t_out_k"],
+                        total_poly_head_kj_kg=energy["total_poly_head_kj_kg"],
+                        poly_eff_tgt=context["poly_eff_tgt"],
+                        total_stage_gas_power_kw=energy["total_stage_gas_power_kw"],
+                        total_shaft_kw=energy["total_shaft_kw"],
+                        motor_kw=energy["motor_kw"],
+                        unit_kw=energy["unit_kw"],
+                        mech_loss_kw=energy["mech_loss_kw"],
+                        fuel_kgh=energy["fuel_kgh"],
+                        mass_flow_per_unit=context["mass_flow_per_unit"],
+                        inlet_acmh=energy["inlet_acmh"],
+                        num_units=context["num_units"],
+                        total_mass_flow_kgs=context["total_mass_flow_kgs"],
+                        heat_rate=energy["heat_rate"],
+                        lhv=energy["lhv"],
+                        hhv=energy["hhv"],
+                        inlet_properties=energy["inlet_properties"],
+                        outlet_properties=energy["outlet_properties"],
+                        num_stages=context["num_stages"],
+                        staged_results=staged_results,
+                        method=context["method"],
+                    )
+
+                    self._add_fuel_standard_density(results, energy["fuel_composition"], context["eos"])
+                    self._add_uncertainty_result(
+                        results,
+                        inputs,
+                        context["p_in_pa"],
+                        context["p_out_pa"],
+                        context["t_in_k"],
+                        context["mass_flow_per_unit"],
+                    )
+                finally:
+                    if eos_chain is not None:
+                        self.thermo_solver._active_eos_chain = None
             finally:
                 fallback_tracking = self.thermo_solver.end_run_tracking()
 
@@ -961,6 +990,8 @@ class ThermoEngine:
                 (datetime.datetime.now() - start_time).total_seconds(),
             )
             results["fallback_comparison"] = get_fallback_comparisons()
+            if eos_chain is not None and getattr(eos_chain, "_locked_eos", None):
+                results["_effective_eos"] = eos_chain._locked_eos
             return results
 
         except Exception as error:

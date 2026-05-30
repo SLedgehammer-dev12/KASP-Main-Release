@@ -928,6 +928,11 @@ class KaspMainWindow(QMainWindow):
                 prop_table.setItem(prow, 7, QTableWidgetItem(str(raw.get('inlet_phase', "—"))))
                 prop_table.setItem(prow, 8, QTableWidgetItem(f"{raw.get('mass_flow_kgs', 0):.4f}" if raw.get('mass_flow_kgs') else "—"))
 
+        table.resizeRowsToContents()
+        table.updateGeometry()
+        prop_table.resizeRowsToContents()
+        prop_table.updateGeometry()
+
         # Fallback zincir kaydi
         if chain_table:
             chain_table.setRowCount(0)

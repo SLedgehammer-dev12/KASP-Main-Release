@@ -119,6 +119,26 @@ class ThermodynamicSolver:
         return math.sqrt(max(k_value * pressure_pa / density, 0.0))
 
     @staticmethod
+    def _classify_phase(Z: float, density: float, raw_phase: str | None = None) -> str:
+        """Z-faktör ve yoğunluğa dayalı ortak faz sınıflandırması.
+
+        Tüm EOS motorları için tutarlı faz çıktısı üretir.
+        - Z > 0.7 veya ρ < 100 kg/m³ → 'gas'
+        - 0.3 < Z ≤ 0.7 → 'supercritical'
+        - Z ≤ 0.3 → 'liquid'
+        - raw_phase 'twophase' (CoolProp) → 'two-phase'
+        """
+        if raw_phase == "twophase":
+            return "two-phase"
+
+        if density < 100.0 or Z > 0.7:
+            return "gas"
+        elif Z > 0.3:
+            return "supercritical"
+        else:
+            return "liquid"
+
+    @staticmethod
     def _build_state(
         *,
         P_pa,
@@ -138,6 +158,7 @@ class ThermodynamicSolver:
     ):
         if speed_of_sound is None:
             speed_of_sound = ThermodynamicSolver._speed_of_sound(k, P_pa, density)
+        normalized_phase = ThermodynamicSolver._classify_phase(Z, density, phase)
         return ThermodynamicState(
             P=P_pa,
             T=T_k,
@@ -149,9 +170,10 @@ class ThermodynamicSolver:
             Cp=Cp,
             Cv=Cv,
             density=density,
-            phase=phase,
+            phase=normalized_phase,
             raw_props={
                 "fallback": bool(fallback),
+                "raw_phase": phase,
                 "mu": mu,
                 "speed_of_sound": speed_of_sound,
             },
@@ -255,7 +277,7 @@ class ThermodynamicSolver:
                     )
                     state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
                 else:
-                    logger.warning(
+                    logger.info(
                         "⚠️ %s EOS hatasi: %s. PR fallback deneniyor.",
                         eos_method.upper(),
                         e,
@@ -287,9 +309,9 @@ class ThermodynamicSolver:
             health_reasons.append(f"Beklenmedik yüksek sıkıştırılabilirlik faktörü Z={state.Z:.4f}")
             logger.warning(f"⚠️ Olağandışı yüksek Z faktörü: {state.Z:.4f} (P={P_pa/1e5:.1f} bar, T={T_k-273.15:.1f}°C)")
         
-        if state.phase in ('liquid', 'two-phase'):
+        if state.phase in ('liquid', 'two-phase', 'supercritical'):
             thermo_health = "CRITICAL"
-            health_reasons.append("Akışkan sıvı veya iki faz bölgesine girdi (faz ayrışması)")
+            health_reasons.append("Akışkan sıvı, iki faz veya yoğun süperkritik bölgeye girdi (faz ayrışması riski)")
             
         state.raw_props['thermo_health'] = thermo_health
         state.raw_props['health_reasons'] = health_reasons
@@ -343,6 +365,44 @@ class ThermodynamicSolver:
             self._package_cache[pkg_key] = (constants, properties)
         return self._package_cache[pkg_key]
 
+    def _get_coolprop_abstract_state(self, mixture_string: str):
+        """CoolProp AbstractState cache — karışım başına bir kez oluşturulur."""
+        if mixture_string not in self._package_cache:
+            try:
+                from CoolProp import AbstractState
+                AS = AbstractState("HEOS", mixture_string)
+                try:
+                    AS.build_phase_envelope("")
+                except Exception:
+                    pass
+                self._package_cache[mixture_string] = AS
+            except ImportError:
+                self._package_cache[mixture_string] = None
+        return self._package_cache.get(mixture_string)
+
+    def _get_coolprop_phase(self, mixture_string: str, P_pa: float, T_k: float) -> str | None:
+        """AbstractState.phase() ile güvenilir faz tespiti, karışımlarda faz zarfını yönetir."""
+        try:
+            AS = self._get_coolprop_abstract_state(mixture_string)
+            if AS is None:
+                return None
+            AS.update(CP.PT_INPUTS, P_pa, T_k)
+            iphase = AS.phase()
+            from CoolProp import iphase_gas, iphase_liquid, iphase_supercritical
+            from CoolProp import iphase_supercritical_gas, iphase_supercritical_liquid
+            from CoolProp import iphase_twophase, iphase_not_imposed
+            phase_map = {
+                iphase_gas: "gas",
+                iphase_liquid: "liquid",
+                iphase_supercritical: "supercritical",
+                iphase_supercritical_gas: "gas",
+                iphase_supercritical_liquid: "supercritical",
+                iphase_twophase: "twophase",
+            }
+            return phase_map.get(iphase)
+        except Exception:
+            return None
+
     def _solve_coolprop(self, P_pa: float, T_k: float, mixture_string: str) -> ThermodynamicState:
         """CoolProp HEOS motorunu kullanarak özellikleri çözer."""
         if not COOLPROP_LOADED:
@@ -358,12 +418,14 @@ class ThermodynamicSolver:
         k = Cp / Cv if Cv != 0 else 1.667
         MW_kg_mol = CP.PropsSI('M', mixture_string) 
         
-        # Phase bilgisi (CoolProp PhaseSI kütüphane fonksiyonu ile)
-        try:
-            phase_str = CP.PhaseSI('P', P_pa, 'T', T_k, mixture_string)
-        except Exception:
-            phase_str = 'gas'
-            if Z < 0.2: phase_str = 'liquid'
+        # Faz tespiti: AbstractState ile (karışım faz zarfını otomatik yönetir)
+        # AbstractState başarısız olursa PhaseSI, o da başarısız olursa Z+ρ sınıflandırıcıya bırak
+        phase_str = self._get_coolprop_phase(mixture_string, P_pa, T_k)
+        if phase_str is None:
+            try:
+                phase_str = CP.PhaseSI('P', P_pa, 'T', T_k, mixture_string)
+            except Exception:
+                phase_str = None
         
         return self._build_state(
             P_pa=P_pa,
@@ -376,7 +438,7 @@ class ThermodynamicSolver:
             Cp=Cp,
             Cv=Cv,
             density=D,
-            phase=phase_str,
+            phase=phase_str or "gas",
             fallback=False,
             mu=CP.PropsSI('V', 'P', P_pa, 'T', T_k, mixture_string),
             speed_of_sound=a,

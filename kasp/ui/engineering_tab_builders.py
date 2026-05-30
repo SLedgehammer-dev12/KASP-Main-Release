@@ -126,6 +126,8 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     eos_table.setSelectionBehavior(eos_table.SelectRows)
     eos_table.setSelectionMode(eos_table.SingleSelection)
     eos_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+    eos_table.setMinimumHeight(220)
+    eos_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     eos_layout.addWidget(eos_table)
     
     eos_run_btn = QPushButton("🔄 EOS Shootout Çalıştır")

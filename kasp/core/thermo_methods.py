@@ -508,6 +508,22 @@ class ThermoMethodSuite:
             f"ΔH_isen={delta_h_isen/1000:.1f} kJ/kg, ΔH_actual={delta_h_actual/1000:.1f} kJ/kg"
         )
 
+        # Faz siniri kontrolu: k-tabanli referans ile karsilastir
+        pr_total = p_out / p_in
+        n_poly_ref = (k1 - 1.0) / (k1 * poly_eff) if poly_eff > 0 else 0.1
+        t_out_kbased = t_in * (pr_total ** n_poly_ref)
+        deviation_pct = abs(t2_guess - t_out_kbased) / t_out_kbased * 100.0 if t_out_kbased > 0 else 0
+        if deviation_pct > 3.0:
+            self.logger.warning(
+                "⚠️ Metot 4 sonucu k-tabanlı referanstan %.1f%% sapıyor "
+                "(T_out_H-S=%.1f K vs T_out_k-ref=%.1f K, Z_out=%.4f). "
+                "Faz zarfına yakın bölge olabilir — sonuçları diğer metotlarla karşılaştırın.",
+                deviation_pct, t2_guess, t_out_kbased, z2,
+            )
+            history["phase_boundary_warning"] = True
+            history["t_out_kbased_ref"] = t_out_kbased
+            history["deviation_pct"] = deviation_pct
+
         return t2_guess, poly_head, z_avg, history
 
     def find_isentropic_temperature(self, p_in, t_in, p_out, s_target, gas_obj, eos, state_in):

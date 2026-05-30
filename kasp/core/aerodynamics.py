@@ -46,21 +46,28 @@ class CompressorAerodynamics:
         Belirtilen çıkış basıncı (p_out) için Teorik İzentropik Sıcaklığı (T_out_isen) hesaplar.
         """
         try:
-            # 1. CoolProp (Eğer mümkünse Direct Entropy-Pressure Flash)
             if eos == 'coolprop':
                 import CoolProp.CoolProp as CP
                 return CP.PropsSI('T', 'P', p_out, 'Smass', state_in.S, gas_obj)
         except Exception as e:
-            logger.debug(f"Direct Isentropic Flash failed ({e}). Proceeding to fallback.")
-            
-        # 2. PR/SRK veya Fallback İzentropik Üs (k-1)/k 
+            logger.debug(f"Direct CoolProp flash failed ({e}). Proceeding to fallback.")
+
+        try:
+            if eos == 'coolprop':
+                from CoolProp import AbstractState
+                AS = AbstractState("HEOS", gas_obj)
+                AS.update(CP.PSmass_INPUTS, p_out, state_in.S)
+                return AS.T()
+        except Exception as e2:
+            logger.debug(f"AbstractState isentropic flash failed ({e2}). Using k-based fallback.")
+
         k = state_in.k
         if k <= 1.0:
-            k = 1.3  # Güvenli fallback exponent
-            
+            k = 1.3
+
         n_isen = (k - 1) / k
         t_out_isen = state_in.T * math.pow((p_out / state_in.P), n_isen)
-        
+
         return t_out_isen
 
     @staticmethod

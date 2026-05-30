@@ -1,5 +1,8 @@
 import logging
 import numpy as np
+import warnings
+
+warnings.filterwarnings("ignore", message="Ignoring fixed y limits to fulfill fixed data aspect")
 
 try:
     import matplotlib
@@ -862,8 +865,11 @@ class GraphManager:
         graphs = {}
         comp = composition or inputs.get("gas_comp", {})
         eos = eos_method or inputs.get("eos_method", "coolprop")
+        # Fallback sonrasi etkin EOS'u kullan (CCP→thermopack gibi durumlarda gereksiz fallback onlenir)
+        eos = results.get("_effective_eos", eos)
 
         self._graph_error = None
+        eos_chain_active = False
 
         try:
             if not MATPLOTLIB_LOADED:
