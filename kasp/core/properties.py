@@ -128,6 +128,8 @@ class ThermodynamicSolver:
         - Z ≤ 0.3 → 'liquid'
         - raw_phase 'twophase' (CoolProp) → 'two-phase'
         """
+        if raw_phase in ("ideal_fallback", "ideal"):
+            return raw_phase
         if raw_phase == "twophase":
             return "two-phase"
 
