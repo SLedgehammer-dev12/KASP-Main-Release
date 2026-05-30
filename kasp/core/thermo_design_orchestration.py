@@ -5,6 +5,7 @@ from __future__ import annotations
 from kasp.core.aerodynamics import CompressorAerodynamics
 from kasp.core.constants import R_UNIVERSAL_J_MOL_K
 from kasp.core.thermo_design_support import build_stage_result
+from kasp.core.fallback import EosChainBrokenError
 
 
 class ThermoDesignOrchestrator:
@@ -73,6 +74,7 @@ class ThermoDesignOrchestrator:
                 tolerance=tolerance,
                 step_count=step_count,
                 mass_flow_per_unit=mass_flow_per_unit,
+                eos_chain=eos_chain,
                 method_average_fn=method_average_fn,
                 method_endpoint_fn=method_endpoint_fn,
                 method_incremental_fn=method_incremental_fn,
@@ -100,6 +102,7 @@ class ThermoDesignOrchestrator:
         tolerance,
         step_count,
         mass_flow_per_unit,
+        eos_chain=None,
         method_average_fn,
         method_endpoint_fn,
         method_incremental_fn,
@@ -121,6 +124,10 @@ class ThermoDesignOrchestrator:
         final_t_out_k = t_in_k
 
         for stage in range(1, num_stages + 1):
+            # Stage basinda EOS lock-in'i sifirla (yeni stage, yeni EOS sansi)
+            if eos_chain is not None:
+                eos_chain.reset_lock()
+
             curr_p_out = curr_p_in * stage_pr
             if stage == num_stages:
                 curr_p_out = p_out_pa
@@ -132,18 +139,55 @@ class ThermoDesignOrchestrator:
                 f">> KADEME {stage}: {curr_p_in/1e5:.2f} bar → {curr_p_out/1e5:.2f} bar"
             )
 
-            if method_key == "incremental":
-                t_out_k, poly_head, z_avg, history = method_callback(
-                    curr_p_in, curr_t_in, curr_p_out, poly_eff_tgt, gas_obj, eos, step_count
-                )
-            elif method_key == "direct_hs":
-                t_out_k, poly_head, z_avg, history = method_callback(
-                    curr_p_in, curr_t_in, curr_p_out, poly_eff_tgt, gas_obj, eos
-                )
-            else:
-                t_out_k, poly_head, z_avg, history = method_callback(
-                    curr_p_in, curr_t_in, curr_p_out, poly_eff_tgt, gas_obj, eos, max_iter, tolerance
-                )
+            # Method hesaplamasi — EosChainBrokenError veya Metot 4 hatasinda yeniden dene
+            retries = 0
+            while True:
+                try:
+                    if method_key == "incremental":
+                        t_out_k, poly_head, z_avg, history = method_callback(
+                            curr_p_in, curr_t_in, curr_p_out, poly_eff_tgt, gas_obj, eos, step_count
+                        )
+                    elif method_key == "direct_hs":
+                        try:
+                            t_out_k, poly_head, z_avg, history = method_callback(
+                                curr_p_in, curr_t_in, curr_p_out, poly_eff_tgt, gas_obj, eos
+                            )
+                            if not history.get("converged", True):
+                                raise RuntimeError(
+                                    f"Metot 4 yakınsamadı: {history.get('termination_reason', 'bilinmeyen')}"
+                                )
+                        except (RuntimeError, EosChainBrokenError) as exc:
+                            if isinstance(exc, EosChainBrokenError) and retries < 2:
+                                retries += 1
+                                self.logger.warning(
+                                    f"⚠ EosChain lock-in kirildi (stage {stage}): {exc}. Yeniden baslatiliyor... (deneme {retries})"
+                                )
+                                eos_chain.reset_lock()
+                                continue
+                            self.logger.warning(
+                                f"⚠ Metot 4 basarisiz, Metot 1'e donuluyor: {exc}"
+                            )
+                            t_out_k, poly_head, z_avg, history = method_average_fn(
+                                curr_p_in, curr_t_in, curr_p_out, poly_eff_tgt,
+                                gas_obj, eos, max_iter, tolerance
+                            )
+                            history["fallback_from_method"] = "direct_hs"
+                            history["fallback_to_method"] = "average"
+                            history["fallback_reason"] = str(exc)
+                            break
+                    else:
+                        t_out_k, poly_head, z_avg, history = method_callback(
+                            curr_p_in, curr_t_in, curr_p_out, poly_eff_tgt, gas_obj, eos, max_iter, tolerance
+                        )
+                    break
+                except EosChainBrokenError as exc:
+                    retries += 1
+                    if retries >= 2:
+                        raise
+                    self.logger.warning(
+                        f"⚠ EosChain lock-in kirildi (stage {stage}): {exc}. Yeniden baslatiliyor... (deneme {retries})"
+                    )
+                    eos_chain.reset_lock()
 
             state_in = self.thermo_solver.get_properties(curr_p_in, curr_t_in, gas_obj, eos)
             state_out = self.thermo_solver.get_properties(curr_p_out, t_out_k, gas_obj, eos)

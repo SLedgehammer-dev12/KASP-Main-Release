@@ -57,12 +57,18 @@ class FallbackTracker:
         self.solver_chain_log.append(entry)
 
 
+class EosChainBrokenError(Exception):
+    """EosChain lock-in sonrasi kilitli EOS'un calismamasi durumunda firlatilir."""
+    pass
+
+
 class EosChain:
     """Akilli EOS fallback zinciri.
 
     Zincir: preferred_eos → thermopack → pr → srk → aga8 → ideal_gaz
     - Kirik EOS'lar atlanir (1 kez basarisiz = run boyunca isaretli)
     - Ilk calisan EOS kullanilir, sonrakiler denenmez
+    - Stage lock-in: ilk basarili EOS kilitlenir, stage boyunca degismez
     - gas_obj formati her EOS icin otomatik donusturulur
     """
 
@@ -78,6 +84,8 @@ class EosChain:
         self._raw_composition = dict(raw_composition)
         self._gas_obj_cache: dict[str, Any] = {}
         self._comp_fractions: dict[str, float] | None = None
+        self._locked_eos: str | None = None
+        self._locked_fallback = False
 
     def _ensure_fractions(self) -> dict[str, float]:
         if self._comp_fractions is None:
@@ -101,7 +109,23 @@ class EosChain:
         self._gas_obj_cache[eos] = go
         return go
 
+    def reset_lock(self):
+        """Yeni stage baslangicinda EOS kilitini kaldir."""
+        self._locked_eos = None
+        self._locked_fallback = False
+
     def get_properties(self, P_pa: float, T_k: float, preferred_eos: str):
+        # Stage lock-in: kilitli EOS varsa direkt onu kullan
+        if self._locked_eos is not None:
+            if not self._tracker.is_eos_broken(self._locked_eos):
+                go = self._build_gas_obj(self._locked_eos)
+                return self._solver._dispatch(P_pa, T_k, go, self._locked_eos)
+            # Kilitli EOS kirildi → hata firlat, stage yeniden baslatilsin
+            raise EosChainBrokenError(
+                f"Kilitli EOS ({self._locked_eos}) calismiyor: "
+                f"{self._tracker.eos_broken_reason(self._locked_eos)}"
+            )
+
         chain = [preferred_eos]
         for eos in FALLBACK_EOS_ORDER:
             if eos != preferred_eos:
@@ -115,6 +139,11 @@ class EosChain:
             gas_obj = self._build_gas_obj(eos)
             try:
                 state = self._solver._dispatch(P_pa, T_k, gas_obj, eos)
+
+                # Ilk basarili EOS'u kilitle — stage boyunca degismez
+                self._locked_eos = eos
+                if eos != preferred_eos:
+                    self._locked_fallback = True
 
                 if eos != preferred_eos:
                     reason = str(first_error or self._tracker.eos_broken_reason(preferred_eos) or "")

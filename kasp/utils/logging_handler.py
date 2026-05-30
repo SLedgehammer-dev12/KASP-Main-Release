@@ -75,4 +75,7 @@ def setup_logging(log_widget_handler):
     console_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
     root_logger.addHandler(console_handler)
     
+    # Grafik kutuphanesi DEBUG spam'ini bastir
+    logging.getLogger('matplotlib').setLevel(logging.WARNING)
+    
     logging.info("KASP v%s baslatildi. Logging yapilandirmasi tamamlandi.", APP_VERSION)

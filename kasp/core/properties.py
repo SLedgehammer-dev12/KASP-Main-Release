@@ -33,6 +33,13 @@ try:
 except ImportError:
     THERMO_LOADED = False
 
+try:
+    import ccp
+    from ccp import Q_
+    CCP_LOADED = True
+except ImportError:
+    CCP_LOADED = False
+
 logger = logging.getLogger(__name__)
 
 class ThermodynamicSolver:
@@ -53,6 +60,9 @@ class ThermodynamicSolver:
         from kasp.core.fallback import FallbackTracker
         self._fallback_tracker = FallbackTracker()
         self._active_eos_chain = None
+        
+        # PR/thermo isi kapasitesi integral cache (performans)
+        self._h_int_cache: dict = {}
 
     @staticmethod
     def _coerce_cache_size(value, default=2000):
@@ -237,25 +247,33 @@ class ThermodynamicSolver:
             try:
                 state = self._dispatch(P_pa, T_k, gas_obj, eos_method)
             except Exception as e:
-                logger.warning(
-                    "⚠️ %s EOS hatasi: %s. PR fallback deneniyor.",
-                    eos_method.upper(),
-                    e,
-                )
-                try:
-                    state = self._solve_thermo_eos(P_pa, T_k, gas_obj, 'pr')
-                    state.raw_props['fallback'] = True
-                    state.raw_props['fallback_layer'] = 'eos'
-                    state.raw_props['fallback_from'] = eos_method
-                    state.raw_props['fallback_to'] = 'pr'
-                    state.raw_props['fallback_type'] = 'pr_fallback'
-                    state.raw_props['fallback_reason'] = str(e)
-                except Exception as fallback_err:
-                    logger.warning(
-                        "⚠️ PR fallback da başarısız: %s. Ideal gaz'a geçiliyor.",
-                        fallback_err,
+                if self._active_eos_chain is not None:
+                    logger.debug(
+                        "⚠️ %s EOS hatasi EosChain tarafindan yonetiliyor: %s",
+                        eos_method.upper(),
+                        e,
                     )
                     state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
+                else:
+                    logger.warning(
+                        "⚠️ %s EOS hatasi: %s. PR fallback deneniyor.",
+                        eos_method.upper(),
+                        e,
+                    )
+                    try:
+                        state = self._solve_thermo_eos(P_pa, T_k, gas_obj, 'pr')
+                        state.raw_props['fallback'] = True
+                        state.raw_props['fallback_layer'] = 'eos'
+                        state.raw_props['fallback_from'] = eos_method
+                        state.raw_props['fallback_to'] = 'pr'
+                        state.raw_props['fallback_type'] = 'pr_fallback'
+                        state.raw_props['fallback_reason'] = str(e)
+                    except Exception as fallback_err:
+                        logger.warning(
+                            "⚠️ PR fallback da başarısız: %s. Ideal gaz'a geçiliyor.",
+                            fallback_err,
+                        )
+                        state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
             
         # Z-Factor Uyarısı ve Teşhis Entegrasyonu
         thermo_health = "HEALTHY"
@@ -411,16 +429,22 @@ class ThermodynamicSolver:
         Cv_real = (Cv_ig_molar + eos.Cv_dep_g) / molar_mass
         k = Cp_real / Cv_real if Cv_real > 0 else 1.4
         
-        # Enthalpy & Entropy
+        # Enthalpy & Entropy (cached integrals for performance)
         T_ref = 298.15
-        H_ig_molar = sum(
-            zs[i] * properties.HeatCapacityGases[i].T_dependent_property_integral(T_ref, T_k)
-            for i in range(len(zs))
-        )
-        S_ig_molar = sum(
-            zs[i] * properties.HeatCapacityGases[i].T_dependent_property_integral_over_T(T_ref, T_k)
-            for i in range(len(zs))
-        ) - 8.314462 * math.log(P_pa / 101325.0)
+        T_rounded = round(T_k, 1)
+        H_ig_molar = 0.0
+        S_ig_molar = 0.0
+        log_p_ref = math.log(P_pa / 101325.0)
+        for i in range(len(zs)):
+            h_key = (ids[i], T_ref, T_rounded)
+            s_key = (ids[i], T_ref, T_rounded, 'S')
+            if h_key not in self._h_int_cache:
+                self._h_int_cache[h_key] = properties.HeatCapacityGases[i].T_dependent_property_integral(T_ref, T_k)
+            if s_key not in self._h_int_cache:
+                self._h_int_cache[s_key] = properties.HeatCapacityGases[i].T_dependent_property_integral_over_T(T_ref, T_k)
+            H_ig_molar += zs[i] * self._h_int_cache[h_key]
+            S_ig_molar += zs[i] * self._h_int_cache[s_key]
+        S_ig_molar -= 8.314462 * log_p_ref
         
         H = (H_ig_molar + eos.H_dep_g) / molar_mass
         S = (S_ig_molar + eos.S_dep_g) / molar_mass
@@ -638,8 +662,9 @@ class ThermodynamicSolver:
 
     def _solve_ccp(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
         """ccp (Petrobras) motorunu kullanarak özellikleri çözer."""
-        import ccp
-        from ccp import Q_
+        if not CCP_LOADED:
+            raise ImportError("ccp kütüphanesi aktif değil.")
+        
         from kasp.core.mixture import GasMixtureBuilder
         
         ids, zs = self._extract_thermo_components(gas_data)

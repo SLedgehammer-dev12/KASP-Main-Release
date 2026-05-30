@@ -2,6 +2,8 @@
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -18,6 +20,20 @@ from PyQt5.QtWidgets import (
 from kasp.i18n import tr
 
 
+class CollapsibleGroupBox(QGroupBox):
+    """Tiklaninca icerigi goster/gizle yapan GroupBox."""
+    def __init__(self, title, parent=None):
+        super().__init__(title, parent)
+        self.setCheckable(True)
+        self.setChecked(True)
+        self.toggled.connect(self._on_toggle)
+
+    def _on_toggle(self, checked):
+        for child in self.findChildren(QWidget):
+            if child is not self:
+                child.setVisible(checked)
+
+
 def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     """Engineering Dashboard sekmesini oluşturur. Scrollable yapıdadır."""
     
@@ -30,7 +46,7 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     layout.setSpacing(8)
 
     # ── 1. Hesaplama İzleme Ağacı ──
-    trace_group = QGroupBox("📋 Hesaplama İzleme (Calculation Trace)")
+    trace_group = CollapsibleGroupBox("📋 Hesaplama İzleme (Calculation Trace)")
     trace_layout = QVBoxLayout()
     trace_tree = QTreeWidget()
     trace_tree.setHeaderLabels(["Aşama / Iterasyon", "Detay"])
@@ -46,7 +62,7 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     layout.addWidget(trace_group)
 
     # ── 2. Performans Paneli ──
-    perf_group = QGroupBox("⚡ Performans Metrikleri")
+    perf_group = CollapsibleGroupBox("⚡ Performans Metrikleri")
     perf_layout = QHBoxLayout()
     perf_layout.setSpacing(12)
 
@@ -76,7 +92,7 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     layout.addWidget(perf_group)
 
     # ── 3. Termo Sağlık Paneli ──
-    health_group = QGroupBox("🩺 Termo Sağlık (Thermo Health)")
+    health_group = CollapsibleGroupBox("🩺 Termo Sağlık (Thermo Health)")
     health_layout = QVBoxLayout()
     health_table = QTableWidget(0, 5)
     health_table.setHorizontalHeaderLabels(["Konum", "Z", "Faz", "Sağlık", "Uyarılar"])
@@ -87,7 +103,7 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     layout.addWidget(health_group)
 
     # ── 4. EOS Benchmark / Fallback ──
-    fallback_group = QGroupBox("🔬 Çözücü Benchmark (Solver Benchmark)")
+    fallback_group = CollapsibleGroupBox("🔬 Çözücü Benchmark (Solver Benchmark)")
     fallback_layout = QVBoxLayout()
     fallback_table = QTableWidget(0, 6)
     fallback_table.setHorizontalHeaderLabels(["Kademe", "Yöntem", "T (K)", "İter", "Rezidüel", "Süre (ms)"])
@@ -97,26 +113,47 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     fallback_group.setLayout(fallback_layout)
     layout.addWidget(fallback_group)
 
-    # ── 5. EOS Shootout (genişletilmiş) ──
-    eos_group = QGroupBox("🧪 EOS Karşılaştırma (EOS Shootout)")
+    # ── 5. EOS Shootout (iki katmanli) ──
+    eos_group = CollapsibleGroupBox("🧪 EOS Karşılaştırma (EOS Shootout)")
     eos_layout = QVBoxLayout()
-    eos_table = QTableWidget(0, 10)
+    
+    # Ust tablo: hizli karsilastirma (5 kolon, scroll yok)
+    eos_table = QTableWidget(0, 5)
     eos_table.setHorizontalHeaderLabels([
-        "EOS", "Durum", "Fallback\nKatmanı", "Fallback\nZinciri",
-        "T_out (°C)", "Head (kJ/kg)", "Power (kW)", "η_poly", "Head Δ%", "Süre (s)"
+        "EOS", "Durum", "T_out (°C)", "Head (kJ/kg)", "Power (kW)"
     ])
     eos_table.setObjectName("eng_eos_shootout")
-    eos_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-    eos_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+    eos_table.setSelectionBehavior(eos_table.SelectRows)
+    eos_table.setSelectionMode(eos_table.SingleSelection)
+    eos_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
     eos_layout.addWidget(eos_table)
+    
     eos_run_btn = QPushButton("🔄 EOS Shootout Çalıştır")
     eos_run_btn.setObjectName("eng_eos_shootout_btn")
     eos_layout.addWidget(eos_run_btn)
+    
+    # Alt panel: secili EOS detayi
+    detail_frame = QFrame()
+    detail_frame.setObjectName("eng_eos_detail")
+    detail_frame.setFrameShape(QFrame.StyledPanel)
+    detail_layout = QVBoxLayout(detail_frame)
+    
+    detail_title = QLabel("📋 EOS Detayı — seçmek için yukarıdaki satıra tıklayın")
+    detail_title.setObjectName("eng_eos_detail_title")
+    detail_layout.addWidget(detail_title)
+    
+    detail_form = QFormLayout()
+    detail_form.setSpacing(2)
+    detail_form.setObjectName("eng_eos_detail_form")
+    detail_layout.addLayout(detail_form)
+    detail_frame.setVisible(False)
+    eos_layout.addWidget(detail_frame)
+    
     eos_group.setLayout(eos_layout)
     layout.addWidget(eos_group)
 
     # ── 5b. EOS Ham Property Karşılaştırma ──
-    prop_group = QGroupBox("🔍 Ham Property Karşılaştırması (Raw Props @ Inlet & Outlet)")
+    prop_group = CollapsibleGroupBox("🔍 Ham Property Karşılaştırması (Raw Props @ Inlet)")
     prop_layout = QVBoxLayout()
     prop_table = QTableWidget(0, 9)
     prop_table.setHorizontalHeaderLabels([
@@ -130,7 +167,7 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     layout.addWidget(prop_group)
 
     # ── 5c. Fallback Zincir Kaydı ──
-    chain_group = QGroupBox("🔄 Fallback Zincir Kaydı (Run Bazında)")
+    chain_group = CollapsibleGroupBox("🔄 Fallback Zincir Kaydı (Run Bazında)")
     chain_layout = QVBoxLayout()
     chain_table = QTableWidget(0, 4)
     chain_table.setHorizontalHeaderLabels(["Katman", "Kimden → Kime", "Sebep", "Çağrı"])
@@ -141,7 +178,7 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     layout.addWidget(chain_group)
 
     # ── 6. Metot Shootout ──
-    method_group = QGroupBox("🧮 Metot Karşılaştırma (Method Shootout)")
+    method_group = CollapsibleGroupBox("🧮 Metot Karşılaştırma (Method Shootout)")
     method_layout = QVBoxLayout()
     method_table = QTableWidget(0, 7)
     method_table.setHorizontalHeaderLabels(["Metot", "T_out (°C)", "Head (kJ/kg)", "Power (kW)", "η_poly", "Yakınsadı", "Süre (s)"])
@@ -175,6 +212,9 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
         "fallback_table": fallback_table,
         "eos_table": eos_table,
         "eos_run_btn": eos_run_btn,
+        "eos_detail_frame": detail_frame,
+        "eos_detail_title": detail_title,
+        "eos_detail_form": detail_form,
         "prop_table": prop_table,
         "chain_table": chain_table,
         "method_table": method_table,

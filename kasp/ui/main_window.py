@@ -864,6 +864,9 @@ class KaspMainWindow(QMainWindow):
         eos_btn = self._eng_widgets.get("eos_run_btn")
         if eos_btn:
             eos_btn.clicked.connect(self._run_eos_shootout)
+        eos_table = self._eng_widgets.get("eos_table")
+        if eos_table:
+            eos_table.itemSelectionChanged.connect(self._on_shootout_row_selected)
         method_btn = self._eng_widgets.get("method_run_btn")
         if method_btn:
             method_btn.clicked.connect(self._run_method_shootout)
@@ -879,38 +882,39 @@ class KaspMainWindow(QMainWindow):
         chain_table = self._eng_widgets.get("chain_table")
         if chain_table:
             chain_table.setRowCount(0)
-        results = run_eos_shootout(self.engine, self.last_design_inputs)
-        for r in results:
+        detail_frame = self._eng_widgets.get("eos_detail_frame")
+        if detail_frame:
+            detail_frame.setVisible(False)
+        
+        self._shootout_results = run_eos_shootout(self.engine, self.last_design_inputs)
+        for r in self._shootout_results:
+            if r.get("eos") is None:
+                continue  # chain log entry
+            
+            raw = r.get("raw_props", {})
+            fallback_from = raw.get("fallback_from", "")
+            fallback_to = raw.get("fallback_to", "")
+            
+            # EOS ana tablosu (5 kolon)
             row = table.rowCount()
             table.insertRow(row)
             table.setItem(row, 0, QTableWidgetItem(r.get("label", "—")))
             if r["success"]:
-                raw = r.get("raw_props", {})
-                fallback_layer = raw.get("fallback_layer", "")
-                fallback_from = raw.get("fallback_from", "")
-                fallback_to = raw.get("fallback_to", "")
                 if fallback_from:
                     status = "⚠️ Fallback"
-                    chain_str = f"{fallback_from}→{fallback_to}"
                 else:
                     status = "✅ Doğrudan"
-                    chain_str = "—"
                 table.setItem(row, 1, QTableWidgetItem(status))
-                table.setItem(row, 2, QTableWidgetItem(fallback_layer or "—"))
-                table.setItem(row, 3, QTableWidgetItem(chain_str))
-                table.setItem(row, 4, QTableWidgetItem(f"{r.get('t_out', 0) - 273.15:.1f}" if r.get('t_out') else "—"))
-                table.setItem(row, 5, QTableWidgetItem(f"{r.get('head_kj_kg', 0):.1f}" if r.get('head_kj_kg') else "—"))
-                table.setItem(row, 6, QTableWidgetItem(f"{r.get('power_kw', 0):.1f}" if r.get('power_kw') else "—"))
-                table.setItem(row, 7, QTableWidgetItem(f"{r.get('poly_eff_actual', 0):.1f}%" if r.get('poly_eff_actual') else "—"))
-                table.setItem(row, 8, QTableWidgetItem(f"{r.get('head_diff_pct', 0):+.2f}%" if r.get('head_diff_pct') is not None else "—"))
-                table.setItem(row, 9, QTableWidgetItem(f"{r.get('elapsed_s', 0):.2f}"))
+                table.setItem(row, 2, QTableWidgetItem(f"{r.get('t_out', 0) - 273.15:.1f}" if r.get('t_out') else "—"))
+                table.setItem(row, 3, QTableWidgetItem(f"{r.get('head_kj_kg', 0):.1f}" if r.get('head_kj_kg') else "—"))
+                table.setItem(row, 4, QTableWidgetItem(f"{r.get('power_kw', 0):.1f}" if r.get('power_kw') else "—"))
             else:
                 table.setItem(row, 1, QTableWidgetItem(f"❌ Hata"))
                 table.setItem(row, 2, QTableWidgetItem("—"))
-                table.setItem(row, 3, QTableWidgetItem(r.get('error', '—')[:50]))
+                table.setItem(row, 3, QTableWidgetItem("—"))
+                table.setItem(row, 4, QTableWidgetItem("—"))
 
             # Ham property tablosu
-            raw = r.get("raw_props", {})
             if r["success"] and raw:
                 prow = prop_table.rowCount()
                 prop_table.insertRow(prow)
@@ -927,7 +931,7 @@ class KaspMainWindow(QMainWindow):
         # Fallback zincir kaydi
         if chain_table:
             chain_table.setRowCount(0)
-            for r in results:
+            for r in self._shootout_results:
                 chain_log = r.get("_fallback_chain_log", [])
                 if chain_log:
                     for log_entry in chain_log:
@@ -937,6 +941,69 @@ class KaspMainWindow(QMainWindow):
                         chain_table.setItem(crow, 1, QTableWidgetItem(f"{log_entry.get('from', '?')} → {log_entry.get('to', '?')}"))
                         chain_table.setItem(crow, 2, QTableWidgetItem(log_entry.get("reason", "—")))
                         chain_table.setItem(crow, 3, QTableWidgetItem(str(log_entry.get("count", 1))))
+
+    def _on_shootout_row_selected(self):
+        """EOS Shootout satir secimi → detay panelini guncelle."""
+        table = self._eng_widgets.get("eos_table")
+        detail_frame = self._eng_widgets.get("eos_detail_frame")
+        detail_title = self._eng_widgets.get("eos_detail_title")
+        detail_form = self._eng_widgets.get("eos_detail_form")
+        if not table or not detail_frame or not detail_title or not detail_form:
+            return
+
+        selected = table.selectedIndexes()
+        if not selected:
+            detail_frame.setVisible(False)
+            return
+
+        row = selected[0].row()
+        shootout_idx = row
+        r = None
+        for item in self._shootout_results:
+            if item.get("eos") is not None:
+                if shootout_idx == 0:
+                    r = item
+                    break
+                shootout_idx -= 1
+        if r is None:
+            return
+
+        detail_frame.setVisible(True)
+        detail_title.setText(f"📋 {r.get('label', '?')} Detayı")
+
+        # Formu temizle
+        while detail_form.rowCount() > 0:
+            detail_form.removeRow(0)
+
+        raw = r.get("raw_props", {})
+
+        # Fallback bilgisi
+        fb_from = raw.get("fallback_from", "")
+        fb_to = raw.get("fallback_to", "")
+        fb_reason = raw.get("fallback_reason", "")
+        if fb_from:
+            detail_form.addRow("🔄 Fallback Zinciri:", QLabel(f"{fb_from} → {fb_to}"))
+            detail_form.addRow("   Sebep:", QLabel(fb_reason[:120]))
+        else:
+            detail_form.addRow("🔄 Fallback:", QLabel("Yok (doğrudan)"))
+
+        # Detay metrikler
+        detail_form.addRow("⏱️ Süre:", QLabel(f"{r.get('elapsed_s', 0):.2f}s"))
+        if r.get("poly_eff_actual"):
+            detail_form.addRow("η_poly:", QLabel(f"{r.get('poly_eff_actual', 0):.1f}%"))
+        if r.get("head_diff_pct") is not None:
+            detail_form.addRow("Head Δ%:", QLabel(f"{r.get('head_diff_pct', 0):+.2f}%"))
+
+        # Ham propertyler
+        parts = [("Giriş", "inlet_"), ("Çıkış", "outlet_")]
+        for label, prefix in parts:
+            mw = raw.get(f"{prefix}mw")
+            if mw:
+                line = (f"MW={mw:.2f} g/mol | k={raw.get(f'{prefix}k',0):.4f} | "
+                        f"Z={raw.get(f'{prefix}z',0):.4f} | Cp={raw.get(f'{prefix}cp',0):.0f} | "
+                        f"Cv={raw.get(f'{prefix}cv',0):.0f} | ρ={raw.get(f'{prefix}density',0):.2f} | "
+                        f"{raw.get(f'{prefix}phase','?')}")
+                detail_form.addRow(f"🔍 {label}:", QLabel(line))
 
     def _run_method_shootout(self):
         if not getattr(self, "last_design_inputs", None):
