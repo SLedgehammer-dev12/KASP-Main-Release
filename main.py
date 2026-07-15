@@ -163,7 +163,6 @@ def main():
         db = UnitDatabase()
         user_manager = UserManager(db)
 
-        # İlk çalıştırma tespiti
         is_first_run = db.users.is_empty()
 
         if is_first_run:
@@ -181,24 +180,6 @@ def main():
             logger.info("Admin kullanıcısı oluşturuldu.")
             db.update_user(1, must_change_password=1)
             _show_admin_password_dialog(admin_password)
-        else:
-            # Kurtarma: admin var ama must_change_password=1 ise
-            # (önceki bug'lı çalıştırmadan kalmış olabilir)
-            admin_user = db.get_user_by_username("admin")
-            if admin_user and admin_user.get("must_change_password"):
-                reply = QMessageBox.question(
-                    None, "Sifre Kurtarma",
-                    "Admin hesabi daha once olusturulmus ancak sifre "
-                    "bilinmiyor veya degistirilmemis.\n\n"
-                    "Yeni bir gecici sifre olusturulsun mu?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
-                if reply == QMessageBox.Yes:
-                    admin_password = generate_initial_admin_password()
-                    db.update_user(1, password_hash=hash_password(admin_password),
-                                   must_change_password=1)
-                    _show_admin_password_dialog(admin_password)
 
         from kasp.ui.login_dialog import LoginDialog
         login = LoginDialog(user_manager)

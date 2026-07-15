@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
 )
@@ -18,6 +19,8 @@ from kasp.security import (
     LOCKOUT_LEVELS,
     check_lockout,
     get_lockout_remaining,
+    generate_initial_admin_password,
+    hash_password,
     record_attempt,
 )
 from kasp.i18n import tr
@@ -83,10 +86,53 @@ class LoginDialog(QDialog):
         self._login_btn.setDefault(True)
         btn_layout.addWidget(self._login_btn)
 
+        forgot_btn = QPushButton(tr("Şifremi Unuttum"))
+        forgot_btn.clicked.connect(self._forgot_password)
+        btn_layout.addWidget(forgot_btn)
+
         cancel_btn = QPushButton(tr("Çıkış"))
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
+
+    def _forgot_password(self):
+        username = self._username_edit.text().strip()
+        if username != "admin":
+            QMessageBox.warning(
+                self, tr("Bilgi"),
+                tr("Sadece admin kullanicisi icin sifre sifirlama yapilabilir.\n"
+                   "Admin sifrenizi unuttuysaniz kullanici adi olarak 'admin' yazip tekrar deneyin.")
+            )
+            return
+
+        admin_user = self._user_manager.db.get_user_by_username("admin")
+        if not admin_user:
+            QMessageBox.warning(self, tr("Hata"), tr("Admin kullanicisi bulunamadi."))
+            return
+
+        reply = QMessageBox.question(
+            self, tr("Admin Sifre Sifirlama"),
+            tr("Admin sifresi sifirlanacak ve yeni bir gecici sifre olusturulacak.\n\n"
+               "Devam etmek istiyor musunuz?"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        new_password = generate_initial_admin_password()
+        self._user_manager.db.update_user(
+            1, password_hash=hash_password(new_password), must_change_password=1
+        )
+        self._password_edit.setText(new_password)
+        self._password_edit.setFocus()
+        QMessageBox.information(
+            self, tr("Yeni Sifre"),
+            tr(f"Admin sifresi sifirlandi.\n\n"
+               f"Gecici sifre: {new_password}\n\n"
+               f"Bu sifre sifre alanina otomatik yerlestirildi.\n"
+               f"Giris yaptiktan sonra sifrenizi degistirmelisiniz.")
+        )
 
     def _toggle_password_visibility(self, checked):
         self._password_edit.setEchoMode(
