@@ -47,9 +47,9 @@ def safe_import():
             return logger
     
     try:
-        from kasp.exception_handler import install_exception_handler
+        from kasp.error_handler import install_exception_handler
     except ImportError as e:
-        print(f"WARNING: Cannot import exception_handler: {e}", file=sys.stderr)
+        print(f"WARNING: Cannot import error_handler: {e}", file=sys.stderr)
         print("Using fallback exception handler", file=sys.stderr)
         
         def install_exception_handler():
@@ -146,18 +146,45 @@ def main():
             logger.warning(f"⚠ Application icon not found: {icon_path}")
         
         # Login authentication — Gelişmiş Kullanıcı Yönetimi
-        from kasp.security import hash_password, DEFAULT_PASSWORD, Session
+        from kasp.security import hash_password, Session, generate_initial_admin_password
         from kasp.core.user_manager import UserManager
         from kasp.data.database import UnitDatabase
 
         db = UnitDatabase()
         user_manager = UserManager(db)
 
-        # İlk çalıştırma: Varsayılan admin oluştur
-        db.create_default_admin(hash_password(DEFAULT_PASSWORD))
+        # İlk çalıştırma: Güvenli rastgele admin şifresi
+        admin_password = os.environ.get("KASP_ADMIN_PASSWORD")
+        if not admin_password:
+            try:
+                from kasp.config_manager import get_config_manager
+                admin_password = get_config_manager().get("auth.admin_initial_password")
+            except Exception:
+                admin_password = None
+        if not admin_password:
+            admin_password = generate_initial_admin_password()
+
+        db.create_default_admin(hash_password(admin_password))
+        logger.info("Admin kullanıcısı oluşturuldu.")
+
+        # İlk kurulumda şifreyi göster ve zorunlu değişim işaretle
+        if admin_password:
+            db.update_user(1, must_change_password=1)
 
         from kasp.ui.login_dialog import LoginDialog
         login = LoginDialog(user_manager)
+
+        # İlk çalıştırmada admin şifresini göster
+        if db.users.is_empty() or admin_password:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(
+                None, "Ilk Kurulum - Admin Hesabi",
+                f"Admin hesabi olusturuldu.\n\n"
+                f"Kullanici adi: admin\n"
+                f"Gecici sifre: {admin_password}\n\n"
+                f"Bu sifreyi not alin. Ilk giris sonrasi degistirmeniz zorunludur."
+            )
+
         if login.exec_() != LoginDialog.Accepted:
             logger.info("Login cancelled by user")
             sys.exit(0)
@@ -231,6 +258,10 @@ def main():
             window.deleteLater()
             logger.info("✓ Main window cleaned up")
         
+        if hasattr(window, '_db'):
+            window._db.close()
+            logger.info("✓ Database closed")
+        
         logger.info("✓ Application closed successfully")
         logger.info("=" * 80)
         
@@ -247,6 +278,22 @@ def main():
             "KASP modülleri yüklenemedi!\n\nLütfen uygulamayı yeniden yükleyin.",
             str(e)
         )
+        sys.exit(1)
+        
+    except KeyboardInterrupt:
+        logger.info("Kullanıcı tarafından kesildi.")
+        sys.exit(0)
+        
+    except SystemExit:
+        raise
+        
+    except MemoryError:
+        error_msg = "Yetersiz bellek! Diğer uygulamaları kapatıp tekrar deneyin."
+        if logger:
+            logger.critical(error_msg)
+        else:
+            print(f"CRITICAL ERROR: {error_msg}", file=sys.stderr)
+        show_critical_error(error_msg)
         sys.exit(1)
         
     except Exception as e:

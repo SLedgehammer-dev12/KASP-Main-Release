@@ -41,6 +41,14 @@ def get_design_method_options():
     ]
 
 
+METHOD_TOOLTIPS = {
+    "Metot 1: Ortalama Özellikler": "Küçük basınç oranları için uygun (PR < 4). Giriş-çıkış ortalaması ile iteratif.",
+    "Metot 2: Uç Nokta": "Sadece PR < 2.5 için önerilir. Yüksek PR'da sapma yapabilir.",
+    "Metot 3: Artımlı Basınç": "En hassas yöntem. API 617 Appendix C uyumlu. Tüm PR değerleri için önerilir.",
+    "Metot 4: Doğrudan H-S": "Gerçek entalpi/entropi bazlı. PR < 10 için uygun, en kapsamlı analiz.",
+}
+
+
 def get_solver_method_options():
     return [
         "Analitik Jakobiyen NR (AJ-NR - Hızlı)",
@@ -373,6 +381,10 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
 
     window.method_combo = QComboBox()
     window.method_combo.addItems(get_design_method_options())
+    for i in range(window.method_combo.count()):
+        text = window.method_combo.itemText(i)
+        if text in METHOD_TOOLTIPS:
+            window.method_combo.setItemData(i, METHOD_TOOLTIPS[text], Qt.ToolTipRole)
 
     poly_layout = QHBoxLayout()
     window.poly_eff_edit = QLineEdit("90.0")

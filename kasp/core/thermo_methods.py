@@ -1,8 +1,21 @@
-"""Calculation method strategies used by ThermoEngine."""
+"""Compression calculation method strategies (v2.1 Strategy Pattern).
+
+Four distinct compression path integration strategies, each implementing
+the common ``CompressionMethod`` interface. ``ThermoMethodSuite`` acts as
+a backward-compatible registry/factory.
+
+Methods:
+  1. AveragePropertiesMethod — giriş-çıkış ortalaması (PR < 4 için uygun)
+  2. EndpointMethod — sadece çıkış k'sı (PR < 2.5, hızlı tahmin)
+  3. IncrementalPressureMethod — API 617 Appendix C (en hassas)
+  4. DirectHSMethod — gerçek H/S bazlı (PR < 10, en kapsamlı)
+"""
 
 from __future__ import annotations
 
 import math
+import abc
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -10,14 +23,27 @@ from kasp.core.aerodynamics import CompressorAerodynamics
 from kasp.core.settings import EngineSettings
 from kasp.core.constants import R_UNIVERSAL_J_MOL_K
 
+MethodResult = Tuple[float, float, float, Dict[str, Any]]
+#                 t_out   head   z_avg  history
 
-class ThermoMethodSuite:
+
+# ── Abstract Strategy ──────────────────────────────────────────────────
+
+class CompressionMethod(abc.ABC):
+    """Tüm sıkıştırma metotları için ortak arayüz."""
+
     MAX_METHOD_ITERATIONS = 200
     MAX_INCREMENTAL_STEPS = 500
 
-    def __init__(self, *, thermo_solver, logger):
+    def __init__(self, thermo_solver, logger):
         self.thermo_solver = thermo_solver
         self.logger = logger
+
+    @abc.abstractmethod
+    def execute(self, p_in: float, t_in: float, p_out: float,
+                poly_eff: float, gas_obj, eos: str,
+                **kwargs) -> MethodResult:
+        ...
 
     def _coerce_iteration_limit(self, value, *, default=100):
         try:
@@ -42,18 +68,28 @@ class ThermoMethodSuite:
         return max(2, min(self.MAX_INCREMENTAL_STEPS, step_count))
 
     @staticmethod
-    def _calculate_polytropic_head(z_factor, r_specific, t_in, pressure_ratio, exponent):
+    def _calculate_polytropic_head(z_factor, r_specific, t_in,
+                                   pressure_ratio, exponent):
         if abs(exponent) < 1e-10:
             return 0.0
         return (
-            z_factor
-            * r_specific
-            * t_in
+            z_factor * r_specific * t_in
             * (1.0 / exponent)
             * (math.pow(pressure_ratio, exponent) - 1.0)
         ) / 1000.0
 
-    def method_average_properties(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
+
+# ── Method 1: Average Properties ──────────────────────────────────────
+
+class AveragePropertiesMethod(CompressionMethod):
+    """
+    Metot 1: Ortalama Özellikler Yöntemi.
+    Giriş ve çıkış k değerlerinin ortalamasını kullanır.
+    PR < 4 için uygun, PR >= 4 için API 617 integral metoduna geçer.
+    """
+
+    def execute(self, p_in, t_in, p_out, poly_eff, gas_obj, eos,
+                max_iter=100, tolerance=0.01, **kwargs):
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
         pr = p_out / p_in
@@ -61,7 +97,8 @@ class ThermoMethodSuite:
 
         if use_integral:
             self.logger.info(
-                f"📊 API 617 Appendix C — İntegral metodu: PR={pr:.2f} > {EngineSettings.PR_INTEGRATION_THRESHOLD}"
+                f"📊 API 617 Appendix C — İntegral metodu: PR={pr:.2f} > "
+                f"{EngineSettings.PR_INTEGRATION_THRESHOLD}"
             )
 
         try:
@@ -76,16 +113,12 @@ class ThermoMethodSuite:
             t2_guess = t_in * 1.5
 
         history = {
-            "pressure": [p_in],
-            "temperature": [t_in],
-            "z_factor": [Z1],
-            "k_value": [k1],
+            "pressure": [p_in], "temperature": [t_in],
+            "z_factor": [Z1], "k_value": [k1],
             "iteration": [0],
             "method_used": "integral" if use_integral else "averaging",
-            "iteration_limit": max_iter,
-            "tolerance": tolerance,
-            "converged": False,
-            "termination_reason": None,
+            "iteration_limit": max_iter, "tolerance": tolerance,
+            "converged": False, "termination_reason": None,
         }
         integral_analysis = None
         use_integral_local = use_integral
@@ -94,23 +127,30 @@ class ThermoMethodSuite:
             t2_old = t2_guess
 
             try:
-                state_out = self.thermo_solver.get_properties(p_out, t2_old, gas_obj, eos)
+                state_out = self.thermo_solver.get_properties(
+                    p_out, t2_old, gas_obj, eos
+                )
                 k2, Z2 = state_out.k, state_out.Z
             except Exception as error:
-                raise RuntimeError(f"Çıkış özellikleri hesaplanamadı (Metot 1, iter {iteration}): {error}")
+                raise RuntimeError(
+                    f"Çıkış özellikleri hesaplanamadı (Metot 1, iter {iteration}): {error}"
+                )
 
             if use_integral_local:
                 try:
                     n_minus_1_over_n, k_integral, integral_analysis = (
                         CompressorAerodynamics.calculate_polytropic_exponent_integral(
-                            p_in, t_in, p_out, poly_eff, self.thermo_solver, gas_obj, eos, steps=20
+                            p_in, t_in, p_out, poly_eff,
+                            self.thermo_solver, gas_obj, eos, steps=20
                         )
                     )
                     k_avg = k_integral
                     history["k_integral"] = k_integral
                     history["integral_analysis"] = integral_analysis
                 except Exception as error:
-                    self.logger.warning(f"⚠ İntegral metot başarısız, ortalamaya dönülüyor: {error}")
+                    self.logger.warning(
+                        f"⚠ İntegral metot başarısız, ortalamaya dönülüyor: {error}"
+                    )
                     k_avg = (k1 + k2) / 2.0
                     n_minus_1_over_n = (k_avg - 1) / (k_avg * poly_eff)
                     use_integral_local = False
@@ -122,7 +162,9 @@ class ThermoMethodSuite:
             z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, Z2)
 
             if abs(n_minus_1_over_n) < 1e-10:
-                self.logger.warning("Metot 1: n_minus_1_over_n sıfıra çok yakın, döngü sonlandırıldı.")
+                self.logger.warning(
+                    "Metot 1: n_minus_1_over_n sıfıra çok yakın, döngü sonlandırıldı."
+                )
                 break
 
             t2_new = t_in * (p_out / p_in) ** n_minus_1_over_n
@@ -146,21 +188,23 @@ class ThermoMethodSuite:
 
                 r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
                 poly_head = self._calculate_polytropic_head(
-                    z_avg,
-                    r_specific,
-                    t_in,
-                    p_out / p_in,
-                    n_minus_1_over_n,
+                    z_avg, r_specific, t_in, p_out / p_in, n_minus_1_over_n,
                 )
 
-                self.logger.debug(f"✓ Metot 1 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K")
+                self.logger.debug(
+                    f"✓ Metot 1 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K"
+                )
                 history["converged"] = True
                 history["termination_reason"] = "converged"
                 return t2_guess, poly_head, z_avg, history
 
-        self.logger.warning(f"⚠ Metot 1: Maks. iterasyon ({max_iter}) aşıldı, son tahmin kullanılıyor.")
+        self.logger.warning(
+            f"⚠ Metot 1: Maks. iterasyon ({max_iter}) aşıldı, son tahmin kullanılıyor."
+        )
         try:
-            state_avg = self.thermo_solver.get_properties((p_in + p_out) / 2, (t_in + t2_guess) / 2, gas_obj, eos)
+            state_avg = self.thermo_solver.get_properties(
+                (p_in + p_out) / 2, (t_in + t2_guess) / 2, gas_obj, eos
+            )
             z_avg_final = state_avg.Z
             k_final = state_avg.k
             mw = state_avg.MW
@@ -172,16 +216,22 @@ class ThermoMethodSuite:
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
         n_final = (k_final - 1) / (k_final * poly_eff)
         poly_head = self._calculate_polytropic_head(
-            z_avg_final,
-            r_specific,
-            t_in,
-            p_out / p_in,
-            n_final,
+            z_avg_final, r_specific, t_in, p_out / p_in, n_final,
         )
         history["termination_reason"] = history["termination_reason"] or "max_iterations"
         return t2_guess, poly_head, z_avg_final, history
 
-    def method_endpoint(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
+
+# ── Method 2: Endpoint ────────────────────────────────────────────────
+
+class EndpointMethod(CompressionMethod):
+    """
+    Metot 2: Endpoint (Uç Nokta) Yöntemi.
+    Sadece çıkış k'sını kullanır. PR < 2.5 için uygun, yüksek PR'da sapma yapar.
+    """
+
+    def execute(self, p_in, t_in, p_out, poly_eff, gas_obj, eos,
+                max_iter=100, tolerance=0.01, **kwargs):
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
         try:
@@ -196,26 +246,25 @@ class ThermoMethodSuite:
             t2_guess = t_in * 1.1
 
         history = {
-            "pressure": [p_in],
-            "temperature": [t_in],
-            "z_factor": [Z1],
-            "k_value": [k1],
-            "iteration": [0],
-            "method_used": "endpoint",
-            "iteration_limit": max_iter,
-            "tolerance": tolerance,
-            "converged": False,
-            "termination_reason": None,
+            "pressure": [p_in], "temperature": [t_in],
+            "z_factor": [Z1], "k_value": [k1],
+            "iteration": [0], "method_used": "endpoint",
+            "iteration_limit": max_iter, "tolerance": tolerance,
+            "converged": False, "termination_reason": None,
         }
 
         for iteration in range(max_iter):
             t2_old = t2_guess
 
             try:
-                state_out = self.thermo_solver.get_properties(p_out, t2_old, gas_obj, eos)
+                state_out = self.thermo_solver.get_properties(
+                    p_out, t2_old, gas_obj, eos
+                )
                 k2, Z2 = state_out.k, state_out.Z
             except Exception as error:
-                raise RuntimeError(f"Çıkış özellikleri hesaplanamadı (Metot 2, iter {iteration}): {error}")
+                raise RuntimeError(
+                    f"Çıkış özellikleri hesaplanamadı (Metot 2, iter {iteration}): {error}"
+                )
 
             n_minus_1_over_n = (k2 - 1) / (k2 * poly_eff)
             if abs(n_minus_1_over_n) < 1e-10:
@@ -234,19 +283,19 @@ class ThermoMethodSuite:
             history["iteration"].append(iteration + 1)
 
             if abs(t2_guess - t2_old) < tolerance:
-                state_out_final = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+                state_out_final = self.thermo_solver.get_properties(
+                    p_out, t2_guess, gas_obj, eos
+                )
                 z2_final = state_out_final.Z
                 z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, z2_final)
                 r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
                 poly_head = self._calculate_polytropic_head(
-                    z_avg,
-                    r_specific,
-                    t_in,
-                    p_out / p_in,
-                    n_minus_1_over_n,
+                    z_avg, r_specific, t_in, p_out / p_in, n_minus_1_over_n,
                 )
 
-                self.logger.debug(f"✓ Metot 2 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K")
+                self.logger.debug(
+                    f"✓ Metot 2 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K"
+                )
                 history["converged"] = True
                 history["termination_reason"] = "converged"
                 return t2_guess, poly_head, z_avg, history
@@ -256,16 +305,23 @@ class ThermoMethodSuite:
         r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
         n_final = (k2 - 1) / (k2 * poly_eff)
         poly_head = self._calculate_polytropic_head(
-            z_avg_final,
-            r_specific,
-            t_in,
-            p_out / p_in,
-            n_final,
+            z_avg_final, r_specific, t_in, p_out / p_in, n_final,
         )
         history["termination_reason"] = history["termination_reason"] or "max_iterations"
         return t2_guess, poly_head, z_avg_final, history
 
-    def method_incremental_pressure(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, step_count=10):
+
+# ── Method 3: Incremental Pressure ────────────────────────────────────
+
+class IncrementalPressureMethod(CompressionMethod):
+    """
+    Metot 3: Artımlı Basınç Yöntemi.
+    API 617 Appendix C — Geometrik basınç adımları ile yol integrali.
+    En hassas yöntem, tüm PR değerleri için uygun.
+    """
+
+    def execute(self, p_in, t_in, p_out, poly_eff, gas_obj, eos,
+                step_count=10, **kwargs):
         step_count = self._coerce_step_count(step_count)
 
         try:
@@ -278,14 +334,10 @@ class ThermoMethodSuite:
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
 
         history = {
-            "pressure": [p_in],
-            "temperature": [t_in],
-            "z_factor": [z0],
-            "head_incremental": [0.0],
-            "step": [0],
-            "method_used": "incremental_pressure",
-            "step_count": step_count,
-            "converged": True,
+            "pressure": [p_in], "temperature": [t_in],
+            "z_factor": [z0], "head_incremental": [0.0],
+            "step": [0], "method_used": "incremental_pressure",
+            "step_count": step_count, "converged": True,
         }
 
         pressures = np.geomspace(p_in, p_out, step_count + 1)
@@ -298,22 +350,22 @@ class ThermoMethodSuite:
             p_end = pressures[index + 1]
 
             try:
-                state_step = self.thermo_solver.get_properties(p_start, t_current, gas_obj, eos)
+                state_step = self.thermo_solver.get_properties(
+                    p_start, t_current, gas_obj, eos
+                )
                 k_step = state_step.k
                 z_step = state_step.Z
             except Exception as error:
-                raise RuntimeError(f"Artımlı hesaplama hatası — Adım {index}: {error}")
+                raise RuntimeError(
+                    f"Artımlı hesaplama hatası — Adım {index}: {error}"
+                )
 
             n_step = (k_step - 1) / (k_step * poly_eff)
             if abs(n_step) < 1e-10:
                 raise RuntimeError(f"n_step sıfıra çok yakın (adım {index}).")
 
             head_step = self._calculate_polytropic_head(
-                z_step,
-                r_specific,
-                t_current,
-                p_end / p_start,
-                n_step,
+                z_step, r_specific, t_current, p_end / p_start, n_step,
             )
             total_head += head_step
             t_current = t_current * (p_end / p_start) ** n_step
@@ -326,10 +378,23 @@ class ThermoMethodSuite:
             history["step"].append(index + 1)
 
         z_avg = float(np.mean(z_list))
-        self.logger.debug(f"✓ Metot 3 tamamlandı: {step_count} adım, T_out={t_current:.1f} K, Head={total_head:.2f} kJ/kg")
+        self.logger.debug(
+            f"✓ Metot 3 tamamlandı: {step_count} adım, "
+            f"T_out={t_current:.1f} K, Head={total_head:.2f} kJ/kg"
+        )
         return t_current, total_head, z_avg, history
 
-    def method_direct_hs(self, p_in, t_in, p_out, poly_eff, gas_obj, eos):
+
+# ── Method 4: Direct H-S ──────────────────────────────────────────────
+
+class DirectHSMethod(CompressionMethod):
+    """
+    Metot 4: Doğrudan H-S Yöntemi.
+    Gerçek entalpi/entropi değişimi üzerinden polytropik head hesaplar.
+    PR < 10 için uygun, en kapsamlı termodinamik analiz.
+    """
+
+    def execute(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, **kwargs):
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
             h1, s1, k1, z1 = state_in.H, state_in.S, state_in.k, state_in.Z
@@ -338,27 +403,29 @@ class ThermoMethodSuite:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 4): {error}")
 
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
-        t_isen = self.find_isentropic_temperature(p_in, t_in, p_out, s1, gas_obj, eos, state_in)
+        t_isen = self._find_isentropic_temperature(
+            p_in, t_in, p_out, s1, gas_obj, eos, state_in
+        )
 
         try:
             state_isen = self.thermo_solver.get_properties(p_out, t_isen, gas_obj, eos)
             h2_isen = state_isen.H
         except Exception as error:
-            raise RuntimeError(f"İzentropik çıkış özellikleri hesaplanamadı (Metot 4): {error}")
+            raise RuntimeError(
+                f"İzentropik çıkış özellikleri hesaplanamadı (Metot 4): {error}"
+            )
 
         delta_h_isen = h2_isen - h1
 
         if delta_h_isen <= 0:
             self.logger.warning(
-                f"⚠ Metot 4: ΔH_isen negatif ({delta_h_isen:.1f} J/kg). k-tabanlı izentropik fallback kullanılıyor."
+                f"⚠ Metot 4: ΔH_isen negatif ({delta_h_isen:.1f} J/kg). "
+                f"k-tabanlı izentropik fallback kullanılıyor."
             )
             pressure_ratio = p_out / p_in
             n_isen_fb = (k1 - 1) / k1
-            z_avg_fb = z1
             delta_h_isen = (
-                z_avg_fb
-                * r_specific
-                * t_in
+                z1 * r_specific * t_in
                 * (1.0 / n_isen_fb)
                 * (math.pow(pressure_ratio, n_isen_fb) - 1.0)
             )
@@ -371,7 +438,7 @@ class ThermoMethodSuite:
         k_avg = k1
         t2_guess = t_isen * (1.0 + (1.0 - poly_eff) * 0.3)
         iterations_hs = []
-        outer_iterations = 3
+        outer_iterations = 3 if pressure_ratio < 5.0 else 5
         hs_converged = False
 
         for outer in range(outer_iterations):
@@ -395,39 +462,39 @@ class ThermoMethodSuite:
 
             for iteration in range(max_iter):
                 try:
-                    state_guess = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+                    state_guess = self.thermo_solver.get_properties(
+                        p_out, t2_guess, gas_obj, eos
+                    )
                     h_guess = state_guess.H
                 except Exception as error:
                     self.logger.warning(
-                        f"Metot 4 iter {outer}.{iteration}: özellik hatası @ T={t2_guess:.1f} K: {error}"
+                        f"Metot 4 iter {outer}.{iteration}: özellik hatası "
+                        f"@ T={t2_guess:.1f} K: {error}"
                     )
                     t2_guess = t2_guess * 0.99
                     continue
 
                 d_h = h_guess - h_target
-                iterations_hs.append(
-                    {
-                        "iter": f"{outer}.{iteration}",
-                        "T": t2_guess,
-                        "H": h_guess,
-                        "H_target": h_target,
-                        "dH": d_h,
-                        "k_avg": k_avg,
-                        "eta_isen": eta_isen,
-                    }
-                )
+                iterations_hs.append({
+                    "iter": f"{outer}.{iteration}", "T": t2_guess,
+                    "H": h_guess, "H_target": h_target, "dH": d_h,
+                    "k_avg": k_avg, "eta_isen": eta_isen,
+                })
 
                 if abs(d_h) < tol_h:
                     hs_converged = True
                     self.logger.debug(
-                        f"✓ Metot 4 iç döngü yakınsadı: outer={outer}, iter={iteration + 1}, "
-                        f"T_out={t2_guess:.1f} K, ΔH_err={d_h:.1f} J/kg, k_avg={k_avg:.4f}"
+                        f"✓ Metot 4 iç döngü yakınsadı: outer={outer}, "
+                        f"iter={iteration + 1}, T_out={t2_guess:.1f} K, "
+                        f"ΔH_err={d_h:.1f} J/kg, k_avg={k_avg:.4f}"
                     )
                     break
 
                 dt = 0.5
                 try:
-                    state_plus = self.thermo_solver.get_properties(p_out, t2_guess + dt, gas_obj, eos)
+                    state_plus = self.thermo_solver.get_properties(
+                        p_out, t2_guess + dt, gas_obj, eos
+                    )
                     d_h_d_t = (state_plus.H - h_guess) / dt
                 except Exception:
                     d_h_d_t = state_in.Cp if state_in.Cp > 0 else 2000.0
@@ -439,18 +506,21 @@ class ThermoMethodSuite:
                 delta_t = max(-50.0, min(50.0, delta_t))
                 t2_guess = t2_guess + 0.8 * delta_t
                 t2_guess = max(t_in * 1.001, min(t_in * 5.0, t2_guess))
-
             else:
                 self.logger.warning(
-                    f"⚠ Metot 4: inner loop maks. iterasyon ({max_iter}) aşıldı. Son T={t2_guess:.1f} K"
+                    f"⚠ Metot 4: inner loop maks. iterasyon ({max_iter}) aşıldı. "
+                    f"Son T={t2_guess:.1f} K"
                 )
 
             try:
-                state_t2 = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+                state_t2 = self.thermo_solver.get_properties(
+                    p_out, t2_guess, gas_obj, eos
+                )
                 k2 = state_t2.k
                 k_avg_new = (k1 + k2) / 2.0
                 self.logger.debug(
-                    f"  Dış döngü {outer}: k₁={k1:.4f}, k₂={k2:.4f}, k_avg: {k_avg:.4f} → {k_avg_new:.4f}"
+                    f"  Dış döngü {outer}: k₁={k1:.4f}, k₂={k2:.4f}, "
+                    f"k_avg: {k_avg:.4f} → {k_avg_new:.4f}"
                 )
                 if abs(k_avg_new - k_avg) < 0.001:
                     k_avg = k_avg_new
@@ -460,7 +530,9 @@ class ThermoMethodSuite:
                 break
 
         try:
-            state_out = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+            state_out = self.thermo_solver.get_properties(
+                p_out, t2_guess, gas_obj, eos
+            )
             z2 = state_out.Z
         except Exception:
             z2 = z1
@@ -478,11 +550,7 @@ class ThermoMethodSuite:
                 poly_head = (z_avg * r_specific * t_in * ln_pr) / 1000.0
             else:
                 poly_head = self._calculate_polytropic_head(
-                    z_avg,
-                    r_specific,
-                    t_in,
-                    p_out / p_in,
-                    sigma,
+                    z_avg, r_specific, t_in, p_out / p_in, sigma,
                 )
 
         history = {
@@ -503,16 +571,19 @@ class ThermoMethodSuite:
         }
 
         self.logger.info(
-            f"✓ Metot 4 (H-S) tamamlandı: T_out={t2_guess:.1f} K ({t2_guess-273.15:.1f}°C), "
-            f"H_poly={poly_head:.2f} kJ/kg, η_isen={eta_isen:.4f}, "
-            f"ΔH_isen={delta_h_isen/1000:.1f} kJ/kg, ΔH_actual={delta_h_actual/1000:.1f} kJ/kg"
+            f"✓ Metot 4 (H-S) tamamlandı: T_out={t2_guess:.1f} K "
+            f"({t2_guess-273.15:.1f}°C), H_poly={poly_head:.2f} kJ/kg, "
+            f"η_isen={eta_isen:.4f}, ΔH_isen={delta_h_isen/1000:.1f} kJ/kg, "
+            f"ΔH_actual={delta_h_actual/1000:.1f} kJ/kg"
         )
 
-        # Faz siniri kontrolu: k-tabanli referans ile karsilastir
         pr_total = p_out / p_in
         n_poly_ref = (k1 - 1.0) / (k1 * poly_eff) if poly_eff > 0 else 0.1
         t_out_kbased = t_in * (pr_total ** n_poly_ref)
-        deviation_pct = abs(t2_guess - t_out_kbased) / t_out_kbased * 100.0 if t_out_kbased > 0 else 0
+        deviation_pct = (
+            abs(t2_guess - t_out_kbased) / t_out_kbased * 100.0
+            if t_out_kbased > 0 else 0
+        )
         if deviation_pct > 3.0:
             self.logger.warning(
                 "⚠️ Metot 4 sonucu k-tabanlı referanstan %.1f%% sapıyor "
@@ -526,9 +597,74 @@ class ThermoMethodSuite:
 
         return t2_guess, poly_head, z_avg, history
 
-    def find_isentropic_temperature(self, p_in, t_in, p_out, s_target, gas_obj, eos, state_in):
-        # CoolProp direkt flash kaldirildi — sayisal cozucu (SolverChain) daha guvenilir
+    def _find_isentropic_temperature(self, p_in, t_in, p_out, s_target,
+                                     gas_obj, eos, state_in):
         from kasp.core.aerodynamics import CompressorAerodynamics
         return CompressorAerodynamics.calculate_isentropic_temp_fallback(
             state_in, p_out, self.thermo_solver, gas_obj, eos
         )
+
+
+# ── Backward-Compatible Suite (v2.1) ──────────────────────────────────
+
+class ThermoMethodSuite:
+    """
+    Geriye dönük uyumlu metot kayıt defteri.
+    v2.1'de strategy sınıflarına delege eder.
+    """
+    MAX_METHOD_ITERATIONS = 200
+    MAX_INCREMENTAL_STEPS = 500
+
+    def __init__(self, *, thermo_solver, logger):
+        self.thermo_solver = thermo_solver
+        self.logger = logger
+
+        self._methods = {
+            "Metot 1: Ortalama Özellikler": AveragePropertiesMethod(thermo_solver, logger),
+            "Metot 2: Uç Nokta": EndpointMethod(thermo_solver, logger),
+            "Metot 3: Artımlı Basınç": IncrementalPressureMethod(thermo_solver, logger),
+            "Metot 4: Doğrudan H-S": DirectHSMethod(thermo_solver, logger),
+        }
+
+    def method_average_properties(self, p_in, t_in, p_out, poly_eff, gas_obj,
+                                  eos, max_iter=100, tolerance=0.01):
+        return self._methods["Metot 1: Ortalama Özellikler"].execute(
+            p_in, t_in, p_out, poly_eff, gas_obj, eos,
+            max_iter=max_iter, tolerance=tolerance,
+        )
+
+    def method_endpoint(self, p_in, t_in, p_out, poly_eff, gas_obj,
+                        eos, max_iter=100, tolerance=0.01):
+        return self._methods["Metot 2: Uç Nokta"].execute(
+            p_in, t_in, p_out, poly_eff, gas_obj, eos,
+            max_iter=max_iter, tolerance=tolerance,
+        )
+
+    def method_incremental_pressure(self, p_in, t_in, p_out, poly_eff, gas_obj,
+                                    eos, step_count=10):
+        return self._methods["Metot 3: Artımlı Basınç"].execute(
+            p_in, t_in, p_out, poly_eff, gas_obj, eos,
+            step_count=step_count,
+        )
+
+    def method_direct_hs(self, p_in, t_in, p_out, poly_eff, gas_obj, eos):
+        return self._methods["Metot 4: Doğrudan H-S"].execute(
+            p_in, t_in, p_out, poly_eff, gas_obj, eos,
+        )
+
+    def find_isentropic_temperature(self, p_in, t_in, p_out, s_target,
+                                    gas_obj, eos, state_in):
+        from kasp.core.aerodynamics import CompressorAerodynamics
+        return CompressorAerodynamics.calculate_isentropic_temp_fallback(
+            state_in, p_out, self.thermo_solver, gas_obj, eos
+        )
+
+    # ── Utility delegasyonu (AveragePropertiesMethod statik metodlarını kullanır) ──
+
+    @staticmethod
+    def _calculate_polytrophic_head(*args, **kwargs):
+        return CompressionMethod._calculate_polytropic_head(*args, **kwargs)
+
+    @staticmethod
+    def _coerce_tolerance(*args, **kwargs):
+        return CompressionMethod._coerce_tolerance(*args, **kwargs)

@@ -9,7 +9,9 @@ from PyQt5.QtCore import Qt
 
 class ThemeManager:
     """Manages application themes and styling"""
-    
+
+    _stylesheet_cache: dict = {}
+
     # Modern color schemes
     # Modern color schemes with theme-aware warning variables and contrast safeguards
     THEMES = {
@@ -85,6 +87,12 @@ class ThemeManager:
             theme_name = "light"
 
         theme = ThemeManager.THEMES[theme_name]
+
+        if theme_name in ThemeManager._stylesheet_cache:
+            QApplication.instance().setStyleSheet(
+                ThemeManager._stylesheet_cache[theme_name]
+            )
+            return
 
         try:
             from kasp.ui.responsive import scaled_px, scaled_font_pt
@@ -561,7 +569,12 @@ class ThemeManager:
             }}
         """
         
+        ThemeManager._stylesheet_cache[theme_name] = stylesheet
         QApplication.instance().setStyleSheet(stylesheet)
+
+    @staticmethod
+    def invalidate_cache():
+        ThemeManager._stylesheet_cache.clear()
     
     @staticmethod
     def get_icon_color(theme_name: str = "light") -> str:

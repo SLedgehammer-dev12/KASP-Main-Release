@@ -12,6 +12,11 @@ class EngineSettings:
     CONSISTENCY_TOLERANCE = 0.5         # Delta H ve T için hedef tolerans (J/kg veya K)
     PTC10_MECHANICAL_LOSS_LIMIT = 10.0  # Şaft limitinin %10'u (ASME PTC 10)
     
+    # ─── Mekanik Kayıp Katsayıları (ExxonMobil korelasyonu) ───
+    MECHANICAL_LOSS_COEFF = 0.65
+    MECHANICAL_LOSS_EXPONENT = 0.45
+    MECHANICAL_LOSS_MIN_KW = 10.0
+    
     # ─── API 617 Emniyet Marjları ───
     API617_MIN_SURGE_MARGIN = 10.0      # %10'dan az surge mesafesi tehlikelidir
     API617_MIN_STONEWALL_MARGIN = 5.0   # %5'ten az Stonewall (Choke) mesafesi tehlikelidir
@@ -39,3 +44,14 @@ class EngineSettings:
     MAX_ALLOWED_OVERSIZE_PCT = 50.0     # İhtiyaçtan %50 büyükse filtreye takılır
     OPTIMAL_OVERSIZE_MIN = 5.0          # İdeal oversizing alt sınırı (%5 marj)
     OPTIMAL_OVERSIZE_MAX = 20.0         # İdeal oversizing üst sınırı (%20 marj)
+
+    # ─── Fallback Sabitleri ───
+    FALLBACK_LHV_KJ_KG = 50000.0        # Varsayılan yakıt ısıl değeri (metan ~50 MJ/kg)
+    DEFAULT_ISENTROPIC_K_FALLBACK = 1.3 # İdeal gaz kuvvetlendirici sabiti
+    IDEAL_GAS_FALLBACK_CP_BASE = 2200.0 # Metan tipik Cp (J/kg·K @ 300K)
+
+    # ─── PR/SRK Binary Etkileşim Parametreleri (k_ij) ───
+    BINARY_INTERACTION_PARAMS: dict = {
+        # Örnek: ("METHANE", "CARBONDIOXIDE"): 0.10,
+        # Varsayılan tüm çiftler için k_ij = 0
+    }

@@ -13,6 +13,7 @@ from collections import OrderedDict
 
 # V4.4 Data Models
 from kasp.core.models import ThermodynamicState
+from kasp.core.settings import EngineSettings
 
 # Sabitler (GasMixtureBuilder veya API 617)
 from kasp.core.constants import (
@@ -119,19 +120,47 @@ class ThermodynamicSolver:
         return math.sqrt(max(k_value * pressure_pa / density, 0.0))
 
     @staticmethod
-    def _classify_phase(Z: float, density: float, raw_phase: str | None = None) -> str:
+    def _classify_phase(Z: float, density: float, raw_phase: str | None = None,
+                        *, eos_obj=None, T_k: float = 0.0, P_pa: float = 0.0) -> str:
         """Z-faktör ve yoğunluğa dayalı ortak faz sınıflandırması.
 
         Tüm EOS motorları için tutarlı faz çıktısı üretir.
+        Öncelik sırası: raw_phase → Tsat → Gibbs karşılaştırması → Z/density.
+
+        - raw_phase 'twophase' (CoolProp) → 'two-phase'
+        - Tsat karşılaştırması (PR/SRK/ThermoPack) → 'gas'/'liquid'
+        - Gibbs serbest enerjisi (G_dep_g < G_dep_l) → en kararlı faz
         - Z > 0.7 veya ρ < 100 kg/m³ → 'gas'
         - 0.3 < Z ≤ 0.7 → 'supercritical'
         - Z ≤ 0.3 → 'liquid'
-        - raw_phase 'twophase' (CoolProp) → 'two-phase'
         """
         if raw_phase in ("ideal_fallback", "ideal"):
             return raw_phase
         if raw_phase == "twophase":
             return "two-phase"
+
+        if eos_obj is not None and T_k > 0 and P_pa > 0:
+            try:
+                if hasattr(eos_obj, 'Tsat') and callable(eos_obj.Tsat):
+                    T_sat = eos_obj.Tsat(P_pa)
+                    if T_sat is not None and T_sat > 0:
+                        if T_k < T_sat:
+                            return "liquid"
+                        elif T_k > T_sat * 1.02:
+                            return "gas"
+            except Exception:
+                pass
+
+            try:
+                G_dep_g = getattr(eos_obj, 'G_dep_g', None)
+                G_dep_l = getattr(eos_obj, 'G_dep_l', None)
+                if G_dep_g is not None and G_dep_l is not None:
+                    if G_dep_g < G_dep_l:
+                        return "gas"
+                    else:
+                        return "liquid"
+            except Exception:
+                pass
 
         if density < 100.0 or Z > 0.7:
             return "gas"
@@ -367,6 +396,16 @@ class ThermodynamicSolver:
             self._package_cache[pkg_key] = (constants, properties)
         return self._package_cache[pkg_key]
 
+    @staticmethod
+    def _build_kijs(ids, n):
+        kijs = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    key = (ids[i].upper(), ids[j].upper())
+                    kijs[i][j] = EngineSettings.BINARY_INTERACTION_PARAMS.get(key, 0.0)
+        return kijs
+
     def _get_coolprop_abstract_state(self, mixture_string: str):
         """CoolProp AbstractState cache — karışım başına bir kez oluşturulur."""
         if mixture_string not in self._package_cache:
@@ -458,14 +497,15 @@ class ThermodynamicSolver:
         molar_mass = MW_g_mol / 1000.0  # kg/mol
         
         EOS_CLASS = PRMIX if eos_method == 'pr' else SRKMIX
+        kijs = self._build_kijs(ids, len(zs))
         eos = EOS_CLASS(
             T=T_k, P=P_pa,
             Tcs=constants.Tcs, Pcs=constants.Pcs,
-            omegas=constants.omegas, zs=zs
+            omegas=constants.omegas, zs=zs,
+            kijs=kijs,
         )
         
         # Z Factor Fallback and V_m
-        phase_str = 'gas'
         Z_g_raw = getattr(eos, 'Z_g', None)
         Z_l_raw = getattr(eos, 'Z_l', None)
         
@@ -475,13 +515,15 @@ class ThermodynamicSolver:
         elif Z_l_raw is not None and Z_l_raw > 0:
             Z = Z_l_raw
             V_m = eos.V_l
-            phase_str = 'liquid'
         else:
             Z = 1.0
             V_m = 8.314462 * T_k / P_pa
-            phase_str = 'ideal'
             
         D = molar_mass / V_m  # kg/m³
+        
+        phase_str = ThermodynamicSolver._classify_phase(
+            Z, D, eos_obj=eos, T_k=T_k, P_pa=P_pa
+        )
         
         # Heat Capacities (Ideal + Departure)
         Cp_ig_molar = sum(
@@ -886,18 +928,29 @@ class ThermodynamicSolver:
             except Exception:
                 pass
 
-        # C) Eğer her şey başarısız olursa eski doğrusal formül
+        # C) Eğer her şey başarısız olursa — yaklaşık Cp (J/kg·K)
         if Cp_ideal == 1000.0:
-            Cp_ideal = 1000 + 0.1 * (T_k - 273.15)
+            n_atoms = 3
+            cp_molar_approx = (n_atoms + 1.5) * 8.314
+            if M_kg_mol > 0:
+                Cp_ideal = (cp_molar_approx / M_kg_mol) * 1000
+            else:
+                Cp_ideal = 2200.0
         
         Cv_ideal = Cp_ideal - R_specific
         k_ideal = Cp_ideal / Cv_ideal if Cv_ideal > 0 else 1.4
         
-        Z_ideal = max(0.5, min(1.5, 1.0 - 0.1 * (P_pa / (STD_PRESS_PA * 10))))
-        rho_ideal = P_pa / (R_specific * T_k * Z_ideal) if T_k > 0 and R_specific > 0 else 1.0
+        Z_ideal = 1.0
+        
+        rho_ideal = P_pa / (R_specific * T_k) if T_k > 0 and R_specific > 0 else 1.0
         
         H_ideal = Cp_ideal * (T_k - 298.15)
-        S_ideal = Cp_ideal * math.log(T_k / 273.15) if T_k > 0 else 0
+        if T_k > 0 and P_pa > 0 and R_specific > 0:
+            S_ref = Cp_ideal * math.log(298.15 / 273.15)
+            S_ideal = (Cp_ideal * math.log(T_k / 298.15)
+                       - R_specific * math.log(P_pa / STD_PRESS_PA) + S_ref)
+        else:
+            S_ideal = 0.0
         
         return self._build_state(
             P_pa=P_pa,

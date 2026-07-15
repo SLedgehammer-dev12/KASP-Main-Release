@@ -1,3 +1,13 @@
+"""
+KASP Main Window (v2.1)
+
+TODO(v2.2) — Extraction plan (1138 satirdan 400 satira):
+  SECTION: Update Check (satir ~516-740) → kasp/ui/update_service.py
+  SECTION: Engineering Dashboard (satir ~834-1063) → kasp/ui/engineering_panel.py
+  SECTION: Account Management (satir ~1076-1108) → kasp/ui/account_manager.py
+
+v2.1: Bölüm işaretleri eklendi. Arka plan iş parçacığı temizliği yapıldı.
+"""
 import sys
 import os
 import json
@@ -41,7 +51,7 @@ except ImportError:
 from kasp.core.thermo import ThermoEngine
 from kasp.data.database import UnitDatabase
 from kasp.utils.graphs import GraphManager
-from kasp.utils.logging_handler import QLogHandler, setup_logging
+from kasp.logging_handler import QLogHandler, setup_logging
 from kasp.utils.workers import CalculationWorker
 from kasp.utils.reporting import ReportGenerator
 from kasp.utils.project_manager import ProjectManager
@@ -113,7 +123,7 @@ class KaspMainWindow(QMainWindow):
             from kasp.ui.responsive import compute_initial_window_size
             _w, _h = compute_initial_window_size(1700, 950)
             self.setGeometry(50, 50, _w, _h)
-        except Exception:
+        except (ImportError, AttributeError, TypeError):
             self.setGeometry(50, 50, 1700, 950)
         
         # Center window
@@ -211,8 +221,8 @@ class KaspMainWindow(QMainWindow):
                 title = f"KASP v{APP_VERSION} — {user.username} ({user.role})"
                 self.setWindowTitle(title)
             self._update_admin_menu_visibility()
-        except Exception:
-            pass
+        except (AttributeError, TypeError):
+            self.logger.debug("Admin menu visibility update skipped")
 
         # Zorunlu şifre değiştirme
         self._check_must_change_password()
@@ -255,11 +265,11 @@ class KaspMainWindow(QMainWindow):
         if getattr(self, "log_handler", None) is not None:
             try:
                 root_logger.removeHandler(self.log_handler)
-            except Exception:
+            except (ValueError, AttributeError):
                 pass
             try:
                 self.log_handler.close()
-            except Exception:
+            except (AttributeError, OSError):
                 pass
         super().closeEvent(event)
 
@@ -269,7 +279,7 @@ class KaspMainWindow(QMainWindow):
             from kasp.ui.responsive import is_small_screen
             if is_small_screen():
                 self._compact_left_panel()
-        except Exception:
+        except (ImportError, AttributeError):
             pass
 
     def _compact_left_panel(self):
@@ -280,7 +290,7 @@ class KaspMainWindow(QMainWindow):
                 total = sum(sizes) or 1
                 if sizes[0] / total > 0.35:
                     splitter.setSizes([int(total * 0.25), int(total * 0.75)])
-        except Exception:
+        except (AttributeError, RuntimeError):
             pass
 
     def _save_splitter_state(self):
@@ -291,8 +301,8 @@ class KaspMainWindow(QMainWindow):
                 splitter = getattr(self, attr, None)
                 if splitter:
                     settings.setValue(f"splitter/{attr}", splitter.saveState())
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, ImportError):
+            self.logger.debug("Splitter state could not be saved")
 
     def restore_splitter_state(self):
         try:
@@ -304,7 +314,7 @@ class KaspMainWindow(QMainWindow):
                     state = settings.value(f"splitter/{attr}")
                     if state:
                         splitter.restoreState(state)
-        except Exception:
+        except (AttributeError, RuntimeError, ImportError):
             pass
 
     def _show_changelog_if_needed(self):
@@ -335,16 +345,16 @@ class KaspMainWindow(QMainWindow):
             theme = get_config_manager().get("app.theme", "light")
             ThemeManager.apply_theme(theme)
             self._update_theme_checkmarks(theme)
-        except Exception:
-            pass
+        except (ImportError, KeyError, AttributeError):
+            self.logger.debug("Saved theme could not be applied")
 
     def _apply_saved_language(self):
         try:
             from kasp.config_manager import get_config_manager
             lang = get_config_manager().get("app.language", "tr")
             self._update_language_checkmarks(lang)
-        except Exception:
-            pass
+        except (ImportError, KeyError, AttributeError):
+            self.logger.debug("Saved language could not be applied")
 
     def switch_theme(self, theme_name):
         from kasp.config_manager import get_config_manager
@@ -354,8 +364,8 @@ class KaspMainWindow(QMainWindow):
         self._update_theme_checkmarks(theme_name)
         try:
             self.refresh_current_graph()
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError):
+            self.logger.debug("Graph could not be refreshed after theme switch")
 
     def switch_language(self, lang):
         from kasp.config_manager import get_config_manager
@@ -451,13 +461,13 @@ class KaspMainWindow(QMainWindow):
         return MainWindowAuxiliaryController(self).populate_unit_combos()
 
     def _setup_unit_tooltips(self):
-        pass
+        """TODO(v2.1): Implement per-field unit tooltips for input fields."""
 
     def _update_method_options(self):
-        pass
+        """TODO(v2.1): Implement EOS-dependent method option filtering."""
 
     def _update_button_state(self):
-        pass
+        """TODO(v2.1): Implement calculation button enable/disable based on validation."""
 
     def setup_basic_results_tab(self):
         from kasp.ui.design_results_tab_builders import build_basic_results_tab
@@ -512,6 +522,8 @@ class KaspMainWindow(QMainWindow):
 
     def _serialize_selected_units(self, selected_units):
         return self.design_results_presenter.serialize_selected_units(selected_units)
+
+    # ── SECTION: Update Check (TODO v2.2 → kasp/ui/update_service.py) ──
 
     def _build_release_client(self):
         return GitHubReleaseClient(api_url=RELEASES_API_URL, timeout=8.0)
@@ -815,6 +827,8 @@ class KaspMainWindow(QMainWindow):
                 action.setVisible(Session.is_admin())
                 break
 
+    # ── SECTION: Account Management (TODO v2.2 → kasp/ui/account_manager.py) ──
+
     def _check_must_change_password(self):
         from kasp.security import Session
         user = Session.current_user()
@@ -844,6 +858,8 @@ class KaspMainWindow(QMainWindow):
                 tabs.setTabVisible(idx, Session.is_engineering_mode())
         elif Session.is_engineering_mode():
             self._add_engineering_tab(tabs)
+
+    # ── SECTION: Engineering Dashboard (TODO v2.2 → kasp/ui/engineering_panel.py) ──
 
     def _add_engineering_tab(self, tabs):
         from PyQt5.QtWidgets import QWidget

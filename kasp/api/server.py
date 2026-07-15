@@ -7,6 +7,8 @@ from fastapi.responses import FileResponse
 import uvicorn
 import os
 import sys
+from datetime import datetime, timedelta
+from collections import defaultdict
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -16,6 +18,28 @@ from kasp.core.constants import SUPPORTED_GASES, UNIT_OPTIONS, DEFAULT_COMPOSITI
 
 app = FastAPI(title="KASP V4 API")
 
+# Rate limiting
+_rate_limit_store: dict[str, list[datetime]] = defaultdict(list)
+RATE_LIMIT_WINDOW = timedelta(seconds=60)
+RATE_LIMIT_MAX = 30
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    now = datetime.now()
+    window_start = now - RATE_LIMIT_WINDOW
+    _rate_limit_store[client_ip] = [
+        t for t in _rate_limit_store[client_ip] if t > window_start
+    ]
+    if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Cok fazla istek. Lutfen bekleyin.")
+    _rate_limit_store[client_ip].append(now)
+    return await call_next(request)
+
+# Mount Static Files
+app.mount("/static", StaticFiles(directory=os.path.abspath(os.path.join(os.path.dirname(__file__), "../web"))), name="static")
+
 @app.get("/api/constants")
 async def get_constants():
     return {
@@ -24,20 +48,17 @@ async def get_constants():
         "default_composition": DEFAULT_COMPOSITION
     }
 
-# Mount Static Files
-app.mount("/static", StaticFiles(directory=os.path.abspath(os.path.join(os.path.dirname(__file__), "../web"))), name="static")
-
 @app.get("/")
 async def read_index():
     return FileResponse(os.path.abspath(os.path.join(os.path.dirname(__file__), "../web/index.html")))
 
-# Enable CORS for React frontend (just in case they install node later)
+# Enable CORS for local development only
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 engine = ThermoEngine()
@@ -128,4 +149,6 @@ async def health():
     return {"status": "healthy", "coolprop_loaded": True}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.environ.get("KASP_API_HOST", "127.0.0.1")
+    port = int(os.environ.get("KASP_API_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)

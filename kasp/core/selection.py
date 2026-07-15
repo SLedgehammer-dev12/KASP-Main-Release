@@ -7,7 +7,7 @@ karar destek motoru.
 
 import math
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 # V4.4 Data Models & Settings
 from kasp.core.models import TurbineRecommendation
@@ -49,6 +49,12 @@ class TurbineSelector:
             
             # 2. Ön Filtre (Sadece -%0 ile %150 aralığındaki türbinleri değerlendir)
             # Power Margin = (Available - Required) / Required * 100
+            if required_power_kw <= 1e-6:
+                logger.warning(
+                    f"Geçersiz required_power_kw={required_power_kw}, "
+                    f"türbin atlanıyor: {turbine.get('manufacturer')}"
+                )
+                continue
             power_margin_pct = ((corr_power - required_power_kw) / required_power_kw) * 100
             
             # Negatif marjları (Yetersizleri) reddet (V4.3 mantığı) veya çok büyükleri reddet
@@ -102,7 +108,7 @@ class TurbineSelector:
 
     @staticmethod
     def _correct_performance(iso_power: float, iso_hr: float, t_amb: float, 
-                             p_amb: float, alt: float, turbine_data: Dict[str, Any]):
+                             p_amb: float, alt: float, turbine_data: Dict[str, Any]) -> Tuple[float, float]:
         """Saha düzeltmelerini uygulayan ISO fonksiyonu."""
         T_ref_k = 15.0 + 273.15
         T_amb_k = t_amb + 273.15
@@ -115,7 +121,7 @@ class TurbineSelector:
         
         # Basitleştirilmiş fallback düzeltmesi (Eğer interpolation curve gelmezse)
         corr_power = iso_power * total_corr
-        corr_hr = iso_hr / max(1e-5, total_corr)
+        corr_hr = iso_hr / max(1e-9, total_corr)
         
         return corr_power, corr_hr
 
@@ -127,9 +133,12 @@ class TurbineSelector:
         
         if op_flow <= 0 or surge_flow <= 0:
             return {'surge_margin_pct': 0.0, 'stonewall_margin_pct': 0.0}
-            
-        surge_margin = ((op_flow - surge_flow) / surge_flow) * 100.0
-        stonewall_margin = ((stonewall_flow - op_flow) / op_flow * 100.0) if stonewall_flow > 0 else 0.0
+        
+        if surge_flow < 1e-9:
+            surge_margin = 0.0
+        else:
+            surge_margin = ((op_flow - surge_flow) / surge_flow) * 100.0
+        stonewall_margin = ((stonewall_flow - op_flow) / op_flow * 100.0) if stonewall_flow > 0 and op_flow > 0 else 0.0
         
         return {
             'surge_margin_pct': surge_margin, 

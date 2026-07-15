@@ -2,9 +2,31 @@
 
 from __future__ import annotations
 
-RELEASE_VERSION = "2.0.4"
+import subprocess
+from datetime import datetime
+
+RELEASE_VERSION = "2.1.0"
 APP_VERSION = RELEASE_VERSION
 RELEASE_TAG = f"v{RELEASE_VERSION}"
+RELEASE_BUILD_DATE = datetime.now().strftime("%Y-%m-%d")
+
+
+def _get_git_commit() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+RELEASE_BUILD_HASH = _get_git_commit()
+RELEASE_FULL_VERSION = f"{RELEASE_VERSION}+{RELEASE_BUILD_HASH}"
+RELEASE_ARTIFACT_BASENAME = f"KASP_v{RELEASE_VERSION}"
 
 RELEASE_REPOSITORY_OWNER = "SLedgehammer-dev12"
 RELEASE_REPOSITORY_NAME = "KASP-Main-Release"

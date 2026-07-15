@@ -41,7 +41,8 @@ class LoginDialog(QDialog):
             w, h = scaled(400), scaled(260)
         except Exception:
             w, h = 400, 260
-        self.setFixedSize(w, h)
+        self.setMinimumSize(int(w * 0.7), int(h * 0.7))
+        self.resize(w, h)
         self.setWindowFlags(
             Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint
         )

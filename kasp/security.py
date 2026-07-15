@@ -5,16 +5,18 @@ Handles input validation, sanitization, and security checks
 
 import re
 import os
+import sys
 import time
 import json
+import struct
+import hmac
+import string
 import hashlib
 import secrets
-from typing import Any, Union
+from typing import Any, Union, Optional, Dict
 import logging
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_PASSWORD = "kasp2024"
 
 LOCKOUT_LEVELS = [
     (3, 1),
@@ -23,29 +25,64 @@ LOCKOUT_LEVELS = [
     (10, 60),
 ]
 
-_lockout_file = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "kasp_lockout.json"
-)
+_LOCKOUT_SECRET = secrets.token_bytes(32)
 
 
-def _load_lockout_state():
+def _get_lockout_path() -> str:
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support/KASP")
+    elif os.name == "nt":
+        base = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "KASP")
+    else:
+        base = os.path.expanduser("~/.local/share/KASP")
+    security_dir = os.path.join(base, "security")
+    os.makedirs(security_dir, exist_ok=True)
+    return os.path.join(security_dir, "kasp_lockout.bin")
+
+
+def _calculate_lockout_hmac(data: bytes) -> bytes:
+    return hmac.digest(_LOCKOUT_SECRET, data, "sha256")
+
+
+def _load_lockout_state() -> Dict:
     try:
-        with open(_lockout_file) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        with open(_get_lockout_path(), "rb") as f:
+            length = struct.unpack("<I", f.read(4))[0]
+            if length > 65536:
+                raise ValueError("Lockout payload too large")
+            payload = f.read(length)
+            stored_mac = f.read(32)
+        expected_mac = _calculate_lockout_hmac(payload)
+        if not hmac.compare_digest(stored_mac, expected_mac):
+            logger.warning("Lockout dosyası kurcalanmış! Güvenlik kilidi aktif.")
+            return {"failures": 3, "last_failure": time.time(), "lockout_until": time.time() + 300}
+        return json.loads(payload)
+    except (FileNotFoundError, json.JSONDecodeError, struct.error, ValueError, OSError):
         return {"failures": 0, "last_failure": 0, "lockout_until": 0}
 
 
-def _save_lockout_state(state):
+def _save_lockout_state(state: Dict):
+    payload = json.dumps(state).encode()
+    mac = _calculate_lockout_hmac(payload)
     try:
-        with open(_lockout_file, "w") as f:
-            json.dump(state, f)
-    except OSError:
-        pass
+        with open(_get_lockout_path(), "wb") as f:
+            f.write(struct.pack("<I", len(payload)))
+            f.write(payload)
+            f.write(mac)
+    except OSError as exc:
+        logger.error(f"Lockout durumu kaydedilemedi: {exc}")
+        raise RuntimeError(
+            "Güvenlik durumu yazılamadı. Disk izinlerini kontrol edin."
+        ) from exc
+
+
+def generate_initial_admin_password(length: int = 16) -> str:
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_hex(12)
+    salt = secrets.token_hex(32)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 600_000)
     return f"pbkdf2:sha256:600000:{salt}:{dk.hex()}"
 

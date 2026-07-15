@@ -7,6 +7,12 @@ yeniden yazılmış halidir. Arka planda işlemleri şu modüllere devreder:
   - CompressorAerodynamics (aerodynamics.py)
   - TurbineSelector (selection.py)
 Arayüz geriye dönük (backward) uyumludur, UI modülleri aynı fonksiyonları aynı argümanlarla çağırır.
+
+TODO(v2.2): Bu sınıf 1086 satırdan ~200 satıra düşürülmeli. Önerilen bölünme:
+  - HeatingValueCalculator → kasp/core/heating_value.py
+  - PerformanceEvaluationService → kasp/core/performance_eval.py
+  - DesignContextBuilder → kasp/core/design_context.py
+  - ConsistencyIterator → kasp/core/consistency.py
 """
 
 import math
@@ -37,7 +43,7 @@ from kasp.core.thermo_support import (
 )
 
 # Eski yardımcılar ve Sabitler
-from kasp.core.exceptions import AdvancedThermodynamicError
+from kasp.core.exceptions import AdvancedThermodynamicError, InputValidationError
 from kasp.utils.monitoring import PerformanceMonitor
 from kasp.core.settings import EngineSettings
 
@@ -175,125 +181,40 @@ class ThermoEngine:
         )
 
     def _calculate_heating_values(self, composition, source='kasp', gas_obj=None, eos_method=None):
-        comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
-        
-        # 15°C ideal gross / net values in kJ/mol according to ISO 6976:2016
-        ISO6976_VALUES = {
-            'METHANE':        (891.56, 802.62),
-            'ETHANE':         (1562.14, 1429.35),
-            'PROPANE':        (2221.10, 2044.20),
-            'ISOBUTANE':      (2870.58, 2650.88),
-            'BUTANE':         (2880.44, 2660.74),
-            'ISOPENTANE':     (3531.68, 3270.28),
-            'PENTANE':        (3538.60, 3277.20),
-            'HEXANE':         (4197.20, 3894.10),
-            'HEPTANE':        (4855.80, 4511.00),
-            'OCTANE':         (5514.40, 5127.90),
-            'NONANE':         (6173.00, 5744.80),
-            'DECANE':         (6831.60, 6361.70),
-            'HYDROGEN':       (285.83, 241.83),
-            'HYDROGENSULFIDE':(561.43, 517.93),
-            # İnertler yanmaz → 0
-            'NITROGEN':       (0.0, 0.0),
-            'CARBONDIOXIDE':  (0.0, 0.0),
-            'WATER':          (0.0, 0.0),
-            'ARGON':          (0.0, 0.0),
-            'HELIUM':         (0.0, 0.0),
-            'OXYGEN':         (0.0, 0.0),
-            'NEON':           (0.0, 0.0),
-            'KRYPTON':        (0.0, 0.0),
-            'XENON':          (0.0, 0.0),
-            'AIR':            (0.0, 0.0),
-        }
-
-        total_lhv_energy_kj_per_mole = 0 
-        total_hhv_energy_kj_per_mole = 0
-        total_molar_mass_mix = 0
-        total_water_moles_produced = 0
-        
-        if source == 'iso6976':
-            for comp, fraction in comp_frac.items():
-                comp_upper = comp.upper()
-                mw = MOLAR_MASSES.get(comp_upper, 0)
-                total_molar_mass_mix += fraction * mw
-                
-                # Fetch molar gross/net values
-                hhv_molar, lhv_molar = ISO6976_VALUES.get(comp_upper, (0.0, 0.0))
-                total_hhv_energy_kj_per_mole += hhv_molar * fraction
-                total_lhv_energy_kj_per_mole += lhv_molar * fraction
-                
-            if total_molar_mass_mix == 0:
-                return 0.0, 0.0
-                
-            avg_molar_mass_kg = total_molar_mass_mix / 1000.0
-            lhv_mass_basis = total_lhv_energy_kj_per_mole / avg_molar_mass_kg
-            hhv_mass_basis = total_hhv_energy_kj_per_mole / avg_molar_mass_kg
-            
-            # Real gas correction: divide by Z at standard conditions (101325 Pa, 288.15 K)
-            if gas_obj is not None and eos_method is not None:
-                try:
-                    state_std = self.thermo_solver.get_properties(101325.0, 288.15, gas_obj, eos_method)
-                    z_std = state_std.Z
-                    if z_std > 0.1: # Safeguard
-                        lhv_mass_basis = lhv_mass_basis / z_std
-                        hhv_mass_basis = hhv_mass_basis / z_std
-                except Exception as e:
-                    self.logger.warning(f"ISO 6976 Z düzeltmesi hesaplanamadı: {e}")
-                    
-            return lhv_mass_basis, hhv_mass_basis
-
-        # Diğer kaynaklar (kasp veya thermo)
-        for comp, fraction in comp_frac.items():
-            comp_upper = comp.upper()
-            mw = MOLAR_MASSES.get(comp_upper, 0)
-            
-            if source == 'thermo':
-                try:
-                    import thermo
-                    from thermo.chemical import Chemical
-                    chem_name = comp_upper.lower().capitalize()
-                    
-                    if chem_name == "Carbondioxide": chem_name = "Carbon dioxide"
-                    elif chem_name == "Hydrogensulfide": chem_name = "Hydrogen sulfide"
-                    elif chem_name == "Isopentane": chem_name = "Isopentane"
-                    elif chem_name == "Isobutane": chem_name = "Isobutane"
-                    
-                    chem = Chemical(chem_name)
-                    if chem.Hc:
-                        hhv_kj_kg = abs(chem.Hc) / 1000.0
-                        
-                        # WATER_PRODUCED is moles of water per mole of fuel. Convert to mass of water per kg of fuel.
-                        water_moles_per_mole_fuel = WATER_PRODUCED.get(comp_upper, 0)
-                        mw_fuel_kg = mw / 1000.0
-                        mass_h2o_per_kg_fuel = (water_moles_per_mole_fuel * 0.018015) / mw_fuel_kg if mw_fuel_kg > 0 else 0
-                        
-                        lhv_kj_kg = hhv_kj_kg - (mass_h2o_per_kg_fuel * 2441.7)
-                        lhv = lhv_kj_kg
-                    else:
-                        lhv = LHV_DATA.get(comp_upper, 0)
-                except Exception as e:
-                    self.logger.warning(f"Thermo Hc alinmadi ({comp}): {e}, KASP sabitlerine dönülüyor.")
-                    lhv = LHV_DATA.get(comp_upper, 0)
-            else:
-                lhv = LHV_DATA.get(comp_upper, 0)
-            
-            total_lhv_energy_kj_per_mole += lhv * (mw/1000.0) * fraction
-            total_molar_mass_mix += fraction * mw
-            total_water_moles_produced += fraction * WATER_PRODUCED.get(comp_upper, 0)
-            
-        if total_molar_mass_mix == 0: return 0, 0
-        
-        avg_molar_mass_kg = total_molar_mass_mix / 1000.0
-        lhv_mass_basis = total_lhv_energy_kj_per_mole / avg_molar_mass_kg
-        
-        mass_h2o_produced = (total_water_moles_produced * MOLAR_MASSES.get('WATER', 18.02)) / total_molar_mass_mix
-        hhv_mass_basis = lhv_mass_basis + mass_h2o_produced * 2441.7
-        
-        return lhv_mass_basis, hhv_mass_basis
+        from kasp.core.heating_value import calculate as calc_heating
+        return calc_heating(
+            composition,
+            source,
+            thermo_solver=self.thermo_solver,
+            gas_obj=gas_obj,
+            eos_method=eos_method,
+        )
 
     # -------------------------------------------------------------------------
     # 4. ANA TASARIM HESAPLAMA ÇEKİRDEĞİ (Design Performance)
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_design_inputs(inputs):
+        required = {
+            'p_in': 'Giris basinci',
+            'p_out': 'Cikis basinci',
+            't_in': 'Giris sicakligi',
+            'flow': 'Debi',
+            'gas_comp': 'Gaz bilesimi',
+            'poly_eff': 'Politropik verim',
+        }
+        missing = [v for k, v in required.items() if k not in inputs]
+        if missing:
+            raise InputValidationError(f"Eksik alanlar: {', '.join(missing)}")
+        if not isinstance(inputs.get('gas_comp', {}), dict) or not inputs['gas_comp']:
+            raise InputValidationError("Gaz bilesimi bos veya gecersiz.")
+        if inputs.get('p_out', 0) <= inputs.get('p_in', 0):
+            raise InputValidationError("Cikis basinci giris basincindan buyuk olmali.")
+        poly_eff = inputs.get('poly_eff', 0)
+        if not (0 < poly_eff <= 100):
+            raise InputValidationError(f"Politropik verim 0-100 arasinda olmali: {poly_eff}")
+
     def calculate_design_performance_with_mode(self, inputs):
         """
         Wrapper — Mod seçimine göre hesaplama yapar.
@@ -307,6 +228,8 @@ class ThermoEngine:
             'max_consistency_iter'      : int   — Maks. tutarlılık iterasyonu (varsayılan 20)
             'consistency_tolerance'     : float — Yakınsama toleransı % (varsayılan 0.1)
         """
+        self._validate_design_inputs(inputs)
+
         if inputs.get('use_consistency_iteration', False):
             self.logger.info("🔄 Tutarlılık modu aktif — İteratif hesaplama başlıyor...")
             return self._calculate_with_consistency(inputs)
@@ -446,7 +369,7 @@ class ThermoEngine:
                 eos_method=eos
             )
             if lhv_kj_kg <= 0:
-                lhv_kj_kg = 50000.0 # Varsayılan yakıt ısıl değeri kJ/kg (Metan'a yakın)
+                lhv_kj_kg = EngineSettings.FALLBACK_LHV_KJ_KG
                 
             turb_eff = 0.0
             fuel_cons_kg_h = 0.0

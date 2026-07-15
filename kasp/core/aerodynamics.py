@@ -122,13 +122,15 @@ class CompressorAerodynamics:
     def calculate_mechanical_loss(inlet_vol_flow_m3s: float, shaft_power_kw: float = None) -> float:
         """
         ASME PTC 10 uyumlu Mekanik (Rulman/Conta) kayıp tahmini.
-        ExxonMobil merkezkaç kompresör ampirik formülü: 0.65 * (ACMH)^0.45
+        ExxonMobil merkezkaç kompresör ampirik formülü.
         Limitation: Kayıp şaft gücünün %10'unu geçemez.
         """
-        acmh_unit = max(1.0, inlet_vol_flow_m3s * 3600.0) # m3/h'a çevir
+        acmh_unit = max(1.0, inlet_vol_flow_m3s * 3600.0)
         
-        loss_kw = 0.65 * math.pow(acmh_unit, 0.45)
-        loss_kw = max(10.0, loss_kw) # Min kayıp limiti
+        loss_kw = EngineSettings.MECHANICAL_LOSS_COEFF * math.pow(
+            acmh_unit, EngineSettings.MECHANICAL_LOSS_EXPONENT
+        )
+        loss_kw = max(EngineSettings.MECHANICAL_LOSS_MIN_KW, loss_kw)
         
         limit_pct = EngineSettings.PTC10_MECHANICAL_LOSS_LIMIT / 100.0 # 0.10
         

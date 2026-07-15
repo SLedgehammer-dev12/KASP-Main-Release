@@ -1,3 +1,13 @@
+"""
+KASP Report Generator
+
+TODO(v2.2): 1067 satırlık bu modül bölünmeli:
+  - PdfReportBuilder (PDF export)
+  - ExcelReportBuilder (Excel/HTML export)
+  - BenchmarkAnalyzer (engineering comparison tools)
+
+v2.1: Modül yapısı korundu, geriye dönük uyumlu.
+"""
 import logging
 import datetime
 import os
@@ -5,6 +15,8 @@ import sys
 import io
 from html import escape
 from release_metadata import APP_VERSION
+
+logger = logging.getLogger(__name__)
 
 try:
     from reportlab.lib.pagesizes import A4

@@ -23,30 +23,33 @@ def _create_ssl_context() -> ssl.SSLContext:
     """Güvenli SSL bağlamı oluşturur — PyInstaller bundle uyumlu."""
     try:
         import certifi
-        return ssl.create_default_context(cafile=certifi.where())
-    except (ImportError, Exception):
-        pass
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        logger.info("SSL bağlamı: certifi ile oluşturuldu.")
+        return ctx
+    except (ImportError, Exception) as exc:
+        logger.debug(f"certifi yüklenemedi: {exc}")
 
     try:
-        import sys
-        if sys.platform == "darwin" and getattr(sys, "frozen", False):
-            import os
-            bundle_certs = os.path.join(sys._MEIPASS, "certifi", "cacert.pem")
-            if os.path.exists(bundle_certs):
+        import sys as _sys
+        if getattr(_sys, "frozen", False):
+            import os as _os
+            bundle_certs = _os.path.join(_sys._MEIPASS, "certifi", "cacert.pem")
+            if _os.path.exists(bundle_certs):
+                logger.info("SSL bağlamı: bundle sertifika ile.")
                 return ssl.create_default_context(cafile=bundle_certs)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"Bundle sertifika hatası: {exc}")
 
     try:
-        return ssl.create_default_context()
-    except Exception:
-        pass
-
-    logger.warning("SSL sertifika doğrulaması devre dışı — güvenli olmayan bağlantı kullanılıyor.")
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+        ctx = ssl.create_default_context()
+        logger.info("SSL bağlamı: sistem sertifikaları ile.")
+        return ctx
+    except Exception as exc:
+        logger.critical(f"SSL bağlamı oluşturulamadı: {exc}")
+        raise RuntimeError(
+            "Güvenli bağlantı kurulamadı. SSL sertifika doğrulaması zorunludur.\n"
+            "Lütfen certifi paketinin yüklü olduğundan emin olun."
+        ) from exc
 
 
 _ssl_context: ssl.SSLContext | None = None
