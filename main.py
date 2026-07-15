@@ -83,6 +83,16 @@ def show_critical_error(message: str, details: str = None):
     msg_box.setStandardButtons(QMessageBox.Ok)
     msg_box.exec_()
 
+def _show_admin_password_dialog(password: str):
+    QMessageBox.information(
+        None, "Admin Hesap Bilgisi",
+        f"Admin hesabi olusturuldu / sifirlendi.\n\n"
+        f"Kullanici adi: admin\n"
+        f"Gecici sifre: {password}\n\n"
+        f"Bu sifreyi not alin. Ilk giris sonrasi degistirmeniz zorunludur."
+    )
+
+
 def main():
     """Main application entry point with comprehensive error handling"""
     logger = None
@@ -157,7 +167,6 @@ def main():
         is_first_run = db.users.is_empty()
 
         if is_first_run:
-            # Güvenli rastgele admin şifresi (sadece ilk çalıştırmada)
             admin_password = os.environ.get("KASP_ADMIN_PASSWORD")
             if not admin_password:
                 try:
@@ -171,20 +180,28 @@ def main():
             db.create_default_admin(hash_password(admin_password))
             logger.info("Admin kullanıcısı oluşturuldu.")
             db.update_user(1, must_change_password=1)
-
-            from kasp.ui.login_dialog import LoginDialog
-            login = LoginDialog(user_manager)
-
-            QMessageBox.information(
-                None, "Ilk Kurulum - Admin Hesabi",
-                f"Admin hesabi olusturuldu.\n\n"
-                f"Kullanici adi: admin\n"
-                f"Gecici sifre: {admin_password}\n\n"
-                f"Bu sifreyi not alin. Ilk giris sonrasi degistirmeniz zorunludur."
-            )
+            _show_admin_password_dialog(admin_password)
         else:
-            from kasp.ui.login_dialog import LoginDialog
-            login = LoginDialog(user_manager)
+            # Kurtarma: admin var ama must_change_password=1 ise
+            # (önceki bug'lı çalıştırmadan kalmış olabilir)
+            admin_user = db.get_user_by_username("admin")
+            if admin_user and admin_user.get("must_change_password"):
+                reply = QMessageBox.question(
+                    None, "Sifre Kurtarma",
+                    "Admin hesabi daha once olusturulmus ancak sifre "
+                    "bilinmiyor veya degistirilmemis.\n\n"
+                    "Yeni bir gecici sifre olusturulsun mu?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply == QMessageBox.Yes:
+                    admin_password = generate_initial_admin_password()
+                    db.update_user(1, password_hash=hash_password(admin_password),
+                                   must_change_password=1)
+                    _show_admin_password_dialog(admin_password)
+
+        from kasp.ui.login_dialog import LoginDialog
+        login = LoginDialog(user_manager)
 
         if login.exec_() != LoginDialog.Accepted:
             logger.info("Login cancelled by user")
