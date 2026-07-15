@@ -25,10 +25,10 @@ LOCKOUT_LEVELS = [
     (10, 60),
 ]
 
-_LOCKOUT_SECRET = secrets.token_bytes(32)
+_LOCKOUT_SECRET: bytes | None = None
 
 
-def _get_lockout_path() -> str:
+def _get_lockout_dir() -> str:
     if sys.platform == "darwin":
         base = os.path.expanduser("~/Library/Application Support/KASP")
     elif os.name == "nt":
@@ -37,11 +37,40 @@ def _get_lockout_path() -> str:
         base = os.path.expanduser("~/.local/share/KASP")
     security_dir = os.path.join(base, "security")
     os.makedirs(security_dir, exist_ok=True)
-    return os.path.join(security_dir, "kasp_lockout.bin")
+    return security_dir
+
+
+def _get_lockout_path() -> str:
+    return os.path.join(_get_lockout_dir(), "kasp_lockout.bin")
+
+
+def _get_secret_path() -> str:
+    return os.path.join(_get_lockout_dir(), ".kasp_lockout_key")
+
+
+def _load_or_create_secret() -> bytes:
+    global _LOCKOUT_SECRET
+    if _LOCKOUT_SECRET is not None:
+        return _LOCKOUT_SECRET
+    secret_path = _get_secret_path()
+    try:
+        with open(secret_path, "rb") as f:
+            _LOCKOUT_SECRET = f.read()
+            if len(_LOCKOUT_SECRET) == 32:
+                return _LOCKOUT_SECRET
+    except (FileNotFoundError, OSError):
+        pass
+    _LOCKOUT_SECRET = secrets.token_bytes(32)
+    try:
+        with open(secret_path, "wb") as f:
+            f.write(_LOCKOUT_SECRET)
+    except OSError as exc:
+        logger.warning(f"Lockout anahtar dosyasi yazilamadi: {exc}")
+    return _LOCKOUT_SECRET
 
 
 def _calculate_lockout_hmac(data: bytes) -> bytes:
-    return hmac.digest(_LOCKOUT_SECRET, data, "sha256")
+    return hmac.digest(_load_or_create_secret(), data, "sha256")
 
 
 def _load_lockout_state() -> Dict:
@@ -54,8 +83,8 @@ def _load_lockout_state() -> Dict:
             stored_mac = f.read(32)
         expected_mac = _calculate_lockout_hmac(payload)
         if not hmac.compare_digest(stored_mac, expected_mac):
-            logger.warning("Lockout dosyası kurcalanmış! Güvenlik kilidi aktif.")
-            return {"failures": 3, "last_failure": time.time(), "lockout_until": time.time() + 300}
+            logger.info("Lockout dosyasi gecersiz (versiyon degisikligi?) — sifirlaniyor.")
+            return {"failures": 0, "last_failure": 0, "lockout_until": 0}
         return json.loads(payload)
     except (FileNotFoundError, json.JSONDecodeError, struct.error, ValueError, OSError):
         return {"failures": 0, "last_failure": 0, "lockout_until": 0}
