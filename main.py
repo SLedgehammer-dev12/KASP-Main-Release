@@ -153,30 +153,28 @@ def main():
         db = UnitDatabase()
         user_manager = UserManager(db)
 
-        # İlk çalıştırma: Güvenli rastgele admin şifresi
-        admin_password = os.environ.get("KASP_ADMIN_PASSWORD")
-        if not admin_password:
-            try:
-                from kasp.config_manager import get_config_manager
-                admin_password = get_config_manager().get("auth.admin_initial_password")
-            except Exception:
-                admin_password = None
-        if not admin_password:
-            admin_password = generate_initial_admin_password()
+        # İlk çalıştırma tespiti
+        is_first_run = db.users.is_empty()
 
-        db.create_default_admin(hash_password(admin_password))
-        logger.info("Admin kullanıcısı oluşturuldu.")
+        if is_first_run:
+            # Güvenli rastgele admin şifresi (sadece ilk çalıştırmada)
+            admin_password = os.environ.get("KASP_ADMIN_PASSWORD")
+            if not admin_password:
+                try:
+                    from kasp.config_manager import get_config_manager
+                    admin_password = get_config_manager().get("auth.admin_initial_password")
+                except Exception:
+                    admin_password = None
+            if not admin_password:
+                admin_password = generate_initial_admin_password()
 
-        # İlk kurulumda şifreyi göster ve zorunlu değişim işaretle
-        if admin_password:
+            db.create_default_admin(hash_password(admin_password))
+            logger.info("Admin kullanıcısı oluşturuldu.")
             db.update_user(1, must_change_password=1)
 
-        from kasp.ui.login_dialog import LoginDialog
-        login = LoginDialog(user_manager)
+            from kasp.ui.login_dialog import LoginDialog
+            login = LoginDialog(user_manager)
 
-        # İlk çalıştırmada admin şifresini göster
-        if db.users.is_empty() or admin_password:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.information(
                 None, "Ilk Kurulum - Admin Hesabi",
                 f"Admin hesabi olusturuldu.\n\n"
@@ -184,6 +182,9 @@ def main():
                 f"Gecici sifre: {admin_password}\n\n"
                 f"Bu sifreyi not alin. Ilk giris sonrasi degistirmeniz zorunludur."
             )
+        else:
+            from kasp.ui.login_dialog import LoginDialog
+            login = LoginDialog(user_manager)
 
         if login.exec_() != LoginDialog.Accepted:
             logger.info("Login cancelled by user")
