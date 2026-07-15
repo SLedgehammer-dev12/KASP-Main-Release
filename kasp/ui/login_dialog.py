@@ -157,10 +157,16 @@ class LoginDialog(QDialog):
         self._remaining_lockout = get_lockout_remaining()
         locked, msg = check_lockout()
         if not locked:
-            self._update_lockout_state()
+            if self._lockout_timer:
+                self._lockout_timer.stop()
+                self._lockout_timer = None
+            self._login_btn.setEnabled(True)
+            self._username_edit.setEnabled(True)
+            self._password_edit.setEnabled(True)
+            self._status_label.setText("")
             self._password_edit.setFocus()
         else:
-            self._status_label.setText(f"⏳ {msg}")
+            self._status_label.setText(f"Kilitli: {msg}")
 
     def reject(self):
         if self._lockout_timer:

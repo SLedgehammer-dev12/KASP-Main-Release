@@ -140,6 +140,7 @@ def record_attempt(success):
     if success:
         state["failures"] = 0
         state["lockout_until"] = 0
+        state["applied_level"] = 0
     else:
         state["failures"] = state.get("failures", 0) + 1
         state["last_failure"] = time.time()
@@ -156,9 +157,13 @@ def check_lockout():
         return True, f"{mins} dakika kilitli"
 
     failures = state.get("failures", 0)
+    applied_level = state.get("applied_level", 0)
     for level_failures, lockout_mins in LOCKOUT_LEVELS:
-        if failures >= level_failures and now > state.get("last_failure", 0):
+        if (failures >= level_failures
+                and level_failures > applied_level
+                and now > state.get("last_failure", 0)):
             state["lockout_until"] = now + lockout_mins * 60
+            state["applied_level"] = level_failures
             _save_lockout_state(state)
             return True, f"{lockout_mins} dakika kilitlendi"
 
