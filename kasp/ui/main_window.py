@@ -845,11 +845,11 @@ class KaspMainWindow(QMainWindow):
         if tabs is None:
             return
 
-        # Log sekmesi — sadece admin
+        # Log sekmesi — tüm kullanıcılara açık
         if hasattr(self, "log_tab"):
             idx = tabs.indexOf(self.log_tab)
             if idx >= 0:
-                tabs.setTabVisible(idx, Session.is_admin())
+                tabs.setTabVisible(idx, True)
 
         # Engineering sekmesi — sadece admin + engineering mode
         if hasattr(self, "engineering_tab"):
