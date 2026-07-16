@@ -55,7 +55,7 @@ def build_log_tab(window):
 
     window.log_level_combo = QComboBox()
     window.log_level_combo.addItems(get_log_level_options())
-    window.log_level_combo.setCurrentText("INFO")
+    window.log_level_combo.setCurrentText("TUM LOGLAR")
     window.log_level_combo.currentTextChanged.connect(window._filter_logs)
     filter_layout.addWidget(window.log_level_combo)
 

@@ -38,10 +38,18 @@ class QLogHandler(logging.Handler):
         self.setFormatter(logging.Formatter(
             '%(asctime)s - %(levelname)s - %(message)s'
         ))
+        self._pending = []
 
     def emit(self, record):
         msg = self.format(record)
-        self.log_signal.emit(msg)
+        try:
+            self.log_signal.emit(msg)
+        except RuntimeError:
+            self._pending.append(msg)
+
+    def flush_pending(self):
+        while self._pending:
+            self.log_signal.emit(self._pending.pop(0))
 
 
 def setup_logging(log_file='kasp_error.log', log_level=logging.INFO,
