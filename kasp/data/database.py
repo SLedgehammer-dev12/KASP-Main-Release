@@ -331,12 +331,33 @@ class UserRepository(_BaseRepository):
 
 
 class CalculationHistoryRepository(_BaseRepository):
+    @staticmethod
+    def _serialize(value):
+        if isinstance(value, dict):
+            return {k: CalculationHistoryRepository._serialize(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [CalculationHistoryRepository._serialize(v) for v in value]
+        if hasattr(value, '__dataclass_fields__'):
+            return {
+                k: CalculationHistoryRepository._serialize(v)
+                for k, v in value.__dict__.items()
+            }
+        try:
+            json.dumps(value)
+            return value
+        except (TypeError, ValueError):
+            return str(value)
+
     def save(self, project_name: str, calculation_type: str,
              inputs, results, notes: str = "") -> bool:
         try:
             cursor = self._cursor()
-            inputs_json = json.dumps(inputs) if isinstance(inputs, dict) else str(inputs)
-            results_json = json.dumps(results) if isinstance(results, dict) else str(results)
+            inputs_json = json.dumps(
+                self._serialize(inputs) if isinstance(inputs, dict) else str(inputs)
+            )
+            results_json = json.dumps(
+                self._serialize(results) if isinstance(results, dict) else str(results)
+            )
             cursor.execute("""
                 INSERT INTO CalculationHistory (project_name, calculation_type, inputs_json, results_json, user_notes)
                 VALUES (?, ?, ?, ?, ?)
