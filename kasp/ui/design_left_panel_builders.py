@@ -425,7 +425,30 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     sizing_layout.addRow("Mekanik Verim (%):", mech_layout)
 
     sizing_layout.addRow("", QLabel(""))
-    consistency_separator = QLabel("🔄 Tutarlılık Modu (Self-Consistent)")
+    api617_sep = QLabel("\u2699\ufe0f API 617 Emniyet Marjları (Türbin Seçimi)")
+    api617_sep.setObjectName("api617_separator")
+    sizing_layout.addRow("", api617_sep)
+
+    api617_layout = QHBoxLayout()
+    api617_layout.addWidget(QLabel("Min Surge (%):"))
+    window.api617_surge_min = QDoubleSpinBox()
+    window.api617_surge_min.setRange(0, 50)
+    window.api617_surge_min.setValue(10.0)
+    window.api617_surge_min.setDecimals(1)
+    window.api617_surge_min.setToolTip("API 617 minimum surge marjı. %10 önerilir.")
+    api617_layout.addWidget(window.api617_surge_min)
+
+    api617_layout.addWidget(QLabel("Min Stonewall (%):"))
+    window.api617_stonewall_min = QDoubleSpinBox()
+    window.api617_stonewall_min.setRange(0, 50)
+    window.api617_stonewall_min.setValue(5.0)
+    window.api617_stonewall_min.setDecimals(1)
+    window.api617_stonewall_min.setToolTip("API 617 minimum stonewall (choke) marjı. %5 önerilir.")
+    api617_layout.addWidget(window.api617_stonewall_min)
+    sizing_layout.addRow("", api617_layout)
+
+    sizing_layout.addRow("", QLabel(""))
+    consistency_separator = QLabel("\U0001f504 Tutarlılık Modu (Self-Consistent)")
     consistency_separator.setObjectName("consistency_separator")
     sizing_layout.addRow("", consistency_separator)
 

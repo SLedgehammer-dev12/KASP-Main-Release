@@ -20,10 +20,16 @@ class TurbineSelector:
     
     @staticmethod
     def select_units(required_power_kw: float, site_conditions: Dict[str, float], 
-                     all_turbines_data: List[Dict[str, Any]], limit: int = 5) -> List[TurbineRecommendation]:
+                     all_turbines_data: List[Dict[str, Any]], limit: int = 5,
+                     surge_min: float = None, stonewall_min: float = None) -> List[TurbineRecommendation]:
         """
         Kayıtlı türbin listesini filtreler, saha düzeltmelerini yapar ve en uygun olanları sıralar.
         """
+        if surge_min is None:
+            surge_min = EngineSettings.API617_MIN_SURGE_MARGIN
+        if stonewall_min is None:
+            stonewall_min = EngineSettings.API617_MIN_STONEWALL_MARGIN
+
         selected_recommendations: List[TurbineRecommendation] = []
         
         ambient_temp = site_conditions.get('ambient_temp', 15.0)
@@ -32,7 +38,8 @@ class TurbineSelector:
         
         logger.info(
             f"Ünite seçimi (V4.4) başlatılıyor. Gerekli güç: {required_power_kw:.0f} kW | "
-            f"Amb: {ambient_temp}°C / {altitude}m / {ambient_pressure} kPa"
+            f"Amb: {ambient_temp}°C / {altitude}m / {ambient_pressure} kPa | "
+            f"Surge min: {surge_min}% / Stonewall min: {stonewall_min}%"
         )
         
         for turbine in all_turbines_data:
@@ -47,8 +54,7 @@ class TurbineSelector:
                 iso_power, iso_heat_rate, ambient_temp, ambient_pressure, altitude, turbine
             )
             
-            # 2. Ön Filtre (Sadece -%0 ile %150 aralığındaki türbinleri değerlendir)
-            # Power Margin = (Available - Required) / Required * 100
+            # 2. Ön Filtre
             if required_power_kw <= 1e-6:
                 logger.warning(
                     f"Geçersiz required_power_kw={required_power_kw}, "
@@ -57,29 +63,26 @@ class TurbineSelector:
                 continue
             power_margin_pct = ((corr_power - required_power_kw) / required_power_kw) * 100
             
-            # Negatif marjları (Yetersizleri) reddet (V4.3 mantığı) veya çok büyükleri reddet
             if power_margin_pct < 0.0 or power_margin_pct > EngineSettings.MAX_ALLOWED_OVERSIZE_PCT:
                 continue
                 
-            # 3. Aerodinamik Güvenlik Marjları (Surge / Stonewall)
+            # 3. Aerodinamik Güvenlik Marjları
             aero_margins = TurbineSelector._calculate_aero_margins(turbine, site_conditions.get('flow', 0))
             sm_pct = aero_margins['surge_margin_pct']
             sw_pct = aero_margins['stonewall_margin_pct']
             
-            # 4. Ağırlıklı Puanlama Algoritması
+            # 4. Ağırlıklı Puanlama (tip skoru olmadan)
             score = TurbineSelector._calculate_turbine_score(
-                turbine_type=turbine.get('type', 'Industrial'),
                 corrected_heat_rate=corr_hr,
                 power_margin_pct=power_margin_pct,
                 surge_margin_pct=sm_pct,
                 stonewall_margin_pct=sw_pct
             )
             
-            # 5. Emniyet (API 617 Mins)
-            meets_api617 = (sm_pct >= EngineSettings.API617_MIN_SURGE_MARGIN and 
-                            sw_pct >= EngineSettings.API617_MIN_STONEWALL_MARGIN)
+            # 5. Emniyet (API 617 Mins — kullanıcı tanımlı)
+            meets_api617 = (sm_pct >= surge_min and sw_pct >= stonewall_min)
                             
-            # 6. Recommendation Objesi Oluştur
+            # 6. Recommendation
             rec = TurbineRecommendation(
                 turbine_name=f"{turbine.get('manufacturer', 'Bilinmiyor')} {turbine.get('model', 'Bilinmiyor')}",
                 manufacturer=turbine.get('manufacturer', 'Bilinmiyor'),
@@ -105,6 +108,57 @@ class TurbineSelector:
         )
         
         return selected_recommendations[:limit]
+
+    @staticmethod
+    def select_all_by_power(required_power_kw: float, site_conditions: Dict[str, float],
+                            all_turbines_data: List[Dict[str, Any]]) -> List[TurbineRecommendation]:
+        """
+        Güç gereksinimini karşılayan TÜM türbinleri güce göre sıralı döndürür.
+        Skorlama yapmaz, filtreleme yapmaz. İkinci liste için kullanılır.
+        """
+        results: List[TurbineRecommendation] = []
+
+        ambient_temp = site_conditions.get('ambient_temp', 15.0)
+        altitude = site_conditions.get('altitude', 0.0)
+        ambient_pressure = site_conditions.get('ambient_pressure', 101.325)
+
+        for turbine in all_turbines_data:
+            iso_power = turbine.get('iso_power_kw', 0)
+            iso_heat_rate = turbine.get('iso_heat_rate_kj_kwh', 0)
+            if iso_power <= 0 or iso_heat_rate <= 0:
+                continue
+
+            corr_power, corr_hr = TurbineSelector._correct_performance(
+                iso_power, iso_heat_rate, ambient_temp, ambient_pressure, altitude, turbine
+            )
+
+            if required_power_kw > 1e-6:
+                power_margin_pct = ((corr_power - required_power_kw) / required_power_kw) * 100
+                if power_margin_pct < 0.0:
+                    continue
+            else:
+                power_margin_pct = 0.0
+
+            rec = TurbineRecommendation(
+                turbine_name=f"{turbine.get('manufacturer', 'Bilinmiyor')} {turbine.get('model', 'Bilinmiyor')}",
+                manufacturer=turbine.get('manufacturer', 'Bilinmiyor'),
+                model=turbine.get('model', 'Bilinmiyor'),
+                type_str=turbine.get('type', 'Industrial'),
+                iso_power_kw=iso_power,
+                available_power_kw=corr_power,
+                site_heat_rate=corr_hr,
+                power_margin_percent=power_margin_pct,
+                surge_margin_percent=0.0,
+                stonewall_margin_percent=0.0,
+                meets_api617_surge=True,
+                selection_score=0.0,
+                efficiency_rating=TurbineSelector._get_efficiency_rating(corr_hr),
+                recommendation_level="",
+            )
+            results.append(rec)
+
+        results.sort(key=lambda x: x.available_power_kw)
+        return results
 
     @staticmethod
     def _correct_performance(iso_power: float, iso_hr: float, t_amb: float, 
@@ -146,11 +200,11 @@ class TurbineSelector:
         }
 
     @staticmethod
-    def _calculate_turbine_score(turbine_type: str, corrected_heat_rate: float,
+    def _calculate_turbine_score(corrected_heat_rate: float,
                                  power_margin_pct: float, surge_margin_pct: float, 
                                  stonewall_margin_pct: float) -> float:
         """
-        EngineSettings sabitlerini kullanarak 0-100 arasında normalize bir skor üretir.
+        3 kriterli ağırlıklı puanlama (Tip skoru kaldırıldı — tip bilgisi sadece etiket olarak gösterilir).
         """
         # 1. GÜÇ MARJI SKORU (0-100)
         pm = power_margin_pct
@@ -186,15 +240,11 @@ class TurbineSelector:
         stonewall_penalty = (5.0 - sw) * 4.0 if sw < 5.0 else 0.0
         surge_score = max(0.0, surge_score - stonewall_penalty)
 
-        # 4. TİP SKORU
-        type_score = EngineSettings.TURBINE_TYPE_SCORES.get(turbine_type, 65)
-
-        # TOTAL AĞIRLIKLANDIRMA
+        # TOTAL AĞIRLIKLANDIRMA (Güç %50, Verim %35, Surge %15)
         total_score = (
             power_score * EngineSettings.SCORE_WEIGHT_POWER +
             eff_score   * EngineSettings.SCORE_WEIGHT_EFFICIENCY +
-            surge_score * EngineSettings.SCORE_WEIGHT_SURGE +
-            type_score  * EngineSettings.SCORE_WEIGHT_TYPE
+            surge_score * EngineSettings.SCORE_WEIGHT_SURGE
         )
         return round(total_score, 1)
 

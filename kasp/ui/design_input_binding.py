@@ -108,6 +108,11 @@ class DesignInputBinder:
         inputs["max_consistency_iter"] = window.max_consistency_iter.value()
         inputs["consistency_tolerance"] = window.consistency_tolerance.value()
 
+        if hasattr(window, 'api617_surge_min'):
+            inputs["api617_surge_min"] = window.api617_surge_min.value()
+        if hasattr(window, 'api617_stonewall_min'):
+            inputs["api617_stonewall_min"] = window.api617_stonewall_min.value()
+
         gas_comp = window._get_gas_composition()
         total_percentage = sum(gas_comp.values())
         if not gas_comp:

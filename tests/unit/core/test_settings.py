@@ -5,7 +5,7 @@ from kasp.core.settings import EngineSettings
 class TestEngineSettings:
     def test_scoring_weights_sum_to_one(self):
         w = (EngineSettings.SCORE_WEIGHT_POWER + EngineSettings.SCORE_WEIGHT_EFFICIENCY +
-             EngineSettings.SCORE_WEIGHT_SURGE + EngineSettings.SCORE_WEIGHT_TYPE)
+             EngineSettings.SCORE_WEIGHT_SURGE)
         assert abs(w - 1.0) < 0.01
 
     def test_all_constants_defined(self):

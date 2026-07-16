@@ -22,10 +22,9 @@ class EngineSettings:
     API617_MIN_STONEWALL_MARGIN = 5.0   # %5'ten az Stonewall (Choke) mesafesi tehlikelidir
     
     # ─── Türbin Puanlama / Derecelendirme Ağırlıkları (Toplam 1.0) ───
-    SCORE_WEIGHT_POWER = 0.40           # İstenen güce yakınlık (oversize/undersize)
-    SCORE_WEIGHT_EFFICIENCY = 0.30      # Isıl verim oranı (Heat Rate bazlı)
-    SCORE_WEIGHT_SURGE = 0.20           # Aerodinamik emniyet (API 617 limit aşımı)
-    SCORE_WEIGHT_TYPE = 0.10            # Sistem türü (Aero, HD, Endüstriyel)
+    SCORE_WEIGHT_POWER = 0.50           # İstenen güce yakınlık (oversize/undersize)
+    SCORE_WEIGHT_EFFICIENCY = 0.35      # Isıl verim oranı (Heat Rate bazlı)
+    SCORE_WEIGHT_SURGE = 0.15           # Aerodinamik emniyet (API 617 limit aşımı)
     
     # ─── Isıl Verim Optimizasyon Sınırları (kJ/kWh) ───
     HR_REF_BEST = 8500.0                # Çok İyi (100 puan sınırı, %40+ verim)

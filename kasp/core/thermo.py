@@ -433,13 +433,19 @@ class ThermoEngine:
     # -------------------------------------------------------------------------
     # 6. TÜRBİN SEÇİMİ VE ANALİZ METOTLARI
     # -------------------------------------------------------------------------
-    def select_units(self, required_power_kw, site_conditions, all_turbines_data, limit=5):
+    def select_units(self, required_power_kw, site_conditions, all_turbines_data, limit=5,
+                     surge_min=None, stonewall_min=None):
         """TurbineSelector modülüne delegasyon yapar."""
-        recommendations = TurbineSelector.select_units(
-            required_power_kw, site_conditions, all_turbines_data, limit
+        return TurbineSelector.select_units(
+            required_power_kw, site_conditions, all_turbines_data, limit,
+            surge_min=surge_min, stonewall_min=stonewall_min,
         )
-        
-        return recommendations
+
+    def select_all_by_power(self, required_power_kw, site_conditions, all_turbines_data):
+        """Güç gereksinimini karşılayan tüm türbinleri güce göre sıralar."""
+        return TurbineSelector.select_all_by_power(
+            required_power_kw, site_conditions, all_turbines_data,
+        )
 
     def analyze_operating_envelope(self, compressor_data, operating_conditions):
         try:

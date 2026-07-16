@@ -210,7 +210,15 @@ class CalculationWorker(QObject):
                 required_power_per_unit_kw, 
                 site_conditions, 
                 self.all_turbines_data, 
-                limit=5
+                limit=5,
+                surge_min=self.inputs.get('api617_surge_min', 10.0),
+                stonewall_min=self.inputs.get('api617_stonewall_min', 5.0),
+            )
+            
+            all_units_by_power = self.engine.select_all_by_power(
+                required_power_per_unit_kw,
+                site_conditions,
+                self.all_turbines_data,
             )
             
             if self._cancel_requested:
@@ -233,6 +241,8 @@ class CalculationWorker(QObject):
             
             self.emit_progress(100, "Calculation complete!")
             self.logger.info("✅ All calculations completed successfully")
+            
+            results_raw['all_units_by_power'] = all_units_by_power
             
             # Emit results
             self.finished.emit(results_raw, selected_units)
