@@ -34,6 +34,8 @@ class LoginDialog(QDialog):
         self._user_manager = user_manager
         self._remaining_lockout = get_lockout_remaining()
         self._lockout_timer = None
+        self._forgot_clicks = 0
+        self._forgot_first_click_time = 0.0
         self._setup_ui()
         self._update_lockout_state()
 
@@ -86,9 +88,13 @@ class LoginDialog(QDialog):
         self._login_btn.setDefault(True)
         btn_layout.addWidget(self._login_btn)
 
-        forgot_btn = QPushButton(tr("Şifremi Unuttum"))
+        forgot_btn = QPushButton(tr("Sifremi Unuttum"))
         forgot_btn.clicked.connect(self._forgot_password)
         btn_layout.addWidget(forgot_btn)
+
+        mgmt_btn = QPushButton(tr("Kullanici Yonetimi"))
+        mgmt_btn.clicked.connect(self._open_user_management)
+        btn_layout.addWidget(mgmt_btn)
 
         cancel_btn = QPushButton(tr("Çıkış"))
         cancel_btn.clicked.connect(self.reject)
@@ -96,6 +102,32 @@ class LoginDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _forgot_password(self):
+        import time as _time
+        now = _time.time()
+
+        if self._forgot_first_click_time == 0:
+            self._forgot_first_click_time = now
+        self._forgot_clicks += 1
+
+        if self._forgot_clicks == 1:
+            QMessageBox.warning(
+                self, tr("Guvenlik Kontrolu"),
+                tr("Sifre sifirlama icin guvenlik amaciyla bekleme suresi uygulanir.\n\n"
+                   "Lutfen 15 saniye sonra tekrar 'Sifremi Unuttum' butonuna tiklayin.")
+            )
+            return
+
+        elapsed = now - self._forgot_first_click_time
+        if elapsed < 15:
+            remaining = int(15 - elapsed)
+            QMessageBox.warning(
+                self, tr("Bekleyin"),
+                tr(f"Guvenlik kontrolu: {remaining} saniye daha bekleyin.")
+            )
+            return
+
+        self._forgot_clicks = 0
+        self._forgot_first_click_time = 0
         username = self._username_edit.text().strip().lower()
         if username != "admin":
             QMessageBox.warning(
@@ -157,6 +189,30 @@ class LoginDialog(QDialog):
                f"Bu sifre sifre alanina otomatik yerlestirildi.\n"
                f"Giris Yap butonuna tiklayarak giris yapabilirsiniz.")
         )
+
+    def _open_user_management(self):
+        username = self._username_edit.text().strip()
+        password = self._password_edit.text()
+        user = self._user_manager.authenticate(username, password)
+
+        if user is None:
+            QMessageBox.warning(
+                self, tr("Yetkisiz"),
+                tr("Kullanici yonetimine erismek icin once gecerli bir admin\n"
+                   "kullanici adi ve sifresiyle giris yapmaniz gerekir.")
+            )
+            return
+
+        if user.role != "admin":
+            QMessageBox.warning(
+                self, tr("Yetkisiz"),
+                tr("Kullanici yonetimine sadece admin erisebilir.")
+            )
+            return
+
+        from kasp.ui.user_management_dialog import UserManagementDialog
+        dlg = UserManagementDialog(self._user_manager.db, user, self)
+        dlg.exec_()
 
     def _toggle_password_visibility(self, checked):
         self._password_edit.setEchoMode(

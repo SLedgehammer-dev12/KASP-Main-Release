@@ -41,6 +41,12 @@ try:
 except ImportError:
     CCP_LOADED = False
 
+try:
+    from thermopack.cubic import cubic
+    THERMOPACK_LOADED = True
+except ImportError:
+    THERMOPACK_LOADED = False
+
 logger = logging.getLogger(__name__)
 
 class ThermodynamicSolver:
