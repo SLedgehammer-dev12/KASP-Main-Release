@@ -35,8 +35,11 @@ except ImportError:
     THERMO_LOADED = False
 
 try:
-    import ccp
-    from ccp import Q_, State as CCPState
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("ignore", UserWarning)
+        import ccp
+        from ccp import Q_, State as CCPState
     CCP_LOADED = True
 except ImportError:
     CCP_LOADED = False

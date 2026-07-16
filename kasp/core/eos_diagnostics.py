@@ -75,8 +75,11 @@ def _check_thermopack():
 
 def _check_ccp():
     try:
-        from ccp import Q_, State
-        return {"available": True}
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("ignore", UserWarning)
+            from ccp import Q_, State
+        return {"available": True, "backend": "HEOS (CoolProp GERG-2008)"}
     except ImportError as e:
         return {"available": False, "reason": f"ImportError: {e}"}
     except Exception as e:
