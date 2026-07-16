@@ -99,28 +99,34 @@ def _check_dwsim():
 
     try:
         import clr
-    except ImportError as e:
-        return {"available": False, "reason": "ImportError: pythonnet not installed (pip install pythonnet)"}
+    except ImportError:
+        return {"available": False, "reason": "pythonnet not installed (pip install pythonnet)"}
 
-    dll_name = "DWSIM.Thermodynamics.StandaloneLibrary.dll"
-    search_paths = []
+    libs_dir = os.path.join("kasp", "core", "libs")
+    dll_path = None
+    for name in ("DWSIM.Thermodynamics.StandaloneLibrary.dll", "DWSIM.Thermodynamics.dll"):
+        candidate = os.path.join(libs_dir, name)
+        if os.path.exists(candidate):
+            dll_path = candidate
+            break
 
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        search_paths.append(os.path.join(sys._MEIPASS, dll_name))
-    search_paths.extend([
-        os.path.join("kasp", "core", "libs", dll_name),
-        os.path.join("kasp", "libs", dll_name),
-        dll_name,
-        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "DWSIM", dll_name),
-        os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "DWSIM", dll_name),
-    ])
+    if not dll_path:
+        return {"available": False, "reason": f"DLL not found in {libs_dir}/"}
 
-    for p in search_paths:
-        if os.path.exists(p):
-            try:
-                clr.AddReference(p)
-                return {"available": True, "dll_path": p}
-            except Exception as e:
-                return {"available": False, "reason": f"DLL found at {p} but failed to load: {e}"}
+    try:
+        os.environ["PATH"] = os.path.abspath(libs_dir) + os.pathsep + os.environ.get("PATH", "")
+        from System.Reflection import Assembly
+        from System import AppDomain, ResolveEventHandler
 
-    return {"available": False, "reason": f"DLL not found. Searched: {search_paths[:4]}..."}
+        def _resolve(sender, args):
+            name = args.Name.split(",")[0].strip()
+            dll = os.path.join(os.path.abspath(libs_dir), name + ".dll")
+            if os.path.exists(dll):
+                return Assembly.LoadFrom(dll)
+            return None
+
+        AppDomain.CurrentDomain.AssemblyResolve += ResolveEventHandler(_resolve)
+        Assembly.LoadFrom(os.path.abspath(dll_path))
+        return {"available": True, "dll_path": dll_path}
+    except Exception as e:
+        return {"available": False, "reason": f"Load failed: {e}"}

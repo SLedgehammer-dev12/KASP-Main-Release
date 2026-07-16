@@ -36,6 +36,7 @@ all_datas = [
     ("kasp_config.json", "."),
     ("release_metadata.py", "."),
     ("resources", "resources"),
+    ("kasp/core/libs", "kasp/core/libs"),
 ]
 all_datas.extend(thermo_datas)
 all_datas.extend(chemicals_datas)

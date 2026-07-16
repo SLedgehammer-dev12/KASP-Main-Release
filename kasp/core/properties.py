@@ -999,7 +999,7 @@ class ThermodynamicSolver:
             }
 
     def _load_dwsim_dll(self):
-        """DWSIM Standalone dll'sini bulur ve pythonnet clr ile yükler."""
+        """DWSIM dll'sini bulur ve pythonnet clr ile yükler."""
         if hasattr(self, "_dwsim_dll_loaded"):
             return self._dwsim_dll_loaded
 
@@ -1007,45 +1007,50 @@ class ThermodynamicSolver:
         try:
             import clr
             import os
-            
-            search_paths = [
-                getattr(sys, '_MEIPASS', ''),
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs"),
-                os.path.abspath("."),
-                os.path.abspath("./kasp/libs"),
-                "/Applications/DWSIM.app/Contents/MonoBundle",
-                "C:\\Program Files\\DWSIM",
-                "C:\\Program Files (x86)\\DWSIM",
-            ]
-            
-            dll_name = "DWSIM.Thermodynamics.StandaloneLibrary.dll"
-            loaded = False
-            
-            try:
-                clr.AddReference("DWSIM.Thermodynamics.StandaloneLibrary")
-                loaded = True
-            except Exception:
-                pass
-                
-            if not loaded:
-                for path in search_paths:
-                    full_path = os.path.join(path, dll_name)
-                    if os.path.exists(full_path):
-                        clr.AddReference(full_path)
-                        loaded = True
-                        break
-                        
-            if loaded:
-                from DWSIM.Thermodynamics import PropertyPackages, CalculatorInterface
-                self._dwsim_PropertyPackages = PropertyPackages
-                self._dwsim_Calculator = CalculatorInterface.Calculator()
-                self._dwsim_Calculator.Initialize()
-                self._dwsim_dll_loaded = True
-                logger.info("🎉 DWSIM Standalone Thermodynamics Library başarıyla yüklendi!")
+
+            libs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs")
+            if not os.path.isdir(libs_dir):
+                logger.warning("DWSIM libs dizini bulunamadi: %s", libs_dir)
+                return False
+
+            os.environ["PATH"] = libs_dir + os.pathsep + os.environ.get("PATH", "")
+
+            from System.Reflection import Assembly
+            from System import AppDomain, ResolveEventHandler
+
+            def _resolve(sender, args):
+                name = args.Name.split(",")[0].strip()
+                dll_path = os.path.join(libs_dir, name + ".dll")
+                if os.path.exists(dll_path):
+                    return Assembly.LoadFrom(dll_path)
+                return None
+
+            AppDomain.CurrentDomain.AssemblyResolve += ResolveEventHandler(_resolve)
+
+            dll_path = None
+            for name in ("DWSIM.Thermodynamics.StandaloneLibrary.dll", "DWSIM.Thermodynamics.dll"):
+                candidate = os.path.join(libs_dir, name)
+                if os.path.exists(candidate):
+                    dll_path = candidate
+                    break
+
+            if not dll_path:
+                logger.warning("DWSIM DLL bulunamadi")
+                return False
+
+            Assembly.LoadFrom(dll_path)
+            logger.info("DWSIM DLL yuklendi: %s", os.path.basename(dll_path))
+
+            from DWSIM.Thermodynamics import PropertyPackages, CalculatorInterface
+            self._dwsim_PropertyPackages = PropertyPackages
+            self._dwsim_Calculator = CalculatorInterface.Calculator()
+            self._dwsim_Calculator.Initialize()
+            self._dwsim_dll_loaded = True
+            logger.info("DWSIM Thermodynamics Library basariyla yuklendi!")
         except Exception as e:
-            logger.warning(f"⚠️ DWSIM DLL yükleme hatası: {e}")
+            logger.warning("DWSIM DLL yukleme hatasi: %s", e)
             self._dwsim_dll_loaded = False
-            
+
         return self._dwsim_dll_loaded
 
     def _solve_dwsim(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
