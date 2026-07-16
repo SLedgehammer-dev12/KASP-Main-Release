@@ -35,8 +35,20 @@ except ImportError:
     THERMO_LOADED = False
 
 try:
-    import ccp
-    from ccp import Q_
+    try:
+        import ccp
+    except ImportError as e:
+        if "pkg_resources" in str(e):
+            import kasp.core.pkg_resources as _pkg_shim
+            import sys as _sys
+            _sys.modules["pkg_resources"] = _pkg_shim
+            import ccp
+        else:
+            raise
+    try:
+        from ccp import Q_
+    except ImportError:
+        from pint import Quantity as Q_
     CCP_LOADED = True
 except ImportError:
     CCP_LOADED = False
