@@ -1058,9 +1058,20 @@ class ThermodynamicSolver:
         return self._dwsim_dll_loaded
 
     def _solve_dwsim(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
-        """DWSIM Standalone Thermodynamics Library kullanarak özellikleri çözer."""
+        """DWSIM Thermodynamics Library kullanarak özellikleri çözer."""
         if not self._load_dwsim_dll():
-            raise RuntimeError("DWSIM Standalone kütüphanesi yüklenemedi.")
+            raise RuntimeError("DWSIM kutuphanesi yuklenemedi.")
+        
+        try:
+            return self._solve_dwsim_internal(P_pa, T_k, gas_data)
+        except TypeError as e:
+            raise RuntimeError(
+                f"DWSIM API uyumsuzlugu: {e}. "
+                "DWSIM v9 API'si KASP entegrasyonundan farkli. "
+                "Guncelleme gerekiyor. Su anda CoolProp/PR/SRK/Thermopack kullanin."
+            ) from e
+
+    def _solve_dwsim_internal(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
             
         from System import Array, Double, String
         
@@ -1123,7 +1134,7 @@ class ThermodynamicSolver:
             if water_fraction > 0.05:
                 pp = self._dwsim_PropertyPackages.SteamTablesPropertyPackage(True)
             else:
-                pp = self._dwsim_PropertyPackages.PRPropertyPackage(True)
+                pp = self._dwsim_PropertyPackages.PengRobinsonPropertyPackage(True)
             self._package_cache[cache_key] = pp
         else:
             pp = self._package_cache[cache_key]
@@ -1136,8 +1147,15 @@ class ThermodynamicSolver:
         ms.SetFlashSpec("PT")
         ms.Calculate()
         
-        present_phases = list(ms.GetPresentPhases())
-        phase_label = "Vapor" if "Vapor" in present_phases else "Overall"
+        try:
+            present_phases = ms.GetPresentPhases()
+            if hasattr(present_phases, '__iter__'):
+                phase_list = list(present_phases)
+            else:
+                phase_list = []
+        except Exception:
+            phase_list = []
+        phase_label = "Vapor" if "Vapor" in phase_list else "Overall"
         
         try:
             density = float(ms.GetSinglePhaseProp("density", phase_label, "Mass"))
