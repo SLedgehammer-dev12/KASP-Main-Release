@@ -11,7 +11,9 @@ uvicorn[standard]>=0.32,<1
 pydantic>=2.9,<3
 pytest>=8.3,<9
 pyinstaller>=6.0,<7
-ccp>=0.3.0
+# CCP (Petrobras) - halka acik GitHub'dan
+# pip install git+https://github.com/petrobras/ccp.git
+ccp-performance>=0.3.0
 pint>=0.23
 setuptools>=65.0
 thermopack>=2.2.0

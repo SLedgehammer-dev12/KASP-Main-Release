@@ -35,20 +35,8 @@ except ImportError:
     THERMO_LOADED = False
 
 try:
-    try:
-        import ccp
-    except ImportError as e:
-        if "pkg_resources" in str(e):
-            import kasp.core.pkg_resources as _pkg_shim
-            import sys as _sys
-            _sys.modules["pkg_resources"] = _pkg_shim
-            import ccp
-        else:
-            raise
-    try:
-        from ccp import Q_
-    except ImportError:
-        from pint import Quantity as Q_
+    import ccp
+    from ccp import Q_, State as CCPState
     CCP_LOADED = True
 except ImportError:
     CCP_LOADED = False
@@ -789,8 +777,7 @@ class ThermodynamicSolver:
         if not CCP_LOADED:
             raise ImportError(
                 "ccp kutuphanesi yuklu degil. "
-                "Not: PyPI'deki 'ccp' paketi farkli bir kutuphanedir. "
-                "Petrobras CCP kutuphanesi halka acik olarak mevcut degildir."
+                "Kurulum: pip install git+https://github.com/petrobras/ccp.git"
             )
 
         from kasp.core.mixture import GasMixtureBuilder
@@ -827,11 +814,11 @@ class ThermodynamicSolver:
             fluid = {k: v / total for k, v in fluid.items()}
 
         try:
-            state_ccp = ccp.State(
+            state_ccp = CCPState(
                 fluid=fluid,
                 p=Q_(P_pa, 'Pa'),
                 T=Q_(T_k, 'K'),
-                EOS='PR'
+                EOS='HEOS'
             )
         except AttributeError:
             raise RuntimeError(
@@ -1122,9 +1109,6 @@ class ThermodynamicSolver:
         if total_frac > 0:
             dwsim_fracs = [f / total_frac for f in dwsim_fracs]
             
-        carray = Array[String](dwsim_names)
-        comparray = Array[Double](dwsim_fracs)
-        
         cache_key = tuple(dwsim_names)
         if cache_key not in self._package_cache:
             water_fraction = 0.0
@@ -1139,94 +1123,42 @@ class ThermodynamicSolver:
         else:
             pp = self._package_cache[cache_key]
             
-        ms = self._dwsim_Calculator.CreateMaterialStream(carray, comparray)
+        ms = self._dwsim_Calculator.CreateMaterialStream(
+            Array[String](dwsim_names), Array[Double](dwsim_fracs)
+        )
         ms.SetPropertyPackage(pp)
-        
         ms.SetTemperature(float(T_k))
         ms.SetPressure(float(P_pa))
         ms.SetFlashSpec("PT")
         ms.Calculate()
-        
-        try:
-            present_phases = ms.GetPresentPhases()
-            if hasattr(present_phases, '__iter__'):
-                phase_list = list(present_phases)
-            else:
-                phase_list = []
-        except Exception:
-            phase_list = []
-        phase_label = "Vapor" if "Vapor" in phase_list else "Overall"
-        
-        try:
-            density = float(ms.GetSinglePhaseProp("density", phase_label, "Mass"))
-        except Exception:
-            density = float(ms.GetSinglePhaseProp("density", "Overall", "Mass"))
-            
-        try:
-            H = float(ms.GetSinglePhaseProp("enthalpy", phase_label, "Mass")) * 1000.0
-        except Exception:
-            H = float(ms.GetSinglePhaseProp("enthalpy", "Overall", "Mass")) * 1000.0
-            
-        try:
-            S = float(ms.GetSinglePhaseProp("entropy", phase_label, "Mass")) * 1000.0
-        except Exception:
-            S = float(ms.GetSinglePhaseProp("entropy", "Overall", "Mass")) * 1000.0
-            
-        try:
-            Z = float(ms.GetSinglePhaseProp("compressibilityFactor", phase_label, "Mass"))
-        except Exception:
-            Z = float(ms.GetSinglePhaseProp("compressibilityFactor", "Overall", "Mass"))
-            
-        try:
-            cp_val = float(ms.GetSinglePhaseProp("heatCapacityCp", phase_label, "Mass")) * 1000.0
-        except Exception:
-            cp_val = float(ms.GetSinglePhaseProp("heatCapacityCp", "Overall", "Mass")) * 1000.0
-            
-        try:
-            cv_val = float(ms.GetSinglePhaseProp("heatCapacityCv", phase_label, "Mass")) * 1000.0
-        except Exception:
-            cv_val = float(ms.GetSinglePhaseProp("heatCapacityCv", "Overall", "Mass")) * 1000.0
-            
+
+        phase_ids = list(ms.PhaseIds) if ms.PhaseIds else []
+        if "Vapor" in phase_ids:
+            phase = ms.GetPhase("Vapor")
+        elif phase_ids:
+            phase = ms.GetPhase(phase_ids[0])
+        else:
+            phase = ms.GetPhase("Overall")
+
+        props = phase.Properties
+        density = float(props.density)
+        H = float(props.enthalpy) * 1000.0
+        S = float(props.entropy) * 1000.0
+        Z = float(props.compressibilityFactor)
+        cp_val = float(props.heatCapacityCp) * 1000.0
+        cv_val = float(props.heatCapacityCv) * 1000.0
         k = cp_val / cv_val if cv_val > 0 else 1.4
-        
-        try:
-            speed_of_sound = float(ms.GetSinglePhaseProp("speedOfSound", phase_label, "Mass"))
-        except Exception:
-            speed_of_sound = self._speed_of_sound(k, P_pa, density)
+        MW = float(props.molecularWeight)
 
-        try:
-            mu_val = float(ms.GetSinglePhaseProp("viscosity", phase_label, "Mass"))
-        except Exception:
-            try:
-                mu_val = float(ms.GetSinglePhaseProp("viscosity", "Overall", "Mass"))
-            except Exception:
-                mu_val = 1.1e-5
+        phase_str = 'gas'
+        if Z < 0.3:
+            phase_str = 'liquid'
 
-        try:
-            tc_val = float(ms.GetSinglePhaseProp("thermalConductivity", phase_label, "Mass"))
-        except Exception:
-            try:
-                tc_val = float(ms.GetSinglePhaseProp("thermalConductivity", "Overall", "Mass"))
-            except Exception:
-                tc_val = 0.0
-
-        MW_g_mol = sum(zs[i] * MOLAR_MASSES[reverse_map.get(str(ids[i]).lower(), str(ids[i]).upper())] for i in range(len(zs)))
-        phase_str = 'gas' if phase_label == 'Vapor' else 'liquid'
+        speed_of_sound = self._speed_of_sound(k, P_pa, density)
 
         return self._build_state(
-            P_pa=P_pa,
-            T_k=T_k,
-            H=H,
-            S=S,
-            Z=Z,
-            k=k,
-            MW=MW_g_mol,
-            Cp=cp_val,
-            Cv=cv_val,
-            density=density,
-            phase=phase_str,
-            fallback=False,
-            speed_of_sound=speed_of_sound,
-            mu=mu_val
+            P_pa=P_pa, T_k=T_k, H=H, S=S, Z=Z, k=k, MW=MW,
+            Cp=cp_val, Cv=cv_val, density=density, phase=phase_str,
+            fallback=False, speed_of_sound=speed_of_sound,
         )
 
