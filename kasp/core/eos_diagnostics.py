@@ -75,21 +75,10 @@ def _check_thermopack():
 
 def _check_ccp():
     try:
-        import sys as _sys
-        if "pkg_resources" not in _sys.modules:
-            import kasp.core.pkg_resources as _shim
-            _sys.modules["pkg_resources"] = _shim
-        import ccp
-        try:
-            from ccp import Q_
-        except ImportError:
-            from pint import Quantity as Q_
+        from ccp import Q_, State
         return {"available": True}
     except ImportError as e:
-        detail = str(e)
-        if "pkg_resources" in detail:
-            detail += " (Python 3.12+ compatibility shim loaded)"
-        return {"available": False, "reason": f"ImportError: {detail}"}
+        return {"available": False, "reason": f"ImportError: {e}"}
     except Exception as e:
         return {"available": False, "reason": f"RuntimeError: {e}"}
 
