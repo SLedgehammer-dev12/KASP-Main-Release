@@ -44,6 +44,18 @@ all_datas.extend(chemicals_datas)
 all_datas.extend(scipy_datas)
 all_datas.extend(thermopack_datas)
 
+# CCP (Petrobras) + pint veri dosyaları
+try:
+    ccp_datas = collect_data_files("ccp")
+    all_datas.extend(ccp_datas)
+except Exception:
+    pass
+try:
+    pint_datas = collect_data_files("pint")
+    all_datas.extend(pint_datas)
+except Exception:
+    pass
+
 # DWSIM DLL bundle — macOS'ta opsiyonel (Mono gerektirir)
 dwsim_binaries = []
 dwsim_dll_dir = ROOT / "kasp" / "core" / "libs"
@@ -79,6 +91,16 @@ all_hidden.extend(collect_submodules("thermopack", filter=include_runtime_submod
 try:
     all_hidden.extend(collect_submodules("pythonnet", filter=include_runtime_submodule))
     all_hidden.append("clr")
+except Exception:
+    pass
+
+# CCP (Petrobras) + pint submodules
+try:
+    all_hidden.extend(collect_submodules("ccp", filter=include_runtime_submodule))
+except Exception:
+    pass
+try:
+    all_hidden.extend(collect_submodules("pint", filter=include_runtime_submodule))
 except Exception:
     pass
 
