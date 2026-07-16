@@ -787,41 +787,33 @@ class ThermodynamicSolver:
     def _solve_ccp(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
         """ccp (Petrobras) motorunu kullanarak özellikleri çözer."""
         if not CCP_LOADED:
-            raise ImportError("ccp kütüphanesi aktif değil.")
-        
+            raise ImportError(
+                "ccp kutuphanesi yuklu degil. "
+                "Not: PyPI'deki 'ccp' paketi farkli bir kutuphanedir. "
+                "Petrobras CCP kutuphanesi halka acik olarak mevcut degildir."
+            )
+
         from kasp.core.mixture import GasMixtureBuilder
-        
+
         ids, zs = self._extract_thermo_components(gas_data)
-        
+
         CCP_MAPPING = {
-            'METHANE': 'Methane',
-            'ETHANE': 'Ethane',
-            'PROPANE': 'Propane',
-            'BUTANE': 'n-Butane',
-            'ISOBUTANE': 'IsoButane',
-            'PENTANE': 'n-Pentane',
-            'ISOPENTANE': 'Isopentane',
-            'HEXANE': 'n-Hexane',
-            'HEPTANE': 'n-Heptane',
-            'OCTANE': 'n-Octane',
-            'NONANE': 'n-Nonane',
-            'DECANE': 'n-Decane',
-            'NITROGEN': 'Nitrogen',
-            'CARBONDIOXIDE': 'CarbonDioxide',
-            'HYDROGENSULFIDE': 'HydrogenSulfide',
-            'HYDROGEN': 'Hydrogen',
-            'OXYGEN': 'Oxygen',
-            'WATER': 'Water',
-            'HELIUM': 'Helium',
-            'ARGON': 'Argon',
-            'AIR': 'Air',
+            'METHANE': 'Methane', 'ETHANE': 'Ethane', 'PROPANE': 'Propane',
+            'BUTANE': 'n-Butane', 'ISOBUTANE': 'IsoButane',
+            'PENTANE': 'n-Pentane', 'ISOPENTANE': 'Isopentane',
+            'HEXANE': 'n-Hexane', 'HEPTANE': 'n-Heptane',
+            'OCTANE': 'n-Octane', 'NONANE': 'n-Nonane', 'DECANE': 'n-Decane',
+            'NITROGEN': 'Nitrogen', 'CARBONDIOXIDE': 'CarbonDioxide',
+            'HYDROGENSULFIDE': 'HydrogenSulfide', 'HYDROGEN': 'Hydrogen',
+            'OXYGEN': 'Oxygen', 'WATER': 'Water', 'HELIUM': 'Helium',
+            'ARGON': 'Argon', 'AIR': 'Air',
         }
-        
+
         reverse_map = {
             thermo_id.lower(): component
             for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
         }
-        
+
         fluid = {}
         for c_id, fraction in zip(ids, zs):
             if fraction <= 1e-6:
@@ -829,11 +821,23 @@ class ThermodynamicSolver:
             canonical = reverse_map.get(str(c_id).lower(), str(c_id).upper())
             ccp_name = CCP_MAPPING.get(canonical, canonical)
             fluid[ccp_name] = fraction
-            
-        # Normalize fluid sum to 1.0
+
         total = sum(fluid.values())
         if total > 0:
-            fluid = {k: v/total for k, v in fluid.items()}
+            fluid = {k: v / total for k, v in fluid.items()}
+
+        try:
+            state_ccp = ccp.State(
+                fluid=fluid,
+                p=Q_(P_pa, 'Pa'),
+                T=Q_(T_k, 'K'),
+                EOS='PR'
+            )
+        except AttributeError:
+            raise RuntimeError(
+                "ccp.State bulunamadi. PyPI'deki 'ccp' paketi (v1.1) "
+                "Petrobras CCP kutuphanesi DEGILDIR. Bu EOS su anda kullanilamaz."
+            )
             
         state_ccp = ccp.State(
             fluid=fluid,
