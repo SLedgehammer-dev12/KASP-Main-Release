@@ -178,7 +178,11 @@ def main():
 
             db.create_default_admin(hash_password(admin_password))
             logger.info("Admin kullanıcısı oluşturuldu.")
-            db.update_user(1, must_change_password=1)
+
+            admin_user = db.get_user_by_username("admin")
+            if admin_user and admin_user.get("id"):
+                db.update_user(admin_user["id"], must_change_password=1)
+                logger.info(f"Admin (id={admin_user['id']}) must_change_password=1")
             _show_admin_password_dialog(admin_password)
 
         from kasp.ui.login_dialog import LoginDialog

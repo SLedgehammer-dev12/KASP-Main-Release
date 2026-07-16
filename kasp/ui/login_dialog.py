@@ -96,7 +96,7 @@ class LoginDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _forgot_password(self):
-        username = self._username_edit.text().strip()
+        username = self._username_edit.text().strip().lower()
         if username != "admin":
             QMessageBox.warning(
                 self, tr("Bilgi"),
@@ -105,9 +105,15 @@ class LoginDialog(QDialog):
             )
             return
 
-        admin_user = self._user_manager.db.get_user_by_username("admin")
+        db = self._user_manager.db
+        admin_user = db.get_user_by_username("admin")
         if not admin_user:
-            QMessageBox.warning(self, tr("Hata"), tr("Admin kullanicisi bulunamadi."))
+            QMessageBox.critical(self, tr("Hata"), tr("Admin kullanicisi bulunamadi."))
+            return
+
+        admin_id = admin_user.get("id")
+        if not admin_id:
+            QMessageBox.critical(self, tr("Hata"), tr("Admin kullanici ID'si alinamadi."))
             return
 
         reply = QMessageBox.question(
@@ -121,9 +127,27 @@ class LoginDialog(QDialog):
             return
 
         new_password = generate_initial_admin_password()
-        self._user_manager.db.update_user(
-            1, password_hash=hash_password(new_password), must_change_password=1
-        )
+        new_hash = hash_password(new_password)
+
+        ok = db.update_user(admin_id, password_hash=new_hash,
+                            must_change_password=1, is_active=1)
+        if not ok:
+            QMessageBox.critical(
+                self, tr("Hata"),
+                tr(f"Sifre guncellenemedi. Veritabani hatasi olabilir.\n"
+                   f"Admin ID: {admin_id}")
+            )
+            return
+
+        verified = self._user_manager.authenticate("admin", new_password)
+        if verified is None:
+            QMessageBox.critical(
+                self, tr("Hata"),
+                tr("Sifre olusturuldu ancak dogrulama basarisiz.\n"
+                   "Lutfen programi yeniden baslatin.")
+            )
+            return
+
         self._password_edit.setText(new_password)
         self._password_edit.setFocus()
         QMessageBox.information(
@@ -131,7 +155,7 @@ class LoginDialog(QDialog):
             tr(f"Admin sifresi sifirlandi.\n\n"
                f"Gecici sifre: {new_password}\n\n"
                f"Bu sifre sifre alanina otomatik yerlestirildi.\n"
-               f"Giris yaptiktan sonra sifrenizi degistirmelisiniz.")
+               f"Giris Yap butonuna tiklayarak giris yapabilirsiniz.")
         )
 
     def _toggle_password_visibility(self, checked):
