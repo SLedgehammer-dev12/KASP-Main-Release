@@ -83,10 +83,18 @@ class UserManagementDialog(QDialog):
             self._role_combo.addItems(["user", "engineer", "viewer", "admin"])
             self._role_combo.setCurrentText("user")
 
+            self._sec_question = QLineEdit()
+            self._sec_question.setPlaceholderText(tr("Orn: TC Kimlik No son 6 hanesi"))
+            self._sec_answer = QLineEdit()
+            self._sec_answer.setPlaceholderText(tr("Guvenlik sorusunun cevabi"))
+            self._sec_answer.setEchoMode(QLineEdit.Password)
+
             form.addRow(tr("Kullanici Adi:"), self._new_username)
             form.addRow(tr("Sifre:"), self._new_password)
             form.addRow(tr("Ad Soyad:"), self._new_fullname)
             form.addRow(tr("Rol:"), self._role_combo)
+            form.addRow(tr("Guvenlik Sorusu:"), self._sec_question)
+            form.addRow(tr("Guvenlik Cevabi:"), self._sec_answer)
             admin_layout.addLayout(form)
 
             btn_layout = QHBoxLayout()
@@ -136,12 +144,20 @@ class UserManagementDialog(QDialog):
         password = self._new_password.text()
         fullname = self._new_fullname.text().strip()
         role = self._role_combo.currentText()
+        sec_question = self._sec_question.text().strip()
+        sec_answer = self._sec_answer.text().strip()
 
         if not username:
             self._status_label.setText(tr("Kullanici adi zorunludur."))
             return
         if not password:
             self._status_label.setText(tr("Sifre zorunludur."))
+            return
+        if not sec_question:
+            self._status_label.setText(tr("Guvenlik sorusu zorunludur."))
+            return
+        if not sec_answer:
+            self._status_label.setText(tr("Guvenlik cevabi zorunludur."))
             return
 
         policy_err = validate_password_policy(password)
@@ -159,10 +175,16 @@ class UserManagementDialog(QDialog):
             self._status_label.setText(tr("Kullanici olusturulamadi."))
             return
 
+        self._db.update_user(user_id,
+                             security_question=sec_question,
+                             security_answer_hash=hash_password(sec_answer))
+
         self._status_label.setText(tr(f"'{username}' olusturuldu."))
         self._new_username.clear()
         self._new_password.clear()
         self._new_fullname.clear()
+        self._sec_question.clear()
+        self._sec_answer.clear()
         self._load_users()
 
     def _reset_selected_password(self):

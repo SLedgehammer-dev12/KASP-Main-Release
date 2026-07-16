@@ -183,6 +183,28 @@ def main():
             if admin_user and admin_user.get("id"):
                 db.update_user(admin_user["id"], must_change_password=1)
                 logger.info(f"Admin (id={admin_user['id']}) must_change_password=1")
+
+                from PyQt5.QtWidgets import QInputDialog, QLineEdit
+                sec_question, ok1 = QInputDialog.getText(
+                    None, "Guvenlik Sorusu",
+                    "Admin hesabi icin bir guvenlik sorusu belirleyin.\n"
+                    "Ornek: TC Kimlik No son 6 hanesi, Dogum tarihi (GGAAYY), vb.\n\n"
+                    "Guvenlik Sorusu:"
+                )
+                if ok1 and sec_question.strip():
+                    sec_answer, ok2 = QInputDialog.getText(
+                        None, "Guvenlik Cevabi",
+                        f"Soru: {sec_question.strip()}\n\nCevabiniz:",
+                        QLineEdit.Password
+                    )
+                    if ok2 and sec_answer.strip():
+                        db.update_user(
+                            admin_user["id"],
+                            security_question=sec_question.strip(),
+                            security_answer_hash=hash_password(sec_answer.strip()),
+                        )
+                        logger.info("Admin guvenlik sorusu kaydedildi.")
+
             _show_admin_password_dialog(admin_password)
 
         from kasp.ui.login_dialog import LoginDialog

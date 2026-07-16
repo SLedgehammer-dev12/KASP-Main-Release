@@ -18,10 +18,11 @@ from PyQt5.QtWidgets import (
 from kasp.security import (
     LOCKOUT_LEVELS,
     check_lockout,
-    get_lockout_remaining,
     generate_initial_admin_password,
+    get_lockout_remaining,
     hash_password,
     record_attempt,
+    verify_password,
 )
 from kasp.i18n import tr
 
@@ -34,8 +35,6 @@ class LoginDialog(QDialog):
         self._user_manager = user_manager
         self._remaining_lockout = get_lockout_remaining()
         self._lockout_timer = None
-        self._forgot_clicks = 0
-        self._forgot_first_click_time = 0.0
         self._setup_ui()
         self._update_lockout_state()
 
@@ -102,58 +101,53 @@ class LoginDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _forgot_password(self):
-        import time as _time
-        now = _time.time()
-
-        if self._forgot_first_click_time == 0:
-            self._forgot_first_click_time = now
-        self._forgot_clicks += 1
-
-        if self._forgot_clicks == 1:
-            QMessageBox.warning(
-                self, tr("Guvenlik Kontrolu"),
-                tr("Sifre sifirlama icin guvenlik amaciyla bekleme suresi uygulanir.\n\n"
-                   "Lutfen 15 saniye sonra tekrar 'Sifremi Unuttum' butonuna tiklayin.")
-            )
-            return
-
-        elapsed = now - self._forgot_first_click_time
-        if elapsed < 15:
-            remaining = int(15 - elapsed)
-            QMessageBox.warning(
-                self, tr("Bekleyin"),
-                tr(f"Guvenlik kontrolu: {remaining} saniye daha bekleyin.")
-            )
-            return
-
-        self._forgot_clicks = 0
-        self._forgot_first_click_time = 0
-        username = self._username_edit.text().strip().lower()
-        if username != "admin":
-            QMessageBox.warning(
-                self, tr("Bilgi"),
-                tr("Sadece admin kullanicisi icin sifre sifirlama yapilabilir.\n"
-                   "Admin sifrenizi unuttuysaniz kullanici adi olarak 'admin' yazip tekrar deneyin.")
-            )
-            return
+        username = self._username_edit.text().strip()
 
         db = self._user_manager.db
-        admin_user = db.get_user_by_username("admin")
-        if not admin_user:
-            QMessageBox.critical(self, tr("Hata"), tr("Admin kullanicisi bulunamadi."))
+        user = db.get_user_by_username(username) if username else None
+        if not user:
+            QMessageBox.warning(
+                self, tr("Bilgi"),
+                tr("Sifre sifirlama icin once kullanici adinizi yazip\n"
+                   "'Sifremi Unuttum' butonuna tiklayin.")
+            )
             return
 
-        admin_id = admin_user.get("id")
-        if not admin_id:
-            QMessageBox.critical(self, tr("Hata"), tr("Admin kullanici ID'si alinamadi."))
+        sec_question = user.get("security_question", "")
+        sec_answer_hash = user.get("security_answer_hash", "")
+        if not sec_question or not sec_answer_hash:
+            QMessageBox.warning(
+                self, tr("Guvenlik Sorusu Yok"),
+                tr(f"'{username}' kullanicisi icin guvenlik sorusu tanimlanmamis.\n\n"
+                   "Sifre sifirlama icin admin kullanicisiyla Kullanici Yonetimi'ne\ngiris yapip guvenlik sorusu tanimlayin.")
+            )
+            return
+
+        from PyQt5.QtWidgets import QInputDialog
+        answer, ok = QInputDialog.getText(
+            self, tr("Guvenlik Sorusu"),
+            tr(f"Guvenlik Sorusu: {sec_question}\n\nCevabiniz:"),
+            QLineEdit.Password
+        )
+        if not ok or not answer:
+            return
+
+        if not verify_password(answer.strip(), sec_answer_hash):
+            QMessageBox.warning(
+                self, tr("Hatali Cevap"),
+                tr("Guvenlik sorusunun cevabi yanlis.\nSifre sifirlama iptal edildi.")
+            )
+            return
+
+        user_id = user.get("id")
+        if not user_id:
+            QMessageBox.critical(self, tr("Hata"), tr("Kullanici ID'si alinamadi."))
             return
 
         reply = QMessageBox.question(
-            self, tr("Admin Sifre Sifirlama"),
-            tr("Admin sifresi sifirlanacak ve yeni bir gecici sifre olusturulacak.\n\n"
-               "Devam etmek istiyor musunuz?"),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
+            self, tr("Sifre Sifirlama"),
+            tr(f"'{username}' kullanicisinin sifresi sifirlanacak.\n\nDevam et?"),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
@@ -161,33 +155,23 @@ class LoginDialog(QDialog):
         new_password = generate_initial_admin_password()
         new_hash = hash_password(new_password)
 
-        ok = db.update_user(admin_id, password_hash=new_hash,
+        ok = db.update_user(user_id, password_hash=new_hash,
                             must_change_password=1, is_active=1)
         if not ok:
-            QMessageBox.critical(
-                self, tr("Hata"),
-                tr(f"Sifre guncellenemedi. Veritabani hatasi olabilir.\n"
-                   f"Admin ID: {admin_id}")
-            )
+            QMessageBox.critical(self, tr("Hata"), tr("Sifre guncellenemedi."))
             return
 
-        verified = self._user_manager.authenticate("admin", new_password)
+        verified = self._user_manager.authenticate(username, new_password)
         if verified is None:
-            QMessageBox.critical(
-                self, tr("Hata"),
-                tr("Sifre olusturuldu ancak dogrulama basarisiz.\n"
-                   "Lutfen programi yeniden baslatin.")
-            )
+            QMessageBox.critical(self, tr("Hata"), tr("Sifre dogrulanamadi."))
             return
 
         self._password_edit.setText(new_password)
         self._password_edit.setFocus()
         QMessageBox.information(
-            self, tr("Yeni Sifre"),
-            tr(f"Admin sifresi sifirlandi.\n\n"
-               f"Gecici sifre: {new_password}\n\n"
-               f"Bu sifre sifre alanina otomatik yerlestirildi.\n"
-               f"Giris Yap butonuna tiklayarak giris yapabilirsiniz.")
+            self, tr("Sifre Sifirlandi"),
+            tr(f"'{username}' icin gecici sifre: {new_password}\n\n"
+               "Sifre alanina otomatik yerlestirildi.\nGiris Yap butonuna tiklayin.")
         )
 
     def _open_user_management(self):

@@ -26,6 +26,7 @@ ALLOWED_COLUMN_TYPES = {
     "REAL DEFAULT 0", "REAL DEFAULT 10.0", "REAL DEFAULT 1000",
     "TEXT DEFAULT 'Natural Gas'", 'TEXT DEFAULT "Natural Gas"',
     "INTEGER DEFAULT 0",
+    "TEXT DEFAULT ''", "TEXT",
 }
 
 
@@ -294,7 +295,8 @@ class UserRepository(_BaseRepository):
             return None
 
     def update(self, user_id: int, **kwargs) -> bool:
-        allowed = {"role", "full_name", "email", "is_active", "password_hash", "must_change_password"}
+        allowed = {"role", "full_name", "email", "is_active", "password_hash",
+                    "must_change_password", "security_question", "security_answer_hash"}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False
@@ -389,6 +391,8 @@ class DatabaseMigrator:
         self._add_column_if_not_exists('Turbines', 'max_flow_kgs', 'REAL DEFAULT 1000')
         self._add_column_if_not_exists('Turbines', 'fuel_type', 'TEXT DEFAULT "Natural Gas"')
         self._add_column_if_not_exists('Users', 'must_change_password', 'INTEGER DEFAULT 0')
+        self._add_column_if_not_exists('Users', 'security_question', "TEXT DEFAULT ''")
+        self._add_column_if_not_exists('Users', 'security_answer_hash', "TEXT DEFAULT ''")
         self.logger.info("VT Şema Güncellemesi Tamamlandı.")
 
 
