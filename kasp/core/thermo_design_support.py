@@ -40,6 +40,10 @@ def build_stage_result(
     method_history,
     fallback_used=False,
     fallback_sources=None,
+    power_consistency_check_kw=0.0,
+    compressor_selectable=True,
+    selection_warnings=None,
+    analysis_scope="IN_SCOPE",
 ):
     return {
         "stage": stage,
@@ -53,10 +57,14 @@ def build_stage_result(
         "poly_eff": poly_eff_design,
         "power_gas_kw": power_gas_kw,
         "delta_h_kj_kg": delta_h_kj_kg,
+        "power_consistency_check_kw": power_consistency_check_kw,
         "z_avg": z_avg,
         "method_history": method_history,
         "fallback_used": bool(fallback_used),
         "fallback_sources": list(fallback_sources or []),
+        "compressor_selectable": bool(compressor_selectable),
+        "selection_warnings": list(selection_warnings or []),
+        "analysis_scope": analysis_scope,
     }
 
 
@@ -129,6 +137,15 @@ def build_design_results_payload(
         warnings.append(
             f"Hesaplama metodu tum kademelerde yakinsamadi; son tahmin kullanildi. Kademeler: {failed_stages}."
         )
+    # Ağır C6+ / düşük verim seçilebilirlik kontrolü
+    not_selectable_stages = [s for s in staged_results if not s.get("compressor_selectable", True)]
+    overall_selectable = len(not_selectable_stages) == 0
+    overall_scope = "NOT_SELECTABLE" if not overall_selectable else "IN_SCOPE"
+    if not_selectable_stages:
+        for st in not_selectable_stages:
+            sw = "; ".join(st.get("selection_warnings", []))
+            warnings.append(f"Kademe {st.get('stage')}: Kompresör seçilemez - {sw} (T_in artışı veya farklı akışkan önerilir)")
+        warnings.append("Ağır C6+ hidrokarbonlarda düşük sıcaklık + yüksek PR kombinasyonu faz zarfına yakın - proses şartları gözden geçirilmeli")
     return {
         "t_out": final_t_out_k - 273.15,
         "head_kj_kg": total_poly_head_kj_kg,
@@ -162,6 +179,9 @@ def build_design_results_payload(
         "method_converged": method_converged,
         "calculation_method": method,
         "warnings": warnings,
+        "compressor_selectable": overall_selectable,
+        "analysis_scope": overall_scope,
+        "not_selectable_stages": [s.get("stage") for s in not_selectable_stages],
         "fallback_used": False,
         "fallback_call_count": 0,
         "fallback_state_count": 0,

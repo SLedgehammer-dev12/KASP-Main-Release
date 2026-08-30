@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class GasMixtureBuilder:
-    """Build gas mixture payloads for CoolProp and Thermo backends."""
+    """Build gas mixture payloads for CoolProp, Thermo, and NeqSim backends."""
 
     THERMO_ID_MAP = {
         "METHANE": "methane",
@@ -31,6 +31,33 @@ class GasMixtureBuilder:
         "HYDROGENSULFIDE": "hydrogen sulfide",
         "NITROGEN": "nitrogen",
         "CARBONDIOXIDE": "carbon dioxide",
+        "WATER": "water",
+        "OXYGEN": "oxygen",
+        "ARGON": "argon",
+        "HELIUM": "helium",
+        "NEON": "neon",
+        "KRYPTON": "krypton",
+        "XENON": "xenon",
+        "AIR": "air",
+    }
+
+    NEQSIM_COMPONENT_MAP = {
+        "METHANE": "methane",
+        "ETHANE": "ethane",
+        "PROPANE": "propane",
+        "ISOBUTANE": "i-butane",
+        "BUTANE": "n-butane",
+        "ISOPENTANE": "i-pentane",
+        "PENTANE": "n-pentane",
+        "HEXANE": "n-hexane",
+        "HEPTANE": "n-heptane",
+        "OCTANE": "n-octane",
+        "NONANE": "n-nonane",
+        "DECANE": "n-decane",
+        "HYDROGEN": "hydrogen",
+        "HYDROGENSULFIDE": "H2S",
+        "NITROGEN": "nitrogen",
+        "CARBONDIOXIDE": "CO2",
         "WATER": "water",
         "OXYGEN": "oxygen",
         "ARGON": "argon",
@@ -164,3 +191,33 @@ class GasMixtureBuilder:
             "mol_fractions": mol_fractions,
             "MW": mixture_mw,
         }
+
+    @staticmethod
+    def build_neqsim_input(composition_fraction: dict[str, float]) -> dict[str, float]:
+        """
+        NeqSim için gaz karışımı girişi oluşturur.
+        NeqSim bileşen isimlerini kullanır (örn: 'methane', 'i-butane', 'CO2', 'H2S').
+        Mole fraksiyonları döndürür (toplam = 1.0).
+        """
+        neqsim_comp: dict[str, float] = {}
+        total_frac = 0.0
+
+        for component, fraction in composition_fraction.items():
+            if fraction <= 1e-12:
+                continue
+            neqsim_name = GasMixtureBuilder.NEQSIM_COMPONENT_MAP.get(component)
+            if neqsim_name is None:
+                logger.warning("NeqSim bileşen eşlemesi bulunamadı: '%s', atlanıyor.", component)
+                continue
+            neqsim_comp[neqsim_name] = neqsim_comp.get(neqsim_name, 0.0) + fraction
+            total_frac += fraction
+
+        if not neqsim_comp:
+            raise FluidPropertyError("NeqSim için geçerli gaz bileşeni bulunamadı")
+
+        # Normalize to sum = 1.0
+        if abs(total_frac - 1.0) > 1e-9:
+            for k in neqsim_comp:
+                neqsim_comp[k] /= total_frac
+
+        return neqsim_comp

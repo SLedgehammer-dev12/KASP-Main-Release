@@ -217,15 +217,24 @@ class ThermoMethodSuite:
             except Exception as error:
                 raise RuntimeError(f"Çıkış özellikleri hesaplanamadı (Metot 2, iter {iteration}): {error}")
 
-            n_minus_1_over_n = (k2 - 1) / (k2 * poly_eff)
+            # k ve poly_eff sınırla - eff 0 olmamalı
+            k2_clamped = max(1.15, min(1.8, float(k2) if math.isfinite(k2) else 1.4))
+            poly_eff_clamped = max(0.3, min(0.99, float(poly_eff) if math.isfinite(poly_eff) else 0.75))
+            n_minus_1_over_n = (k2_clamped - 1) / (k2_clamped * poly_eff_clamped)
             if abs(n_minus_1_over_n) < 1e-10:
                 history["termination_reason"] = "near_zero_exponent"
                 break
+            # n fiziksel aralık kontrolü (tipik 0.1-0.35)
+            n_minus_1_over_n = max(0.05, min(0.45, n_minus_1_over_n))
 
             t2_new = t_in * (p_out / p_in) ** n_minus_1_over_n
+            if not math.isfinite(t2_new) or t2_new <= 0:
+                t2_new = t_in * 1.2
             t2_guess = t2_old + 0.8 * (t2_new - t2_old)
             if t2_guess <= t_in:
                 t2_guess = t_in * 1.01
+            # Fiziksel üst sınır (PR<=8 için T_out < T_in*2.8)
+            t2_guess = min(t2_guess, t_in * 2.8)
 
             history["pressure"].append(p_out)
             history["temperature"].append(t2_guess)
@@ -438,7 +447,12 @@ class ThermoMethodSuite:
                 delta_t = -d_h / d_h_d_t
                 delta_t = max(-50.0, min(50.0, delta_t))
                 t2_guess = t2_guess + 0.8 * delta_t
-                t2_guess = max(t_in * 1.001, min(t_in * 5.0, t2_guess))
+                # Fiziksel sınır: T_out en fazla T_in * 2.8 (PR<=8 için bile yeterli), en az T_in*1.005
+                t2_guess = max(t_in * 1.005, min(t_in * 2.8, t2_guess))
+                # Ek güvenlik: Cp nan veya k anormal ise clamp daha dar
+                if not math.isfinite(t2_guess):
+                    t2_guess = t_in * (1.0 + (1.0 - poly_eff) * 0.3)
+                    t2_guess = max(t_in * 1.005, min(t_in * 2.8, t2_guess))
 
             else:
                 self.logger.warning(
@@ -523,6 +537,20 @@ class ThermoMethodSuite:
             history["phase_boundary_warning"] = True
             history["t_out_kbased_ref"] = t_out_kbased
             history["deviation_pct"] = deviation_pct
+            if deviation_pct > 50.0:
+                self.logger.warning("⚠️ Metot 4 sapması %50'yi aştı, yakınsama güvenilmez kabul ediliyor - M1 fallback tetiklenecek.")
+                history["converged"] = False
+                history["termination_reason"] = f"excessive_deviation_{deviation_pct:.1f}pct"
+                hs_converged = False
+
+        # Son güvenlik: eff >1 veya t_out fizik dışı ise converge false
+        if eta_isen > 0.99 or t2_guess > t_in * 2.8 or not math.isfinite(t2_guess):
+            self.logger.warning(f"⚠️ Metot 4 fizik dışı sonuç (η={eta_isen:.3f}, T={t2_guess:.1f}K) - M1 fallback")
+            history["converged"] = False
+            history["termination_reason"] = "unphysical_result"
+            hs_converged = False
+        else:
+            history["converged"] = hs_converged
 
         return t2_guess, poly_head, z_avg, history
 

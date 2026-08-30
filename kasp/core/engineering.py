@@ -5,7 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-ALL_EOS_METHODS = ["coolprop", "thermopack", "pr", "srk", "aga8", "ccp", "dwsim"]
+ALL_EOS_METHODS = ["coolprop", "thermopack", "pr", "srk", "aga8", "ccp", "dwsim", "neqsim"]
 ALL_EOS_LABELS = {
     "coolprop": "CoolProp (HEOS)",
     "thermopack": "SINTEF thermopack",
@@ -14,6 +14,7 @@ ALL_EOS_LABELS = {
     "aga8": "AGA8-DC92",
     "ccp": "Petrobras ccp",
     "dwsim": "DWSIM",
+    "neqsim": "NeqSim (CPA/SRK/PR)",
 }
 METHOD_NAMES = {
     "Metot 1: Ortalama Özellikler": "Ortalama Özellikler",

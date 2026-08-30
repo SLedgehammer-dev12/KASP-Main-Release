@@ -1,8 +1,22 @@
 from dataclasses import dataclass, field
 import logging
+import re
 from kasp.security import hash_password, verify_password
 
 logger = logging.getLogger(__name__)
+
+
+def validate_password_policy(password: str) -> str | None:
+    """Şifre politikasını doğrular. Hata mesajı dönerse geçersizdir, None ise geçerlidir."""
+    if len(password) < 8:
+        return "Şifre en az 8 karakter olmalıdır."
+    if not re.search(r"[A-Z]", password):
+        return "Şifre en az bir büyük harf içermelidir."
+    if not re.search(r"[a-z]", password):
+        return "Şifre en az bir küçük harf içermelidir."
+    if not re.search(r"\d", password):
+        return "Şifre en az bir rakam içermelidir."
+    return None
 
 
 @dataclass
@@ -56,8 +70,9 @@ class UserManager:
     def create_user(self, username, password, role="user", full_name="", email=""):
         if not username or not password:
             return None, "Kullanici adi ve sifre zorunludur."
-        if len(password) < 4:
-            return None, "Sifre en az 4 karakter olmalidir."
+        pw_error = validate_password_policy(password)
+        if pw_error:
+            return None, pw_error
         if self.db.get_user_by_username(username):
             return None, f"'{username}' kullanici adi zaten kayitli."
         password_hash = hash_password(password)
@@ -87,14 +102,16 @@ class UserManager:
             return False, "Kullanici bulunamadi."
         if not verify_password(old_password, target["password_hash"]):
             return False, "Mevcut sifre yanlis."
-        if len(new_password) < 4:
-            return False, "Yeni sifre en az 4 karakter olmalidir."
+        pw_error = validate_password_policy(new_password)
+        if pw_error:
+            return False, pw_error
         new_hash = hash_password(new_password)
         return self.db.update_user(user_id, password_hash=new_hash), None
 
     def admin_reset_password(self, user_id, new_password):
-        if len(new_password) < 4:
-            return False, "Yeni şifre en az 4 karakter olmalidir."
+        pw_error = validate_password_policy(new_password)
+        if pw_error:
+            return False, pw_error
         new_hash = hash_password(new_password)
         ok = self.db.update_user(user_id, password_hash=new_hash, must_change_password=1)
         return ok, (None if ok else "Şifre sıfırlanamadı.")

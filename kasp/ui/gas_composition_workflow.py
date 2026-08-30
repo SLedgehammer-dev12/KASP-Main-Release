@@ -65,6 +65,57 @@ def build_total_label_state(total):
     )
 
 
+def get_smart_eos_recommendation(gas_comp: dict) -> str:
+    """
+    Gaz kompozisyonuna göre en uygun EoS motoru tavsiyesini belirler.
+    gas_comp: {"METHANE": 86.5, "ETHANE": 6.2, ...}
+    """
+    if not gas_comp:
+        return "💡 <b>EoS Önerisi:</b> Gaz kompozisyonu giriniz."
+
+    total_pct = sum(gas_comp.values())
+    if total_pct <= 0:
+        return "💡 <b>EoS Önerisi:</b> Gaz kompozisyonu giriniz."
+
+    norm_comp = {str(k).upper(): float(v) / total_pct * 100.0 for k, v in gas_comp.items()}
+
+    # 1. Saf akışkan kontrolü (tek bileşen >= %99)
+    if len(norm_comp) == 1 or max(norm_comp.values()) >= 99.0:
+        main_comp = max(norm_comp, key=norm_comp.get)
+        return f"💡 <b>Saf Akışkan ({main_comp}):</b> CoolProp (HEOS) en yüksek teorik hassasiyeti sağlar."
+
+    # 2. Polar / Nemli / Asit Gazı kontrolü
+    water_pct = norm_comp.get("WATER", 0.0) + norm_comp.get("H2O", 0.0)
+    h2s_pct = norm_comp.get("HYDROGENSULFIDE", 0.0) + norm_comp.get("H2S", 0.0)
+    co2_pct = norm_comp.get("CARBONDIOXIDE", 0.0) + norm_comp.get("CO2", 0.0)
+
+    if water_pct > 0.05 or h2s_pct > 0.5 or co2_pct > 5.0:
+        if water_pct > 0.05 or h2s_pct > 0.5:
+            return "💡 <b>Polar / Asit Gazı:</b> Su/H₂S içeren akışkanlar için <b>Equinor NeqSim (SRK-CPA)</b> önerilir."
+        else:
+            return f"💡 <b>Yüksek CO₂ (%{co2_pct:.1f}):</b> Asit gazı dengesi için <b>NeqSim (CPA)</b> veya <b>SINTEF thermopack</b> önerilir."
+
+    # 3. Zengin Hidrokarbon / Ağır Fraksiyon kontrolü (C6+ > 0.25% veya C3+ > 10% veya Methane < 85%)
+    heavy_c6 = (
+        norm_comp.get("HEXANE", 0.0) +
+        norm_comp.get("HEPTANE", 0.0) +
+        norm_comp.get("OCTANE", 0.0) +
+        norm_comp.get("NONANE", 0.0) +
+        norm_comp.get("DECANE", 0.0)
+    )
+    c3_plus = sum(
+        v for k, v in norm_comp.items()
+        if k in ["PROPANE", "ISOBUTANE", "BUTANE", "ISOPENTANE", "PENTANE", "HEXANE", "HEPTANE", "OCTANE", "NONANE", "DECANE"]
+    )
+    methane_pct = norm_comp.get("METHANE", 0.0)
+
+    if heavy_c6 > 0.25 or c3_plus > 10.0 or methane_pct < 85.0:
+        return "💡 <b>Zengin Gaz (C1–C6+):</b> VLE kararlılığı ve hız için <b>SINTEF thermopack</b> veya <b>Peng-Robinson</b> önerilir."
+
+    # 4. Kuru Boru Hattı Satış Gazı (Methane >= 85%, C6+ <= 0.25%)
+    return "💡 <b>Kuru Satış Gazı:</b> <b>SINTEF thermopack (PR)</b>, <b>CoolProp</b> veya <b>AGA8-DC92</b> uygundur."
+
+
 def extract_gas_composition(entries, display_to_key):
     """Build a component->percentage dict from UI table entries."""
     gas_comp = {}
@@ -160,14 +211,20 @@ class GasCompositionController:
 
     def update_total_label(self, *_args):
         try:
-            total = sum(self.get_gas_composition().values())
+            gas_comp = self.get_gas_composition()
+            total = sum(gas_comp.values())
             text, state = build_total_label_state(total)
             self.window.comp_total_label.setText(text)
             self.window.comp_total_label.setProperty("compTotalState", state)
             self.window.comp_total_label.style().unpolish(self.window.comp_total_label)
             self.window.comp_total_label.style().polish(self.window.comp_total_label)
+
+            # Dinamik Akıllı EoS Tavsiye Rozetini Güncelle
+            if hasattr(self.window, "eos_recommendation_badge") and self.window.eos_recommendation_badge is not None:
+                rec_text = get_smart_eos_recommendation(gas_comp)
+                self.window.eos_recommendation_badge.setText(rec_text)
         except Exception as exc:
-            self.window.logger.warning(f"Kompozisyon toplamı güncellenemedi: {exc}")
+            self.window.logger.warning(f"Kompozisyon toplamı veya EoS tavsiyesi güncellenemedi: {exc}")
 
     def normalize_composition(self):
         _, _, QMessageBox, QTableWidgetItem = self._qt_widgets()

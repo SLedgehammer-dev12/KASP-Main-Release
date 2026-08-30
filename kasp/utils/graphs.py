@@ -307,10 +307,11 @@ class GraphGenerator:
                     # Politropik ilişki: P * v^n = sabit
                     poly_eff_frac = inputs['poly_eff'] / 100.0
                     n_minus_1_over_n = (props_in.k - 1) / (props_in.k * poly_eff_frac)
-                    n = 1 / (1 - n_minus_1_over_n) if abs(n_minus_1_over_n) > 1e-6 else props_in.k 
+                    n = 1 / (1 - n_minus_1_over_n) if abs(n_minus_1_over_n) > 1e-6 else props_in.k
                     v = v_in * (p_in_pa / p) ** (1/n)
                     volumes.append(v)
-                except:
+                except Exception as e:
+                    logger.debug("Polytropic volume calc failed at P=%.1f: %s", p, e)
                     volumes.append(np.nan)
             
             # İzentropik proses eğrisi
@@ -320,7 +321,8 @@ class GraphGenerator:
                     # İzentropik ilişki: P * v^k = sabit
                     v = v_in * (p_in_pa / p) ** (1/props_in.k)
                     volumes_isen.append(v)
-                except:
+                except Exception as e:
+                    logger.debug("Isentropic volume calc failed at P=%.1f: %s", p, e)
                     volumes_isen.append(np.nan)
             
             # Grafik çizimi
@@ -493,10 +495,10 @@ class GraphGenerator:
             power_shaft = results.get('power_shaft_per_unit_kw', 0)
             power_unit = results.get('power_unit_kw', 0)
             
-            # Güç Kaybı = Şaft Gücü - Gaz Gücü (Polytropik kayıp)
-            poly_loss = power_shaft - power_gas
-            # Motor Elektriksel/Isıl Kayıp (Motor Gücü - Şaft Gücü)
-            mech_loss = power_unit - power_shaft
+            # Mekanik Kayıp = Şaft Gücü - Gaz Gücü (yatak, sızdırmazlık vb.)
+            mech_loss = power_shaft - power_gas
+            # Motor/İletim Kaybı = Motor Gücü - Şaft Gücü (elektriksel/ısıl)
+            motor_loss = power_unit - power_shaft
             
             if power_unit <= 0:
                 ax.text(0.5, 0.5, "Güç Hesaplaması Sıfır", 
@@ -505,11 +507,11 @@ class GraphGenerator:
                 return canvas
             
             # Veriler
-            sizes = [power_gas, poly_loss, mech_loss]
+            sizes = [power_gas, mech_loss, motor_loss]
             labels = [
                 f'Gaz Gücü (Faydalı)\n{power_gas:.0f} kW', 
-                f'Kompresör Kaybı (Termo)\n{poly_loss:.0f} kW',
-                f'Motor Kaybı (Mekanik/Isıl)\n{mech_loss:.0f} kW'
+                f'Mekanik Kayıp (Yatak/Sızdırmazlık)\n{mech_loss:.0f} kW',
+                f'Motor Kaybı (Elektriksel/Isıl)\n{motor_loss:.0f} kW'
             ]
             colors = ['#2ecc71', '#f1c40f', '#e74c3c']
             explode = (0.05, 0, 0) 

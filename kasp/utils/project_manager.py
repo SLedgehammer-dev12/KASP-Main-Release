@@ -8,10 +8,11 @@ import datetime
 import logging
 from pathlib import Path
 
+
 class ProjectManager:
     """Proje dosyalarını kaydetme ve yükleme yöneticisi"""
     
-    VERSION = "4.0"
+    VERSION = "4.1"
     
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -27,7 +28,7 @@ class ProjectManager:
         """
         try:
             project_data = {
-                'version': self.VERSION,
+                'schema_version': self.VERSION,
                 'timestamp': datetime.datetime.now().isoformat(),
                 'inputs': {
                     # Proje bilgileri
@@ -44,9 +45,11 @@ class ProjectManager:
                     'flow': inputs.get('flow', ''),
                     'flow_unit': inputs.get('flow_unit', 'Sm³/h'),
                     'num_units': inputs.get('num_units', 1),
+                    'num_stages': inputs.get('num_stages', 1),
                     
                     # Gaz kompozisyonu
                     'gas_comp': inputs.get('gas_comp', {}),
+                    'fuel_gas_comp': inputs.get('fuel_gas_comp', {}),
                     
                     # Hesaplama parametreleri
                     'eos_method': inputs.get('eos_method', 'coolprop'),
@@ -54,11 +57,19 @@ class ProjectManager:
                     'poly_eff': inputs.get('poly_eff', 90.0),
                     'therm_eff': inputs.get('therm_eff', 35.0),
                     'mech_eff': inputs.get('mech_eff', 98.0),
+                    'lhv_source': inputs.get('lhv_source', 'kasp'),
                     
                     # Tutarlılık modu ayarları
                     'use_consistency_iteration': inputs.get('use_consistency_iteration', False),
                     'max_consistency_iter': inputs.get('max_consistency_iter', 20),
                     'consistency_tolerance': inputs.get('consistency_tolerance', 0.1),
+                    
+                    # Ara soğutucu
+                    'intercooler_t': inputs.get('intercooler_t', 40.0),
+                    'intercooler_dp_pct': inputs.get('intercooler_dp_pct', 2.0),
+                    
+                    # Site düzeltmeleri
+                    'site_correction_inputs': inputs.get('site_correction_inputs', {}),
                     
                     # Site koşulları
                     'ambient_temp': inputs.get('ambient_temp', 15.0),
@@ -84,6 +95,32 @@ class ProjectManager:
             self.logger.error(f"Proje kaydetme hatası: {e}", exc_info=True)
             return False, str(e)
     
+    def _migrate_project_schema(self, project_data: dict) -> dict:
+        """Eski şema sürümlerini güncel sürüme yükseltir."""
+        schema_version = project_data.get('schema_version', project_data.get('version', '1.0'))
+        
+        # Schema version 1.x / 2.x / 3.x / 4.0 -> 4.1 migration
+        if schema_version != self.VERSION:
+            self.logger.info(f"Proje şeması yükseltiliyor: {schema_version} -> {self.VERSION}")
+            inputs = project_data.get('inputs', {})
+            
+            # Eksik alanları varsayılanlarla doldur
+            defaults = {
+                'num_stages': 1,
+                'intercooler_t': 40.0,
+                'intercooler_dp_pct': 2.0,
+                'lhv_source': 'kasp',
+                'fuel_gas_comp': {},
+                'site_correction_inputs': {},
+            }
+            for key, default_val in defaults.items():
+                if key not in inputs:
+                    inputs[key] = default_val
+            
+            project_data['schema_version'] = self.VERSION
+        
+        return project_data
+    
     def load_project(self, filepath):
         """
         Proje dosyasını yükler
@@ -103,12 +140,8 @@ class ProjectManager:
             with open(filepath, 'r', encoding='utf-8') as f:
                 project_data = json.load(f)
             
-            # Versiyon kontrolü
-            if project_data.get('version') != self.VERSION:
-                self.logger.warning(
-                    f"Farklı versiyon: {project_data.get('version')} "
-                    f"(Mevcut: {self.VERSION})"
-                )
+            # Şema migrasyonu
+            project_data = self._migrate_project_schema(project_data)
             
             inputs = project_data.get('inputs', {})
             results = project_data.get('results')

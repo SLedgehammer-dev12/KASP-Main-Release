@@ -52,10 +52,18 @@ if dwsim_dll_dir.exists():
             dwsim_binaries.append((str(dll_path), "."))
 
 try:
-    pythonnet_datas = collect_data_files("pythonnet")
-    all_datas.extend(pythonnet_datas)
+    certifi_datas = collect_data_files("certifi")
+    all_datas.extend(certifi_datas)
 except Exception:
     pass
+
+# NeqSim jar bundle
+neqsim_jar_dir = ROOT / "kasp" / "core" / "libs"
+neqsim_jar_path = neqsim_jar_dir / "neqsim.jar"
+if neqsim_jar_path.exists():
+    all_datas.append((str(neqsim_jar_path), "kasp/core/libs"))
+else:
+    print(f"⚠️ neqsim.jar bulunamadı: {neqsim_jar_path}. NeqSim çalışmayacaktır.")
 
 try:
     certifi_datas = collect_data_files("certifi")

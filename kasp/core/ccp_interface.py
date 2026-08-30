@@ -342,5 +342,6 @@ def _check_refprop_available() -> bool:
             EOS='REFPROP'
         )
         return True
-    except:
+    except Exception as e:
+        logger.debug("REFPROP availability check failed: %s", e)
         return False

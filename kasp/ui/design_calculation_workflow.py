@@ -152,7 +152,9 @@ class DesignCalculationController:
                 self.window.last_design_inputs.get("notes", ""),
             )
 
-        QMessageBox.information(self.window, "Başarılı", "✅ Tasarım hesaplaması başarıyla tamamlandı!")
+        # Modal yerine status bar mesajı
+        if hasattr(self.window, "statusBar"):
+            self.window.statusBar().showMessage("✅ Tasarım hesaplaması başarıyla tamamlandı!", 5000)
 
     def calculation_error(self, error_message):
         QMessageBox = self._message_box_factory()

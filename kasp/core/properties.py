@@ -64,6 +64,16 @@ class ThermodynamicSolver:
         # PR/thermo isi kapasitesi integral cache (performans)
         self._h_int_cache: dict = {}
 
+    @property
+    def _active_eos_chain(self):
+        if not hasattr(self._run_tracking, "active_eos_chain"):
+            return None
+        return self._run_tracking.active_eos_chain
+
+    @_active_eos_chain.setter
+    def _active_eos_chain(self, value):
+        self._run_tracking.active_eos_chain = value
+
     @staticmethod
     def _coerce_cache_size(value, default=2000):
         try:
@@ -128,7 +138,7 @@ class ThermodynamicSolver:
         - Z ≤ 0.3 → 'liquid'
         - raw_phase 'twophase' (CoolProp) → 'two-phase'
         """
-        if raw_phase in ("ideal_fallback", "ideal"):
+        if raw_phase in ("ideal_fallback", "ideal", "gas", "liquid", "supercritical", "two-phase"):
             return raw_phase
         if raw_phase == "twophase":
             return "two-phase"
@@ -244,6 +254,8 @@ class ThermodynamicSolver:
             return self._solve_ccp(P_pa, T_k, gas_obj)
         elif eos_method == 'dwsim':
             return self._solve_dwsim(P_pa, T_k, gas_obj)
+        elif eos_method == 'neqsim':
+            return self._solve_neqsim(P_pa, T_k, gas_obj)
         else:
             raise ValueError(f"Desteklenmeyen EOS: {eos_method}")
         
@@ -375,8 +387,8 @@ class ThermodynamicSolver:
                 AS = AbstractState("HEOS", mixture_string)
                 try:
                     AS.build_phase_envelope("")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Phase envelope build failed for %s: %s", mixture_string, e)
                 self._package_cache[mixture_string] = AS
             except ImportError:
                 self._package_cache[mixture_string] = None
@@ -513,6 +525,15 @@ class ThermodynamicSolver:
         H = (H_ig_molar + eos.H_dep_g) / molar_mass
         S = (S_ig_molar + eos.S_dep_g) / molar_mass
 
+        speed_of_sound = None
+        try:
+            if phase_str == 'liquid':
+                speed_of_sound = eos.speed_of_sound_l
+            else:
+                speed_of_sound = eos.speed_of_sound_g
+        except Exception as e:
+            logger.debug("Speed of sound not available: %s", e)
+
         return self._build_state(
             P_pa=P_pa,
             T_k=T_k,
@@ -526,6 +547,7 @@ class ThermodynamicSolver:
             density=D,
             phase=phase_str,
             fallback=False,
+            speed_of_sound=speed_of_sound,
         )
 
     def _solve_aga8(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
@@ -817,7 +839,21 @@ class ThermodynamicSolver:
         )
 
     def _solve_fallback(self, P_pa: float, T_k: float, gas_obj, eos: str) -> ThermodynamicState:
-        """Kütüphane başarısız olduğunda ideal gaz yaklaşımı."""
+        """Kütüphane başarısız olduğunda PR/SRK denenir, sonra ideal gaz yaklaşımı."""
+        # Önce PR ve SRK ile tekrar dene (fallback zincirinde)
+        for fallback_eos in ('pr', 'srk'):
+            try:
+                state = self._solve_thermo_eos(P_pa, T_k, gas_obj, fallback_eos)
+                state.raw_props['fallback'] = True
+                state.raw_props['fallback_layer'] = 'eos'
+                state.raw_props['fallback_from'] = eos
+                state.raw_props['fallback_to'] = fallback_eos
+                state.raw_props['fallback_type'] = 'pr_srk_fallback'
+                return state
+            except Exception:
+                pass
+
+        # PR/SRK da başarısız -> ideal gaz (son çare)
         mw_g_mol = self.infer_mw_g_mol(gas_obj)
         M_kg_mol = (mw_g_mol / 1000.0) if mw_g_mol else 0.02896
         
@@ -841,8 +877,8 @@ class ThermodynamicSolver:
                         if thermo_id:
                             ids.append(thermo_id)
                             zs.append(float(frac_str))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Gas object parsing failed: %s", e)
 
         # 2. Dinamik Ideal Cp Hesaplama
         Cp_ideal = 1000.0 # Güvenli taban
@@ -856,8 +892,8 @@ class ThermodynamicSolver:
                     zs[i] * properties.HeatCapacityGases[i](T_k) for i in range(len(zs))
                 )
                 Cp_ideal = Cp_ig_molar / M_kg_mol
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Thermo Cp calculation failed: %s", e)
                 
         # B) Thermo kurulu değilse veya başarısız olursa, 298.15K standart Cp değerleri üzerinden ağırlıklı ortalama + sıcaklık düzeltmesi
         if Cp_ideal == 1000.0 and ids and zs and len(ids) == len(zs):
@@ -883,8 +919,8 @@ class ThermodynamicSolver:
                 # 298.15K'den uzaklaştıkça ideal Cp artış faktörü
                 temp_factor = 1.0 + 0.001 * (T_k - 298.15)
                 Cp_ideal = (cp_molar_mix * temp_factor) / M_kg_mol
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Standard Cp calculation failed: %s", e)
 
         # C) Eğer her şey başarısız olursa eski doğrusal formül
         if Cp_ideal == 1000.0:
@@ -897,7 +933,7 @@ class ThermodynamicSolver:
         rho_ideal = P_pa / (R_specific * T_k * Z_ideal) if T_k > 0 and R_specific > 0 else 1.0
         
         H_ideal = Cp_ideal * (T_k - 298.15)
-        S_ideal = Cp_ideal * math.log(T_k / 273.15) if T_k > 0 else 0
+        S_ideal = Cp_ideal * math.log(T_k / 273.15) - R_specific * math.log(P_pa / STD_PRESS_PA) if T_k > 0 else 0
         
         return self._build_state(
             P_pa=P_pa,
@@ -953,8 +989,8 @@ class ThermodynamicSolver:
             try:
                 clr.AddReference("DWSIM.Thermodynamics.StandaloneLibrary")
                 loaded = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("DWSIM assembly reference failed: %s", e)
                 
             if not loaded:
                 for path in search_paths:
@@ -1125,6 +1161,189 @@ class ThermodynamicSolver:
             MW=MW_g_mol,
             Cp=cp_val,
             Cv=cv_val,
+            density=density,
+            phase=phase_str,
+            fallback=False,
+            speed_of_sound=speed_of_sound,
+            mu=mu_val
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NeqSim (Java/JVM) Köprüsü — Lazy Loading
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_neqsim(self) -> bool:
+        """NeqSim Java kütüphanesini yükler — PyInstaller bundle uyumlu."""
+        if hasattr(self, "_neqsim_loaded"):
+            return self._neqsim_loaded
+
+        self._neqsim_loaded = False
+        self._neqsim_jvm_started = False
+
+        try:
+            import jpype
+            import jpype.imports
+        except ImportError as e:
+            logger.debug("jpype1 yüklü değil: %s", e)
+            return False
+
+        try:
+            import sys
+            import os
+
+            # JVM zaten başlatılmış mı?
+            if not jpype.isJVMStarted():
+                jar_candidates = [
+                    os.path.join(getattr(sys, "_MEIPASS", ""), "neqsim.jar"),
+                    os.path.join(getattr(sys, "_MEIPASS", ""), "kasp", "core", "libs", "neqsim.jar"),
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs", "neqsim.jar"),
+                    os.path.join(os.path.abspath("."), "kasp", "core", "libs", "neqsim.jar"),
+                    os.path.join(os.path.abspath("."), "neqsim.jar"),
+                ]
+
+                jar_path = None
+                for candidate in jar_candidates:
+                    if candidate and os.path.exists(candidate):
+                        jar_path = candidate
+                        break
+
+                if jar_path is None:
+                    logger.debug("neqsim.jar bulunamadı, arama yolları: %s", jar_candidates)
+                    return False
+
+                # JVM argümanları - classpath kwarg sona gelmeli
+                jpype.startJVM(
+                    "-Xms128m",
+                    "-Xmx512m",
+                    "-Djava.awt.headless=true",
+                    classpath=[jar_path],
+                )
+                self._neqsim_jvm_started = True
+                logger.info("JVM NeqSim için başlatıldı: %s", jar_path)
+
+            # NeqSim sınıflarını jpype JClass ile yükle
+            self._neqsim_SystemSrkCPA = jpype.JClass("neqsim.thermo.system.SystemSrkCPA")
+            self._neqsim_SystemSrkEos = jpype.JClass("neqsim.thermo.system.SystemSrkEos")
+            self._neqsim_SystemPrEos = jpype.JClass("neqsim.thermo.system.SystemPrEos")
+            # PhaseInterface opsiyonel, JPackage ile doğrula
+            try:
+                self._neqsim_PhaseInterface = jpype.JClass("neqsim.thermo.phase.PhaseInterface")
+            except Exception:
+                self._neqsim_PhaseInterface = None
+
+            self._neqsim_loaded = True
+            logger.info("🎉 NeqSim (Java) başarıyla yüklendi!")
+            return True
+
+        except Exception as e:
+            logger.warning(f"⚠️ NeqSim yükleme hatası: {e}")
+            self._neqsim_loaded = False
+            return False
+
+    def _neqsim_available(self) -> bool:
+        """NeqSim kullanım için hazır mı?"""
+        if not hasattr(self, "_neqsim_loaded"):
+            return self._load_neqsim()
+        return self._neqsim_loaded
+
+    def _solve_neqsim(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
+        """NeqSim (CPA/SRK/PR) kullanarak özellikleri çözer."""
+        if not self._load_neqsim():
+            raise RuntimeError("NeqSim (Java/JVM) yüklenemedi. jpype1 ve neqsim.jar gereklidir.")
+
+        from kasp.core.mixture import GasMixtureBuilder
+
+        # NeqSim girdisi: gas_data zaten neqsim dict ise doğrudan kullan, yoksa çevir
+        if isinstance(gas_data, dict) and gas_data and all(k in GasMixtureBuilder.NEQSIM_COMPONENT_MAP.values() for k in gas_data.keys() if isinstance(k, str)):
+            # gas_data zaten {"methane": 0.9, ...} formunda
+            neqsim_comp = gas_data
+        elif isinstance(gas_data, dict) and "ids" in gas_data:
+            # thermo_data -> composition_fraction -> neqsim
+            from kasp.core.constants import normalize_component as _norm
+            # ids/mol_fractions -> canonical composition
+            ids = gas_data.get("ids", gas_data.get("IDs", []))
+            zs = gas_data.get("mol_fractions", gas_data.get("zs", []))
+            comp_frac = {}
+            reverse_map = {v.lower(): k for k, v in GasMixtureBuilder.THERMO_ID_MAP.items()}
+            for cid, z in zip(ids, zs):
+                canonical = reverse_map.get(str(cid).lower(), str(cid).upper())
+                comp_frac[canonical] = comp_frac.get(canonical, 0) + float(z)
+            neqsim_comp = GasMixtureBuilder.build_neqsim_input(comp_frac)
+        else:
+            neqsim_comp = GasMixtureBuilder.build_neqsim_input(gas_data)
+
+        # EOS seçimi: varsayılan SRK-CPA (polar bileşenler için), PR/SRK opsiyonel
+        eos_class = self._neqsim_SystemSrkCPA
+
+        system = eos_class(float(T_k), float(P_pa / 1e5))
+        for comp_name, mol_frac in neqsim_comp.items():
+            system.addComponent(comp_name, float(mol_frac))
+        try:
+            system.setMixingRule(2)
+        except Exception:
+            pass
+        system.init(0)
+        system.init(1)
+
+        # Gaz fazını seç (varsa), yoksa ilk faz
+        try:
+            nph = system.getNumberOfPhases()
+            phase = None
+            for i in range(nph):
+                p = system.getPhase(i)
+                if p.getPhaseTypeName().lower() in ("gas", "vapour", "vapor"):
+                    phase = p
+                    break
+            if phase is None:
+                phase = system.getPhase(0)
+        except Exception:
+            phase = system.getPhase(0)
+
+        molar_mass = float(phase.getMolarMass())  # kg/mol
+        # NeqSim: getEnthalpy/getEntropy/getCp molar (J/mol) -> mass basis
+        H_molar = float(phase.getEnthalpy())
+        S_molar = float(phase.getEntropy())
+        Cp_molar = float(phase.getCp())
+        Cv_molar = float(phase.getCv())
+        # mass basis
+        H = H_molar / molar_mass if molar_mass > 0 else H_molar * 1000.0
+        S = S_molar / molar_mass if molar_mass > 0 else S_molar * 1000.0
+        Cp = Cp_molar / molar_mass if molar_mass > 0 else Cp_molar
+        Cv = Cv_molar / molar_mass if molar_mass > 0 else Cv_molar
+
+        density = float(phase.getDensity())
+        Z = float(phase.getZ())
+        MW = molar_mass * 1000.0  # g/mol
+        k = Cp / Cv if Cv > 0 else 1.4
+        try:
+            speed_of_sound = float(phase.getSpeedOfSound())
+        except Exception:
+            speed_of_sound = self._speed_of_sound(k, P_pa, max(density, 0.1))
+        try:
+            mu_val = float(phase.getViscosity())
+        except Exception:
+            mu_val = 1.1e-5
+
+        phase_str = 'gas'
+        try:
+            pt = phase.getPhaseTypeName().lower()
+            if "oil" in pt or "liquid" in pt:
+                phase_str = 'liquid'
+            elif "gas" in pt or "vapor" in pt:
+                phase_str = 'gas'
+        except Exception:
+            pass
+
+        return self._build_state(
+            P_pa=P_pa,
+            T_k=T_k,
+            H=H,
+            S=S,
+            Z=Z,
+            k=k,
+            MW=MW,
+            Cp=Cp,
+            Cv=Cv,
             density=density,
             phase=phase_str,
             fallback=False,

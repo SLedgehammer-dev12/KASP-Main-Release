@@ -154,7 +154,10 @@ def main():
         user_manager = UserManager(db)
 
         # İlk çalıştırma: Varsayılan admin oluştur
-        db.create_default_admin(hash_password(DEFAULT_PASSWORD))
+        default_pw_hash = hash_password(DEFAULT_PASSWORD)
+        db.create_default_admin(default_pw_hash)
+        # Mevcut kurulumlarda admin hala varsayılan parolaysa şifre değiştirme zorunlu kıl
+        db.ensure_default_admin_must_change_password(default_pw_hash)
 
         from kasp.ui.login_dialog import LoginDialog
         login = LoginDialog(user_manager)

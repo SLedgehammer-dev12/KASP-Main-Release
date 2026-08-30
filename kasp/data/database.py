@@ -455,13 +455,26 @@ class UnitDatabase:
         try:
             cursor = self.get_cursor()
             cursor.execute("""
-                INSERT INTO Users (username, password_hash, role, full_name)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO Users (username, password_hash, role, full_name, must_change_password)
+                VALUES (?, ?, ?, ?, 1)
             """, ("admin", password_hash, "admin", "System Admin"))
             self.get_connection().commit()
-            self.logger.info("Varsayılan admin kullanıcısı oluşturuldu.")
+            self.logger.info("Varsayılan admin kullanıcısı oluşturuldu (şifre değiştirme zorunlu).")
         except sqlite3.Error as e:
             self.logger.error(f"Admin oluşturma hatası: {e}")
+
+    def ensure_default_admin_must_change_password(self, default_password_hash):
+        """Mevcut admin'in parolası varsayılanysa must_change_password=1 yap."""
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT password_hash, must_change_password FROM Users WHERE username = 'admin'")
+            row = cursor.fetchone()
+            if row and row["password_hash"] == default_password_hash and not row["must_change_password"]:
+                cursor.execute("UPDATE Users SET must_change_password = 1 WHERE username = 'admin'")
+                self.get_connection().commit()
+                self.logger.info("Mevcut admin kullanıcısı için şifre değiştirme zorunlu hale getirildi.")
+        except sqlite3.Error as e:
+            self.logger.error(f"Admin şifre politikası güncelleme hatası: {e}")
 
     def get_user_by_username(self, username):
         try:

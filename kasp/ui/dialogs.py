@@ -401,22 +401,22 @@ class ThermodynamicsHandbookDialog(QDialog):
         <!-- ================= TURKISH SECTION ================= -->
         <div class="lang-section">
             <h1>🇹🇷 KASP Termodinamik Kılavuzu & El Kitabı</h1>
-            <p>KASP uygulaması, kompresör tasarım hesaplamalarını en yüksek bilimsel ve endüstriyel hassasiyetle (ASME PTC 10, API 617) çözmek üzere tasarlanmıştır. Bu kılavuz, arka planda koşan karmaşık termodinamik ve aerodinamik adımları anlaşılır hale getirmek için hazırlanmıştır.</p>
+            <p>KASP uygulaması, kompresör tasarım hesaplamalarını en yüksek bilimsel ve endüstriyel hassasiyetle (ASME PTC 10, API 617) çözmek üzere tasarlanmıştır. Bu kılavuz, arka planda koşan karmaşık termodinamik ve aerodinamik adımları anlaşılır hale getirmek ve doğru işletme şartlarında en uygun durum denklemini (EoS) seçmenizi sağlamak için hazırlanmıştır.</p>
 
             <div class="info-box">
                 <b>💡 Altın Kural:</b> Kompresör hesaplama zinciri iki bağımsız seviyede çalışır:
                 <ol>
-                    <li><b>Durum-Seviyesi Çözücü (State EoS Solver):</b> Tekil noktalarda kök bulma.</li>
-                    <li><b>Yol-Seviyesi Sıkıştırma Yordamı (Compression Path Method):</b> Emişten çıkışa integrasyon yolu.</li>
+                    <li><b>Durum-Seviyesi Çözücü (State EoS Solver):</b> Tekil noktalarda (P, T) termodinamik özelliklerin (Z, ρ, H, S, Cp, Cv, a, μ) çözülmesi.</li>
+                    <li><b>Yol-Seviyesi Sıkıştırma Yordamı (Compression Path Method):</b> Emişten basma basıncına kadar politropik eğrinin (∫ V dP) integre edilmesi.</li>
                 </ol>
             </div>
 
             <h2>1. Durum-Seviyesi EoS Çözücüler (State Model)</h2>
             <p>Bu seviye, gazın belirli bir basınç (P) ve sıcaklıkta (T) yoğunluk, sıkıştırılabilirlik faktörü (Z), entalpi (H), entropi (S) gibi tüm fiziksel özelliklerini belirleyen termodinamik teorileri barındırır. Kübik hal denklemleri, matematiksel olarak birer <b>kök bulma (root solving)</b> problemidir:</p>
             <pre>Z³ - (1-B)Z² + (A - 3B² - 2B)Z - (AB - B² - B³) = 0</pre>
-            <p>Bu 3. dereceden kübik polinom çözüldüğünde en fazla 3 gerçel kök çıkabilir. EoS Çözücü, termodinamik kurallara (Gibbs serbest enerjisine) göre gaz fazına ait en büyük gerçel kökü veya sıvı fazına ait en küçük gerçel kökü seçen sayısal bir algoritmadır.</p>
+            <p>Bu 3. dereceden kübik polinom çözüldüğünde en fazla 3 gerçel kök çıkabilir. EoS Çözücü, Gibbs serbest enerjisi minimizasyonuna göre gaz fazına ait en büyük gerçel kökü veya sıvı fazına ait en küçük gerçel kökü seçen sayısal bir algoritmadır.</p>
 
-            <h3>Mevcut Durum Modelleri:</h3>
+            <h3>Desteklenen Durum Modelleri (EoS):</h3>
             <table>
                 <tr>
                     <th style="width: 25%;">Model (EoS)</th>
@@ -424,36 +424,112 @@ class ThermodynamicsHandbookDialog(QDialog):
                 </tr>
                 <tr>
                     <td><b>CoolProp (HEOS)</b></td>
-                    <td>Yüksek hassasiyetli endüstri standardı termodinamik kütüphane (GERG-2008). Doğal gaz ve saf akışkan karışımları için referans kabul edilir.</td>
+                    <td>Yüksek hassasiyetli endüstri standardı termodinamik kütüphane (GERG-2008 / Helmholtz). Saf akışkanlar ve az bileşenli kuru gaz karışımları için referans kabul edilir.</td>
                 </tr>
                 <tr>
-                    <td><b>SINTEF thermopack</b></td>
-                    <td>Sıvılaşma ve faz ayrışması sınırlarında son derece hızlı ve kararlı çözüm sunan gelişmiş açık kaynaklı endüstriyel EoS motoru.</td>
+                    <td><b>🇳🇴 Equinor NeqSim (SRK-CPA)</b></td>
+                    <td>Equinor'un açık kaynaklı endüstriyel termodinamik motoru. C1–C6+ zengin doğal gaz, polar bileşenler (su, glikol, metanol) ve asit gazlarında (H₂S, CO₂ > %5) üstün faz dengesi kararlılığı sağlar.</td>
                 </tr>
                 <tr>
-                    <td><b>Petrobras ccp</b></td>
-                    <td>ASME PTC 10 standartlarında test edilmiş, Petrobras'ın doğrulanmış performans hesaplama motoru.</td>
+                    <td><b>🌊 SINTEF thermopack</b></td>
+                    <td>SINTEF Energy Research tarafından geliştirilen C++ tabanlı ultra hızlı ve faz ayrışması sınırlarında son derece kararlı endüstriyel kübik EoS çözücüsü (~4 ms).</td>
+                </tr>
+                <tr>
+                    <td><b>🇧🇷 Petrobras ccp</b></td>
+                    <td>ASME PTC 10 ve API 617 standartlarında test edilmiş, Petrobras'ın doğrulanmış santrifüj kompresör performans hesaplama motoru.</td>
                 </tr>
                 <tr>
                     <td><b>Peng-Robinson / SRK</b></td>
-                    <td>Geleneksel kübik hal denklemleri. Özellikle ağır hidrokarbon ağırlıklı karışımlarda hızlı sonuç üretir.</td>
+                    <td>Geleneksel kübik hal denklemleri. Petrol ve doğal gaz endüstrisinde hidrokarbon karışımları için en yaygın kullanılan kararlı standart modellerdir.</td>
                 </tr>
                 <tr>
-                    <td><b>AGA8-DC92</b></td>
-                    <td>Doğal gaz boru hattı taşımacılığı için geliştirilmiş, Z-faktörü odaklı hassas standart.</td>
+                    <td><b>AGA8-DC92 (GERG-88)</b></td>
+                    <td>Doğal gaz boru hattı taşımacılığı ve mali sayaçlama için geliştirilmiş, Z-faktörü ve yoğunluk odaklı uluslararası standart (ISO 12213-2).</td>
+                </tr>
+                <tr>
+                    <td><b>🇩🇪 DWSIM Thermodynamics</b></td>
+                    <td>.NET tabanlı DWSIM süreç simülatörü termodinamik kütüphanesi. Buhar tabloları ve özel kimyasal karışımlarda geniş bileşen desteği sunar.</td>
                 </tr>
             </table>
 
-            <h2>2. Sıkıştırma Yolu Yöntemleri (Path Sizing)</h2>
+            <h2>2. Mühendislik Karar Matrisi: Hangi Şartta Hangi EoS Seçilmeli?</h2>
+            <p>Termodinamik model seçimi, işlenen gazın kompozisyonuna, polarite durumuna ve hesaplama hızı ihtiyacına göre yapılmalıdır:</p>
+            <table>
+                <tr>
+                    <th style="width: 22%;">Akışkan / Proses Tipi</th>
+                    <th style="width: 22%;">Önerilen 1. EoS</th>
+                    <th style="width: 20%;">2. Tercih (Fallback)</th>
+                    <th style="width: 14%;">Hız / Kararlılık</th>
+                    <th style="width: 22%;">Mühendislik Gerekçesi</th>
+                </tr>
+                <tr>
+                    <td><b>Boru Hattı Satış Gazı</b><br>(CH₄ > %90, Kuru)</td>
+                    <td><b>AGA8-DC92</b> veya<br><b>SINTEF thermopack</b></td>
+                    <td>CoolProp (GERG-2008)</td>
+                    <td>Çok Hızlı<br>(~4 ms)</td>
+                    <td>Yoğunluk ve Z-faktörü ISO 12213 hassasiyetinde çözülür. Kompresör entalpi yolu için Thermopack süper hızlıdır.</td>
+                </tr>
+                <tr>
+                    <td><b>Zengin Gaz / C1–C6+ Ağır Fraksiyonlar</b> (NGL, Kondensat)</td>
+                    <td><b>SINTEF thermopack</b> veya<br><b>Peng-Robinson (PR)</b></td>
+                    <td>Equinor NeqSim (CPA)</td>
+                    <td>Çok Hızlı & Yüksek Kararlılık</td>
+                    <td>Kübik EoS modelleri hidrokarbon VLE dengesini ve kritik nokta yakınsamalarını en kararlı çözen modellerdir. CoolProp çok bileşende yavaş kalabilir.</td>
+                </tr>
+                <tr>
+                    <td><b>Islak / Polar / Asit Gazları</b><br>(H₂O, Glikol, H₂S, CO₂ > %5)</td>
+                    <td><b>Equinor NeqSim (SRK-CPA)</b></td>
+                    <td>SINTEF thermopack (CPA)</td>
+                    <td>Orta Hız<br>(~500 ms)</td>
+                    <td>Klasik kübik denklemler hidrojen bağlarını modelleyemez. NeqSim CPA modeli su-hidrokarbon çözünürlüğü ve asit gazı etkilerini tam yakalar.</td>
+                </tr>
+                <tr>
+                    <td><b>Saf Akışkanlar & Soğutma Çevrimleri</b> (Saf Propan, N₂, Saf CO₂, R134a)</td>
+                    <td><b>CoolProp (HEOS)</b></td>
+                    <td>Peng-Robinson</td>
+                    <td>Yüksek Hassasiyet</td>
+                    <td>Saf akışkanlarda Helmholtz serbest enerji denklemleri NIST deneysel tablolarıyla birebir uyumludur (< %0.05 hata).</td>
+                </tr>
+                <tr>
+                    <td><b>ASME PTC 10 / API 617 Resmi Doğrulama</b></td>
+                    <td><b>Petrobras ccp</b></td>
+                    <td>Thermopack (Metot 3)</td>
+                    <td>Resmi Standart</td>
+                    <td>Fabrika kabul testleri (FAT) ve saha performans dönüşümleri için ASME PTC 10 Bölüm 5 standart formülasyonlarını uygular.</td>
+                </tr>
+            </table>
+
+            <h2>3. Sıkıştırma Yolu Yöntemleri (Path Sizing)</h2>
             <p>Emiş koşullarından çıkış basıncına giden termodinamik sıkıştırma eğrisi boyunca <b>politropik integrali (∫ V dP)</b> çözmek için kullanılan nümerik şemalardır. Bunlar kendi başlarına birer EoS çözücü değildir, yol boyunca EoS çözücüden sürekli özellik çekerler.</p>
             
-            <h3>Yol Entegrasyon Metotları:</h3>
-            <ul>
-                <li><b>Metot 1 (Ortalama Özellikler - Average Properties):</b> API 617 Appendix C standardını temel alır. Giriş ve çıkış durumlarındaki özelliklerin (k ve Z) ortalamasını kullanarak çıkış sıcaklığı T₂'yi basit bir iterasyon döngüsü ile yakınsatır.</li>
-                <li><b>Metot 2 (Uç Nokta Yöntemi - Endpoint Method):</b> Sıkıştırma üssünü (polytropic exponent) doğrudan kompresörün çıkış koşullarına (outlet endpoint) göre hesaplar.</li>
-                <li><b>Metot 3 (Artımlı Yol Entegrasyonu - Incremental Pressure):</b> Basınç farkını küçük dilimlere (örneğin 10 veya 100 adıma) bölerek, her adımda yerel EoS özelliklerini çözer ve kompresör yolunu adım adım integre eder. Çok kademeli sistemlerde hassasiyeti artırır.</li>
-                <li><b>Metot 4 (Doğrudan H-S Yöntemi - Mollier Path):</b> Gerçek entalpi ve entropi farklarını (Mollier diyagramı üzerinde) kullanarak doğrudan entalpi yolunu integre eder. Termodinamik açıdan en kararlı ve hassas fiziksel yöntemdir.</li>
-            </ul>
+            <h3>Yol Entegrasyon Metotları Karşılaştırması:</h3>
+            <table>
+                <tr>
+                    <th style="width: 25%;">Yol Metodu</th>
+                    <th style="width: 25%;">Dayandığı Standart</th>
+                    <th>Mühendislik Değerlendirmesi ve Öneri</th>
+                </tr>
+                <tr>
+                    <td><b>Metot 1: Ortalama Özellikler (Average Properties)</b></td>
+                    <td>API 617 Appendix C / ASME PTC 10</td>
+                    <td>Giriş ve çıkış durumlarındaki k ve Z ortalamasını alarak T₂'yi iterasyonla bulur. Düşük ve orta basınç oranlarında (PR < 2.5) hızlı ve endüstri standardı sonuç üretir.</td>
+                </tr>
+                <tr>
+                    <td><b>Metot 2: Uç Nokta Yöntemi (Endpoint Method)</b></td>
+                    <td>ASME PTC 10 Endpoint</td>
+                    <td>Politropik üssü doğrudan kompresörün çıkış koşullarına (outlet endpoint) göre hesaplar. Giriş-çıkış farklarının doğrusal olmadığı dik eğrilerde etkilidir.</td>
+                </tr>
+                <tr>
+                    <td><b>Metot 3: Artımlı Basınç (Incremental Pressure Path)</b></td>
+                    <td>Huntington / Schultz Dilimleme</td>
+                    <td>Basınç farkını küçük dilimlere (10-100 adım) bölerek her adımda yerel EoS durumunu çözer ve integre eder. Yüksek basınç oranlarında ve çok kademeli sistemlerde en hassas yol hesabıdır.</td>
+                </tr>
+                <tr>
+                    <td><b>Metot 4: Doğrudan H-S Yöntemi (Mollier Path)</b></td>
+                    <td>Schultz Mollier Entegrasyonu</td>
+                    <td>Gerçek entalpi ve entropi farklarını (Mollier diyagramı üzerinde) kullanarak doğrudan entalpi yolunu integre eder. Termodinamik açıdan fiziksel olarak en tutarlı yöntemdir.</td>
+                </tr>
+            </table>
 
             <div class="warning-box">
                 <b>⚠️ Sıvılaşma ve Thermo Health İzleme:</b> KASP, her iterasyon adımında EoS çözücüden gelen faz durumlarını kontrol eder. Eğer gaz sıvı veya iki faz bölgesine girerse, Z faktörü 0.5'in altına düşerse arayüzde <b>CRITICAL / WARNING</b> uyarıları göstererek kompresörde sıvı hasarı oluşmasını önler.
@@ -465,20 +541,20 @@ class ThermodynamicsHandbookDialog(QDialog):
         <!-- ================= ENGLISH SECTION ================= -->
         <div class="lang-section">
             <h1>🇺🇸 KASP Thermodynamics Handbook & Help Guide</h1>
-            <p>KASP application is designed to solve compressor sizing and design calculations with the highest degree of scientific and industrial precision (ASME PTC 10, API 617). This handbook explains the thermodynamic and aerodynamic calculation steps running in the background.</p>
+            <p>The KASP application is designed to solve compressor sizing and performance design calculations with the highest degree of scientific and industrial precision (ASME PTC 10, API 617). This handbook provides transparent insight into the thermodynamic and aerodynamic calculation steps and guides the selection of the optimal Equation of State (EoS) for various process conditions.</p>
 
             <div class="info-box">
                 <b>💡 Golden Rule:</b> The compressor calculation chain operates on two distinct levels:
                 <ol>
-                    <li><b>State-Level EoS Solver:</b> Mathematical root-finding at a single state.</li>
-                    <li><b>Path-Level Sizing Method:</b> Numerical integration of the polytropic path.</li>
+                    <li><b>State-Level EoS Solver:</b> Mathematical root-finding and property evaluation at a single state (P, T).</li>
+                    <li><b>Path-Level Sizing Method:</b> Numerical integration of the polytropic path (∫ V dP) from suction to discharge.</li>
                 </ol>
             </div>
 
             <h2>1. State-Level EoS Solvers (State Model)</h2>
-            <p>This level consists of thermodynamic theories determining the physical properties of a gas (density, compressibility factor Z, enthalpy H, entropy S, Cp, Cv) at a given pressure (P) and temperature (T). Cubic equations of state are mathematical <b>root-finding</b> problems:</p>
+            <p>This level determines the fundamental physical properties (density, compressibility factor Z, enthalpy H, entropy S, Cp, Cv, speed of sound, viscosity) at given P and T. Cubic equations of state solve a 3rd-degree polynomial equation:</p>
             <pre>Z³ - (1-B)Z² + (A - 3B² - 2B)Z - (AB - B² - B³) = 0</pre>
-            <p>Solving this 3rd-degree cubic polynomial yields up to 3 real roots. The EoS Solver is a numerical algorithm that identifies and selects the correct physical root (largest real root for vapor phase, smallest real root for liquid phase) according to Gibbs free energy minimization.</p>
+            <p>The solver identifies the physically meaningful root (largest real root for vapor phase, smallest real root for liquid phase) according to Gibbs free energy minimization.</p>
 
             <h3>Supported State Models (Equations of State):</h3>
             <table>
@@ -488,36 +564,115 @@ class ThermodynamicsHandbookDialog(QDialog):
                 </tr>
                 <tr>
                     <td><b>CoolProp (HEOS)</b></td>
-                    <td>High-accuracy industry standard library (GERG-2008). Widely accepted as a reference for natural gas and pure fluid mixtures.</td>
+                    <td>High-accuracy industry standard library (GERG-2008 / Multi-fluid Helmholtz). Gold reference for pure fluids and lean natural gas mixtures.</td>
                 </tr>
                 <tr>
-                    <td><b>SINTEF thermopack</b></td>
-                    <td>Advanced, robust open-source EoS engine offering ultra-fast and exceptionally stable calculations near condensation boundaries.</td>
+                    <td><b>🇳🇴 Equinor NeqSim (SRK-CPA)</b></td>
+                    <td>Equinor's open-source industrial thermodynamics suite. Exceptional for C1–C6+ rich gases, polar mixtures (water, glycols), and acid gases (H₂S, CO₂ > 5%).</td>
                 </tr>
                 <tr>
-                    <td><b>Petrobras ccp</b></td>
-                    <td>Petrobras' officially validated centrifugal compressor performance engine, fully tested against ASME PTC 10.</td>
+                    <td><b>🌊 SINTEF thermopack</b></td>
+                    <td>Advanced C++ cubic solver from SINTEF Energy Research. Ultra-fast (~4 ms) and remarkably robust near phase boundaries.</td>
+                </tr>
+                <tr>
+                    <td><b>🇧🇷 Petrobras ccp</b></td>
+                    <td>Petrobras' officially validated compressor performance engine, benchmarked against ASME PTC 10 and API 617.</td>
                 </tr>
                 <tr>
                     <td><b>Peng-Robinson / SRK</b></td>
-                    <td>Classic cubic equations of state. Highly efficient and robust, particularly for heavy hydrocarbon mixtures.</td>
+                    <td>Classic cubic equations of state. The global oil & gas industry standard for general hydrocarbon sizing.</td>
                 </tr>
                 <tr>
-                    <td><b>AGA8-DC92</b></td>
-                    <td>Natural gas pipeline standard specializing in highly accurate Z-factor computations.</td>
+                    <td><b>AGA8-DC92 (GERG-88)</b></td>
+                    <td>Natural gas pipeline standard (ISO 12213-2) specializing in custody-transfer density and Z-factor computations.</td>
+                </tr>
+                <tr>
+                    <td><b>🇩🇪 DWSIM Thermodynamics</b></td>
+                    <td>.NET-based DWSIM process simulator thermodynamics library supporting extensive property packages and steam tables.</td>
                 </tr>
             </table>
 
-            <h2>2. Compression Path Sizing Methods</h2>
-            <p>Numerical integration schemes used to solve the <b>polytropic integral ( ∫ V dP )</b> along the thermodynamic compression curve from inlet to outlet pressure. Sizing methods are not thermodynamic EoS models; they iteratively query the EoS solver for local properties.</p>
+            <h2>2. Engineering Decision Matrix: Which EoS Under Which Conditions?</h2>
+            <table>
+                <tr>
+                    <th style="width: 22%;">Process / Fluid Type</th>
+                    <th style="width: 22%;">Recommended Primary EoS</th>
+                    <th style="width: 20%;">Secondary / Fallback</th>
+                    <th style="width: 14%;">Speed & Stability</th>
+                    <th style="width: 22%;">Engineering Rationale</th>
+                </tr>
+                <tr>
+                    <td><b>Pipeline Sales Gas</b><br>(CH₄ > 90%, Dry)</td>
+                    <td><b>AGA8-DC92</b> or<br><b>SINTEF thermopack</b></td>
+                    <td>CoolProp (GERG-2008)</td>
+                    <td>Ultra Fast<br>(~4 ms)</td>
+                    <td>Z-factor and density match ISO 12213. Thermopack provides instantaneous, robust polytropic enthalpy paths.</td>
+                </tr>
+                <tr>
+                    <td><b>Rich Gas / C1–C6+ Heavy Fractions</b> (NGL, Condensate)</td>
+                    <td><b>SINTEF thermopack</b> or<br><b>Peng-Robinson (PR)</b></td>
+                    <td>Equinor NeqSim (CPA)</td>
+                    <td>Ultra Fast & High Stability</td>
+                    <td>Cubic equations excel at hydrocarbon VLE and critical region convergence. CoolProp may be slow on 8+ components.</td>
+                </tr>
+                <tr>
+                    <td><b>Wet / Polar / Acid Gases</b><br>(H₂O, Glycols, H₂S, CO₂ > 5%)</td>
+                    <td><b>Equinor NeqSim (SRK-CPA)</b></td>
+                    <td>SINTEF thermopack (CPA)</td>
+                    <td>Moderate<br>(~500 ms)</td>
+                    <td>Standard cubics fail with hydrogen bonding. NeqSim CPA model captures polar association and acid gas solubility accurately.</td>
+                </tr>
+                <tr>
+                    <td><b>Pure Fluids & Refrigerants</b> (Pure Propane, N₂, CO₂, R134a)</td>
+                    <td><b>CoolProp (HEOS)</b></td>
+                    <td>Peng-Robinson</td>
+                    <td>Highest Precision</td>
+                    <td>Helmholtz energy formulations reproduce NIST experimental benchmarks within < 0.05% error.</td>
+                </tr>
+                <tr>
+                    <td><b>ASME PTC 10 / API 617 Official Verification</b></td>
+                    <td><b>Petrobras ccp</b></td>
+                    <td>Thermopack (Method 3)</td>
+                    <td>Official Test Code</td>
+                    <td>Strictly applies ASME PTC 10 Section 5 conversion formulations for factory acceptance and site testing.</td>
+                </tr>
+            </table>
+
+            <h2>3. Compression Path Sizing Methods</h2>
+            <p>Numerical integration schemes used to solve the <b>polytropic integral ( ∫ V dP )</b> along the thermodynamic compression curve from inlet to outlet pressure.</p>
             
-            <h3>Path Integration Methods:</h3>
-            <ul>
-                <li><b>Method 1 (Average Properties):</b> Based on API 617 Appendix C. Uses arithmetic or logarithmic averages of inlet/outlet properties (k and Z) to converge on the discharge temperature T₂.</li>
-                <li><b>Method 2 (Endpoint Method):</b> Calculates the polytropic exponent referencing directly the discharge endpoint conditions of the compressor.</li>
-                <li><b>Method 3 (Incremental Pressure Path):</b> Divides the pressure span into multiple increments (e.g., 10 or 100 steps), solving local EoS properties at each step and integrating numerically. Highly accurate for complex sizing paths.</li>
-                 <li><b>Method 4 (Direct H-S Method):</b> Operates on the Mollier enthalpy-entropy plane, utilizing enthalpy definitions and efficiency ratios ($\eta_{{\text{{poly}}}} = \frac{{dH_{{\text{{isen}}}}}}{{dH_{{\text{{actual}}}}}}$) to integrate the polytropic curve. Physically the most stable and rigorous method.</li>
-            </ul>
+            <h3>Path Integration Methods Overview:</h3>
+            <table>
+                <tr>
+                    <th style="width: 25%;">Method</th>
+                    <th style="width: 25%;">Standard Basis</th>
+                    <th>Engineering Guidance</th>
+                </tr>
+                <tr>
+                    <td><b>Method 1: Average Properties</b></td>
+                    <td>API 617 Appendix C / ASME PTC 10</td>
+                    <td>Averages inlet/outlet k and Z properties. Fast and robust for low-to-medium pressure ratios (PR < 2.5).</td>
+                </tr>
+                <tr>
+                    <td><b>Method 2: Endpoint Method</b></td>
+                    <td>ASME PTC 10 Endpoint</td>
+                    <td>Evaluates polytropic exponent directly at the compressor discharge endpoint. Suitable when outlet properties dominate.</td>
+                </tr>
+                <tr>
+                    <td><b>Method 3: Incremental Pressure Path</b></td>
+                    <td>Huntington / Schultz Slicing</td>
+                    <td>Divides the pressure span into increments (10-100 steps) and integrates local EoS properties. Best precision for high PR and multi-stage paths.</td>
+                </tr>
+                <tr>
+                    <td><b>Method 4: Direct H-S Method</b></td>
+                    <td>Schultz Mollier Integration</td>
+                    <td>Integrates along the Mollier enthalpy-entropy plane directly from thermodynamic state definitions. Physically the most rigorous formulation.</td>
+                </tr>
+            </table>
+
+            <div class="warning-box">
+                <b>⚠️ Condensation & Thermo Health Monitoring:</b> KASP verifies fluid phase at every calculation step. If the gas enters the two-phase or liquid envelope (or if Z drops below 0.5), <b>CRITICAL / WARNING</b> alerts are raised on the interface to protect compressor machinery from liquid slugging.
+            </div>
         </div>
 
         </body>

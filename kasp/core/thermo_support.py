@@ -51,17 +51,26 @@ def convert_temperature_to_k(value, unit):
         raise UnitConversionError(f"Sicaklik donusum hatasi: {error}", value, unit)
 
 
-def _resolve_reference_density(thermo_solver, pressure_pa, temperature_k, gas_obj, eos_method, *, prefer_mw=False):
-    if prefer_mw:
-        infer_mw = getattr(thermo_solver, "infer_mw_g_mol", None)
-        mw_g_mol = infer_mw(gas_obj) if infer_mw is not None else None
-        if mw_g_mol and mw_g_mol > 0 and temperature_k > 0:
-            return pressure_pa * (mw_g_mol / 1000.0) / (R_UNIVERSAL_J_MOL_K * temperature_k)
+def _resolve_reference_density(thermo_solver, pressure_pa, temperature_k, gas_obj, eos_method):
+    eos_error = None
+    try:
+        density = thermo_solver.get_properties(pressure_pa, temperature_k, gas_obj, eos_method).density
+        if density > 0:
+            return density
+    except Exception as e:
+        eos_error = e
 
-    density = thermo_solver.get_properties(pressure_pa, temperature_k, gas_obj, eos_method).density
-    if density <= 0:
-        raise UnitConversionError("Referans yogunluk hesaplanamadi")
-    return density
+    infer_mw = getattr(thermo_solver, "infer_mw_g_mol", None)
+    mw_g_mol = infer_mw(gas_obj) if infer_mw is not None else None
+    if mw_g_mol and mw_g_mol > 0 and temperature_k > 0:
+        logger = getattr(thermo_solver, "logger", None)
+        if logger and eos_error:
+            logger.warning(
+                "EOS yoğunluk hesaplanamadı, ideal gaz (MW) fallback kullanılıyor: %s", eos_error
+            )
+        return pressure_pa * (mw_g_mol / 1000.0) / (R_UNIVERSAL_J_MOL_K * temperature_k)
+
+    raise UnitConversionError("Referans yoğunluk hesaplanamadı")
 
 
 def _resolve_mixture_mw_g_mol(thermo_solver, gas_obj, eos_method, std_press_pa, standard_temp_k):
@@ -96,7 +105,7 @@ def convert_flow_to_kgs(
 
         if unit in STANDARD_VOLUME_UNITS or unit == "MMSCMD":
             density = _resolve_reference_density(
-                thermo_solver, std_press_pa, standard_temp_k, gas_obj, eos_method, prefer_mw=True
+                thermo_solver, std_press_pa, standard_temp_k, gas_obj, eos_method
             )
             if unit in STANDARD_VOLUME_UNITS:
                 return (value_float * density) / 3600.0
@@ -104,7 +113,7 @@ def convert_flow_to_kgs(
 
         if unit in NORMAL_VOLUME_UNITS:
             density = _resolve_reference_density(
-                thermo_solver, std_press_pa, normal_temp_k, gas_obj, eos_method, prefer_mw=True
+                thermo_solver, std_press_pa, normal_temp_k, gas_obj, eos_method
             )
             return (value_float * density) / 3600.0
 
@@ -112,7 +121,7 @@ def convert_flow_to_kgs(
             t_std_k = convert_temperature_to_k(60, "°F")
             p_std_pa = convert_pressure_to_pa(14.73, "psia")
             density = _resolve_reference_density(
-                thermo_solver, p_std_pa, t_std_k, gas_obj, eos_method, prefer_mw=True
+                thermo_solver, p_std_pa, t_std_k, gas_obj, eos_method
             )
             vol_m3_sec = value_float * 1e6 * 0.0283168 / 86400.0
             return vol_m3_sec * density

@@ -194,7 +194,7 @@ class ReportGenerator:
             story.append(Spacer(1, 20))
             
             # 3. DEBİ ve GÜÇ HESAPLAMALARI
-            story.append(Paragraph("3. DEBİ ve GÜÇ HESAPLAMALARI", styles['Heading2']))
+            story.append(Paragraph(_L("3. DEBİ ve GÜÇ HESAPLAMALARI", "3. FLOW and POWER CALCULATIONS"), styles['Heading2']))
             
             # Birim dönüşümleri
             power_unit_val = self.engine.convert_result_value(
@@ -205,28 +205,28 @@ class ReportGenerator:
             )
             
             power_data = [
-                ['Parametre', 'Ünite Başına', 'Toplam', 'Birim'],
-                ['Kütlesel Debi', 
+                [_L('Parametre', 'Parameter'), _L('Ünite Başına', 'Per Unit'), _L('Toplam', 'Total'), _L('Birim', 'Unit')],
+                [_L('Kütlesel Debi', 'Mass Flow'), 
                  f"{results['mass_flow_per_unit_kgs']:.3f}", 
                  f"{results['mass_flow_total_kgs']:.3f}", 
                  'kg/s'],
-                ['Hacimsel Debi', 
+                [_L('Hacimsel Debi', 'Volumetric Flow'), 
                  f"{results['inlet_vol_flow_acmh_per_unit']:.0f}", 
                  f"{results['inlet_vol_flow_acmh_per_unit'] * results['num_units']:.0f}", 
                  'ACMH'],
-                ['Gaz Gücü', 
+                [_L('Gaz Gücü', 'Gas Power'), 
                  f"{results['power_gas_per_unit_kw']:.0f}", 
                  f"{results['power_gas_total_kw']:.0f}", 
                  'kW'],
-                ['Şaft Gücü', 
+                [_L('Şaft Gücü', 'Shaft Power'), 
                  f"{results['power_shaft_per_unit_kw']:.0f}", 
                  f"{results['power_shaft_total_kw']:.0f}", 
                  'kW'],
-                ['Ünite Gücü', 
+                [_L('Ünite Gücü', 'Unit Power'), 
                  f"{power_unit_val:.0f}", 
                  f"{power_total_val:.0f}", 
                  report_units['power_unit']],
-                ['Mekanik Kayıp', 
+                [_L('Mekanik Kayıp', 'Mechanical Loss'), 
                  f"{results['mech_loss_per_unit_kw']:.0f}", 
                  f"{results['mech_loss_total_kw']:.0f}", 
                  'kW']
@@ -246,7 +246,7 @@ class ReportGenerator:
             story.append(Spacer(1, 20))
             
             # 4. TERMODİNAMİK SONUÇLAR
-            story.append(Paragraph("4. TERMODİNAMİK SONUÇLAR", styles['Heading2']))
+            story.append(Paragraph(_L("4. TERMODİNAMİK SONUÇLAR", "4. THERMODYNAMIC RESULTS"), styles['Heading2']))
             
             head_val = self.engine.convert_result_value(
                 results['head_kj_kg'], 'kJ/kg', report_units['head_unit'], 'head'
@@ -256,14 +256,14 @@ class ReportGenerator:
             )
             
             thermo_data = [
-                ['Parametre', 'Değer', 'Birim'],
-                ['Politropik Head', f"{head_val:.1f}", report_units['head_unit']],
-                ['Isı Oranı', f"{hr_val:.0f}", report_units['heat_rate']],
-                ['Çıkış Sıcaklığı', f"{results['t_out']:.1f}", '°C'],
-                ['Gerçek Politropik Verim', f"{results['actual_poly_efficiency']*100:.2f}", '%'],
-                ['Sıkıştırma Oranı', f"{results['compression_ratio']:.2f}", ''],
-                ['İzentropik Üs (k-giriş)', f"{results['inlet_properties']['k']:.3f}", ''],
-                ['Sıkıştırılabilirlik (Z-giriş)', f"{results['inlet_properties']['Z']:.4f}", '']
+                [_L('Parametre', 'Parameter'), _L('Değer', 'Value'), _L('Birim', 'Unit')],
+                [_L('Politropik Head', 'Polytropic Head'), f"{head_val:.1f}", report_units['head_unit']],
+                [_L('Isı Oranı', 'Heat Rate'), f"{hr_val:.0f}", report_units['heat_rate']],
+                [_L('Çıkış Sıcaklığı', 'Outlet Temperature'), f"{results['t_out']:.1f}", '°C'],
+                [_L('Gerçek Politropik Verim', 'Actual Polytropic Efficiency'), f"{results['actual_poly_efficiency']*100:.2f}", '%'],
+                [_L('Sıkıştırma Oranı', 'Compression Ratio'), f"{results['compression_ratio']:.2f}", ''],
+                [_L('İzentropik Üs (k-giriş)', 'Isentropic Exponent (k-inlet)'), f"{results['inlet_properties']['k']:.3f}", ''],
+                [_L('Sıkıştırılabilirlik (Z-giriş)', 'Compressibility (Z-inlet)'), f"{results['inlet_properties']['Z']:.4f}", '']
             ]
             
             thermo_table = Table(thermo_data, colWidths=[150, 100, 80])
@@ -280,7 +280,7 @@ class ReportGenerator:
             story.append(Spacer(1, 20))
             
             # 5. YAKIT BİLGİLERİ
-            story.append(Paragraph("5. YAKIT BİLGİLERİ", styles['Heading2']))
+            story.append(Paragraph(_L("5. YAKIT BİLGİLERİ", "5. FUEL INFORMATION"), styles['Heading2']))
             
             fuel_gas_obj = self.engine._create_gas_object(inputs['gas_comp'], inputs['eos_method'])
             lhv_val = self.engine.convert_result_value(
@@ -297,12 +297,12 @@ class ReportGenerator:
             )
             
             fuel_data = [
-                ['Parametre', 'Değer', 'Birim'],
-                ['LHV (Alt Isıl Değer)', f"{lhv_val:.0f}", report_units['lhv']],
-                ['HHV (Üst Isıl Değer)', f"{hhv_val:.0f}", report_units['hhv']],
-                ['Ünite Yakıt Tüketimi', f"{fuel_unit_val:.1f}", report_units['fuel_unit']],
-                ['Toplam Yakıt Tüketimi', f"{results['fuel_total_kgh']:.1f}", 'kg/h'],
-                ['Isıl Verim', f"{inputs['therm_eff']:.1f}", '%']
+                [_L('Parametre', 'Parameter'), _L('Değer', 'Value'), _L('Birim', 'Unit')],
+                [_L('LHV (Alt Isıl Değer)', 'LHV (Lower Heating Value)'), f"{lhv_val:.0f}", report_units['lhv']],
+                [_L('HHV (Üst Isıl Değer)', 'HHV (Higher Heating Value)'), f"{hhv_val:.0f}", report_units['hhv']],
+                [_L('Ünite Yakıt Tüketimi', 'Unit Fuel Consumption'), f"{fuel_unit_val:.1f}", report_units['fuel_unit']],
+                [_L('Toplam Yakıt Tüketimi', 'Total Fuel Consumption'), f"{results['fuel_total_kgh']:.1f}", 'kg/h'],
+                [_L('Isıl Verim', 'Thermal Efficiency'), f"{inputs['therm_eff']:.1f}", '%']
             ]
             
             fuel_table = Table(fuel_data, colWidths=[150, 100, 80])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from typing import Callable
+from typing import Callable, Optional
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
@@ -20,12 +21,12 @@ logger = logging.getLogger(__name__)
 
 
 def _create_ssl_context() -> ssl.SSLContext:
-    """Güvenli SSL bağlamı oluşturur — PyInstaller bundle uyumlu."""
+    """Güvenli SSL bağlamı oluşturur — PyInstaller bundle uyumlu. Fail-closed: CERT_NONE kullanılmaz."""
     try:
         import certifi
         return ssl.create_default_context(cafile=certifi.where())
-    except (ImportError, Exception):
-        pass
+    except (ImportError, Exception) as e:
+        logger.debug("certifi yüklenemedi: %s", e)
 
     try:
         import sys
@@ -34,19 +35,19 @@ def _create_ssl_context() -> ssl.SSLContext:
             bundle_certs = os.path.join(sys._MEIPASS, "certifi", "cacert.pem")
             if os.path.exists(bundle_certs):
                 return ssl.create_default_context(cafile=bundle_certs)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Bundle sertifikası bulunamadı: %s", e)
 
+    # System default context - fail-closed, CERT_NONE kullanılmaz
     try:
-        return ssl.create_default_context()
-    except Exception:
-        pass
-
-    logger.warning("SSL sertifika doğrulaması devre dışı — güvenli olmayan bağlantı kullanılıyor.")
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+        ctx = ssl.create_default_context()
+        # Ekstra güvenlik: hostname ve cert doğrulaması zorunlu
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        return ctx
+    except Exception as e:
+        logger.critical("SSL context oluşturulamadı, güncelleme engelleniyor: %s", e)
+        raise RuntimeError("Güvenli SSL bağlantısı kurulamadı; güncelleme iptal edildi.") from e
 
 
 _ssl_context: ssl.SSLContext | None = None
@@ -59,15 +60,29 @@ def _get_ssl_context() -> ssl.SSLContext:
     return _ssl_context
 
 
-def parse_release_tag(tag: str) -> tuple[int, ...]:
-    numbers = re.findall(r"\d+", (tag or "").strip().lower().lstrip("v"))
-    if not numbers:
-        return tuple()
-    return tuple(int(value) for value in numbers)
+def parse_release_tag(tag: str):
+    """PEP 440 uyumlu sürüm ayrıştırıcı. Geçersiz etiketlerde eski sayısal ayrıştırıcıya düşer."""
+    tag_str = (tag or "").strip().lstrip("v")
+    try:
+        from packaging.version import Version
+        return Version(tag_str)
+    except Exception:
+        # Fallback: eski sayısal tuple ayrıştırıcı
+        numbers = re.findall(r"\d+", tag_str)
+        if not numbers:
+            return tuple()
+        return tuple(int(value) for value in numbers)
 
 
 def is_newer_release(candidate_tag: str, current_tag: str) -> bool:
-    return parse_release_tag(candidate_tag) > parse_release_tag(current_tag)
+    cand = parse_release_tag(candidate_tag)
+    curr = parse_release_tag(current_tag)
+    # packaging.version.Version karşılaştırmasını destekle
+    try:
+        return cand > curr
+    except TypeError:
+        # Tuple karşılaştırması (fallback)
+        return tuple(cand) > tuple(curr)
 
 
 def format_bytes(size: int) -> str:
@@ -105,6 +120,7 @@ class ReleaseAsset:
     download_url: str
     size: int
     content_type: str
+    sha256: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +198,24 @@ class GitHubReleaseClient:
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Guncelleme dosyasi indirilemedi: {exc}") from exc
 
+        # SHA256 doğrulama (fail-closed)
+        if asset.sha256:
+            computed = hashlib.sha256(destination_path.read_bytes()).hexdigest()
+            if computed.lower() != asset.sha256.lower():
+                destination_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"SHA256 doğrulama başarısız: indirilen dosya bozuk veya değiştirilmiş. "
+                    f"Beklenen: {asset.sha256}, Hesaplanan: {computed}"
+                )
+            logger.info("SHA256 doğrulama başarılı: %s", asset.name)
+        else:
+            # SHA256 yoksa fail-closed: indirme engellenir
+            destination_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"İndirilen dosya için SHA256 özeti bulunamadı (asset.digest eksik). "
+                f"Güvenlik nedeniyle dosya silindi. Lütfen release notlarında SHA256 sağlayın."
+            )
+
         return destination_path
 
     @staticmethod
@@ -194,6 +228,7 @@ class GitHubReleaseClient:
                 download_url=asset.get("browser_download_url") or "",
                 size=int(asset.get("size") or 0),
                 content_type=asset.get("content_type") or "application/octet-stream",
+                sha256=asset.get("digest", "").replace("sha256:", "") if asset.get("digest", "").startswith("sha256:") else None,
             )
             for asset in item.get("assets", [])
             if asset.get("browser_download_url")

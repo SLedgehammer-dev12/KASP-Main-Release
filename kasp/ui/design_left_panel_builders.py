@@ -57,6 +57,20 @@ def get_eos_display_items(coolprop_loaded, thermo_loaded):
     
     items.append("🌊 SINTEF thermopack (Kübik)")
     
+    # NeqSim kontrolü
+    neqsim_available = False
+    try:
+        from kasp.core.properties import ThermodynamicSolver
+        solver = ThermodynamicSolver()
+        neqsim_available = solver._neqsim_available()
+    except Exception:
+        pass
+
+    if neqsim_available:
+        items.append("🇳🇴 Equinor NeqSim (SRK-CPA)")
+    else:
+        items.append("🇳🇴 NeqSim (Java/JVM Gerekli)")
+
     if thermo_loaded:
         items.extend(["📊 Peng-Robinson (thermo)", "📈 SRK (thermo)"])
         
@@ -325,19 +339,17 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     if window.eos_method_combo.count():
         window.eos_method_combo.setCurrentIndex(0)
 
-    dwsim_available = False
-    try:
-        import clr
-        dwsim_available = True
-    except (ImportError, RuntimeError):
-        pass
-    if not dwsim_available:
-        for index in range(window.eos_method_combo.count()):
-            text = window.eos_method_combo.itemText(index)
-            if "DWSIM" in text and ("Eksik" in text or "Yok" in text):
-                from PyQt5.QtCore import Qt
-                j = window.eos_method_combo.model().index(index, 0)
-                window.eos_method_combo.model().itemFromIndex(j).setEnabled(False)
+    # NeqSim ve DWSIM devre dışı bırakma kontrolü
+    for index in range(window.eos_method_combo.count()):
+        text = window.eos_method_combo.itemText(index)
+        if "DWSIM" in text and ("Eksik" in text or "Yok" in text):
+            from PyQt5.QtCore import Qt
+            j = window.eos_method_combo.model().index(index, 0)
+            window.eos_method_combo.model().itemFromIndex(j).setEnabled(False)
+        elif "NeqSim" in text and ("Gerekli" in text or "Eksik" in text or "Yok" in text):
+            from PyQt5.QtCore import Qt
+            j = window.eos_method_combo.model().index(index, 0)
+            window.eos_method_combo.model().itemFromIndex(j).setEnabled(False)
 
     window.lhv_source_combo = QComboBox()
     window.lhv_source_combo.addItems([
@@ -350,7 +362,22 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
         window.lhv_source_combo.setItemData(1, 0, Qt.UserRole - 1)
         window.lhv_source_combo.setItemText(1, "Thermo Veritabanı (Kütüphane Yok)")
 
+    # Dinamik Akıllı EoS Tavsiye Rozeti
+    window.eos_recommendation_badge = QLabel("💡 Öneri: Kuru doğal gaz için SINTEF thermopack / CoolProp önerilir.")
+    window.eos_recommendation_badge.setWordWrap(True)
+    window.eos_recommendation_badge.setStyleSheet(
+        "background-color: rgba(59, 130, 246, 0.12); "
+        "color: #3b82f6; "
+        "border: 1px solid rgba(59, 130, 246, 0.3); "
+        "border-radius: 5px; "
+        "padding: 4px 8px; "
+        "font-size: 11px; "
+        "font-weight: 500; "
+        "margin-top: 2px;"
+    )
+
     thermo_layout.addRow("EoS Durum Denklemi:", window.eos_method_combo)
+    thermo_layout.addRow("", window.eos_recommendation_badge)
     thermo_layout.addRow("LHV/HHV Kaynağı:", window.lhv_source_combo)
     thermo_group.setLayout(thermo_layout)
     left_layout.addWidget(thermo_group)
@@ -534,7 +561,7 @@ def wire_help_guidance(window):
         },
         "eos_method_combo": {
             "title": "EoS (Hal Denklemi)",
-            "desc": "<b>CoolProp (GERG-2008):</b> Yüksek hassasiyetli endüstri standardı termodinamik model.<br><b>SINTEF thermopack:</b> Gelişmiş ve faz sınırlarında son derece kararlı kübik EoS motoru.<br><b>Petrobras ccp:</b> ASME/API standardında resmi doğrulanmış motor.<br><b>DWSIM Thermodynamics:</b> Polar karışımlarda ve ASME Steam su buharı tablolarında üstün kararlılık sağlayan .NET tabanlı motor.<br><b>Peng-Robinson / SRK:</b> Hidrokarbon ağırlıklı karışımlarda hızlı ve kararlı kübik hal denklemleri."
+            "desc": "<b>CoolProp (GERG-2008):</b> Saf akışkanlar ve az bileşenli kuru gazlar için referans model.<br><b>🇳🇴 Equinor NeqSim (SRK-CPA):</b> C1–C6+ zengin gaz, polar bileşenler (su, glikol, metanol) ve asit gazlarında (H₂S, CO₂ > %5) üstün faz dengesi kararlılığı.<br><b>🌊 SINTEF thermopack:</b> Zengin hidrokarbon karışımlarında ultra hızlı (~4 ms) ve faz sınırlarında son derece kararlı kübik EoS.<br><b>🇧🇷 Petrobras ccp:</b> ASME PTC 10 ve API 617 standartlarında test edilmiş resmi motor.<br><b>📊 Peng-Robinson / SRK:</b> Petrol ve gaz endüstrisi standardı kararlı kübik modeller.<br><b>🇩🇪 DWSIM Thermodynamics:</b> Polar karışımlarda ve buhar tablolarında .NET tabanlı alternatif."
         },
         "lhv_source_combo": {
             "title": "Isıl Değer Kaynağı",

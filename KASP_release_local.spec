@@ -32,6 +32,14 @@ all_datas.extend(thermo_datas)
 all_datas.extend(chemicals_datas)
 all_datas.extend(scipy_datas)
 
+# NeqSim jar bundle
+neqsim_jar_dir = ROOT / "kasp" / "core" / "libs"
+neqsim_jar_path = neqsim_jar_dir / "neqsim.jar"
+if neqsim_jar_path.exists():
+    all_datas.append((str(neqsim_jar_path), "kasp/core/libs"))
+else:
+    print(f"⚠️ neqsim.jar bulunamadı: {neqsim_jar_path}. NeqSim çalışmayacaktır.")
+
 all_hidden = []
 all_hidden.extend([
     "matplotlib.backends.backend_qt5agg",

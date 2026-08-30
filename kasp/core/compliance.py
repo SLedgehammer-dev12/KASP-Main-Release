@@ -35,6 +35,8 @@ class ASME_PTC10_Compliance:
         corrected_performance = measured_performance.copy()
         corrected_performance['head'] *= reynolds_correction
         corrected_performance['efficiency'] *= mach_correction
+        corrected_performance['analysis_scope'] = 'NOT_IMPLEMENTED'
+        corrected_performance['warning'] = 'ASME PTC 10 Reynolds/Mach düzeltmeleri implement edilmemiştir; faktörler 1.0 olarak kabul edilmiştir.'
         
         return corrected_performance
 
@@ -64,7 +66,8 @@ class API_617_Compliance:
             'separation_margin': 20,  # % API gerekliliği (hesaplanmış değil, varsayılan)
             'meets_api': True,        # UYARI: Gerçek analiz yapılmamıştır
             'not_implemented': True,  # V4.3: Gerçek FEA analizi henüz implement edilmedi
-            'warning': 'Basitleştirilmiş model — gerçek API 617 analizinin yerini tutmaz.'
+            'analysis_scope': 'NOT_IMPLEMENTED',
+            'warning': 'Basitleştirilmiş Jeffcott Rotor modeli — gerçek API 617 analizinin yerini tutmaz; FEA analizi yapılmamıştır.'
         }
 
     @staticmethod
@@ -81,5 +84,6 @@ class API_617_Compliance:
             'status': 'Pass',
             'stress_level': 'Low',
             'not_implemented': True,
-            'warning': 'Gerçek burulma analizi yapılmamıştır.'
+            'analysis_scope': 'NOT_IMPLEMENTED',
+            'warning': 'Gerçek burulma analizi yapılmamıştır; bu sonuç gösterge niteliğindedir.'
         }

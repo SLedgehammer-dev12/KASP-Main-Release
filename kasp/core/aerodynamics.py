@@ -71,12 +71,66 @@ class CompressorAerodynamics:
         return t_out_isen
 
     @staticmethod
+    def calculate_schultz_factor(state_in: ThermodynamicState, state_out: ThermodynamicState,
+                                 p_out: float, thermo_solver, gas_obj, eos: str, R_specific: float) -> float:
+        """
+        Calculates the Schultz polytropic head correction factor (f_t) per ASME PTC 10.
+        """
+        try:
+            t_out_isen = CompressorAerodynamics.calculate_isentropic_temp_fallback(
+                state_in, p_out, thermo_solver, gas_obj, eos
+            )
+            state_isen = thermo_solver.get_properties(p_out, t_out_isen, gas_obj, eos)
+            dh_isen = state_isen.H - state_in.H
+            
+            if dh_isen <= 0:
+                return 1.0
+                
+            k1 = state_in.k
+            if k1 <= 1.001:
+                k1 = 1.3
+                
+            pressure_ratio = p_out / state_in.P
+            if pressure_ratio <= 1.001:
+                return 1.0
+                
+            # Ideal isentropic head
+            k_exp = (k1 - 1.0) / k1
+            h_isen_ideal = (1.0 / k_exp) * state_in.Z * R_specific * state_in.T * (math.pow(pressure_ratio, k_exp) - 1.0)
+            
+            # Isentropic head correction factor (f_s)
+            f_s = dh_isen / h_isen_ideal if h_isen_ideal > 0 else 1.0
+            
+            # Polytropic temperature exponent sigma
+            ln_TR = math.log(state_out.T / state_in.T)
+            ln_PR = math.log(state_out.P / state_in.P)
+            sigma = ln_TR / ln_PR if abs(ln_PR) > 1e-10 else k_exp
+            
+            # Schultz polytropic head correction factor (f_t)
+            if abs(sigma) < 1e-5:
+                # Isothermal limit
+                f_t = f_s * (k_exp / (k_exp * ln_PR)) if abs(ln_PR) > 1e-10 else f_s
+            else:
+                numerator = k_exp * (math.pow(pressure_ratio, sigma) - 1.0)
+                denominator = sigma * (math.pow(pressure_ratio, k_exp) - 1.0)
+                f_t = f_s * (numerator / denominator) if denominator > 0 else f_s
+                
+            # Clamp to physical range (typically between 0.85 and 1.15)
+            return max(0.85, min(1.15, f_t))
+        except Exception as e:
+            logger.warning(f"Schultz correction factor calculation failed: {e}. Using 1.0.")
+            return 1.0
+
+    @staticmethod
     def calculate_polytropic_efficiency(state_in: ThermodynamicState,
                                         state_out: ThermodynamicState,
-                                        R_specific: float) -> float:
+                                        R_specific: float,
+                                        thermo_solver=None,
+                                        gas_obj=None,
+                                        eos: str = None) -> float:
         """
         Giriş ve Çıkış koşulları (Test/Gerçek) bilindiğinde Politropik Verimi hesaplar.
-        API 617 Standardına göre logaritmik formulasyon kullanır.
+        ASME PTC 10 Schultz metodu ve API 617 logaritmik formülasyonunu kullanır.
         """
         if state_in.P <= 0 or state_out.P <= 0 or state_in.T <= 0 or state_out.T <= 0:
             return 0.0
@@ -101,10 +155,18 @@ class CompressorAerodynamics:
         
         if abs(sigma) < 1e-5:
              # Isothermal limit
-             poly_head = Z_avg * R_specific * state_in.T * ln_PR
+             poly_head_ideal = Z_avg * R_specific * state_in.T * ln_PR
         else:
-             poly_head = (1.0 / sigma) * Z_avg * R_specific * state_in.T * (math.pow(state_out.P / state_in.P, sigma) - 1.0)
+             poly_head_ideal = (1.0 / sigma) * Z_avg * R_specific * state_in.T * (math.pow(state_out.P / state_in.P, sigma) - 1.0)
              
+        # Schultz düzeltme katsayısını uygula (ASME PTC 10)
+        f_t = 1.0
+        if thermo_solver is not None and gas_obj is not None and eos is not None:
+             f_t = CompressorAerodynamics.calculate_schultz_factor(
+                 state_in, state_out, state_out.P, thermo_solver, gas_obj, eos, R_specific
+             )
+             
+        poly_head = f_t * poly_head_ideal
         poly_efficiency = poly_head / delta_H
         return max(0.0, min(1.0, poly_efficiency))
 
@@ -157,13 +219,26 @@ class CompressorAerodynamics:
             a_sound = float(inlet_props.get("a", 340.0))
             mu = float(inlet_props.get("mu", 1.8e-5))
 
-            D_ref = 0.5
+            Q_m3s = mass_flow_kgs / rho if rho > 0 else 0
             U_est = max(10.0, (head_j_kg / 0.55) ** 0.5)
+
+            # Dinamik çap tahmini: tipik φ (0.03-0.06) ve U (<=450 m/s) kısıtlarıyla
+            if Q_m3s > 0 and U_est > 0:
+                phi_target = 0.04  # orta aralık
+                D_est = (Q_m3s / (U_est * phi_target)) ** 0.5
+                # U kısıtı: tip speed <= 450 m/s
+                if U_est > 450:
+                    U_est = 450.0
+                    D_est = (Q_m3s / (U_est * phi_target)) ** 0.5
+                # Çap sınırları: 0.15m - 1.8m (gerçekçi kompresör aralığı)
+                D_ref = max(0.15, min(1.8, D_est))
+            else:
+                D_ref = 0.5  # fallback
+
             RPM_est = (U_est * 60.0) / (3.1416 * D_ref)
 
             psi = head_j_kg / (U_est ** 2) if U_est > 0 else 0
-            Q_m3s = mass_flow_kgs / rho if rho > 0 else 0
-            phi = Q_m3s / (U_est * (D_ref ** 2)) if U_est > 0 else 0
+            phi = Q_m3s / (U_est * (D_ref ** 2)) if U_est > 0 and D_ref > 0 else 0
             Re = (rho * U_est * D_ref) / mu if mu > 0 else 0
             Ma = U_est / a_sound if a_sound > 0 else 0
 
@@ -174,6 +249,7 @@ class CompressorAerodynamics:
                 "Ma": round(Ma, 3),
                 "U_est_m_s": round(U_est, 1),
                 "RPM_est": str(int(round(RPM_est))),
+                "D_ref_m": round(D_ref, 3),
             }
         except Exception:
             return None

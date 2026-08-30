@@ -101,6 +101,7 @@ def test_download_asset_writes_file(monkeypatch, tmp_path):
                     "browser_download_url": "https://example/assets/v1.1.exe",
                     "size": 11,
                     "content_type": "application/octet-stream",
+                    "digest": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
                 }
             ],
         }
@@ -128,6 +129,7 @@ def test_download_asset_accepts_directory_destination(monkeypatch, tmp_path):
                     "name": "KASP.v1.1.exe",
                     "browser_download_url": "https://example/assets/v1.1.exe",
                     "size": 5,
+                    "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
                 }
             ],
         }

@@ -9,6 +9,7 @@ import time
 import json
 import hashlib
 import secrets
+import sys
 from typing import Any, Union
 import logging
 
@@ -23,9 +24,21 @@ LOCKOUT_LEVELS = [
     (10, 60),
 ]
 
-_lockout_file = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "kasp_lockout.json"
-)
+
+def _get_app_data_dir() -> str:
+    """Uygulama veri dizinini döndürür (macOS: ~/Library/Application Support/KASP, Windows: %APPDATA%\\KASP)"""
+    if getattr(sys, "frozen", False):
+        if sys.platform == "darwin":
+            base = os.path.expanduser("~/Library/Application Support/KASP")
+        else:
+            base = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "KASP")
+    else:
+        base = os.path.dirname(os.path.abspath(__file__)) + "/.."
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+_lockout_file = os.path.join(_get_app_data_dir(), "kasp_lockout.json")
 
 
 def _load_lockout_state():
@@ -40,8 +53,8 @@ def _save_lockout_state(state):
     try:
         with open(_lockout_file, "w") as f:
             json.dump(state, f)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning("Lockout state kaydedilemedi: %s", e)
 
 
 def hash_password(password: str) -> str:

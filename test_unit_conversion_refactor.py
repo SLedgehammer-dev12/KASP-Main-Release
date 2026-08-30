@@ -89,7 +89,7 @@ def test_mass_flow_conversion_wraps_invalid_numeric_values():
 
 
 def test_volumetric_flow_conversion_rejects_nonpositive_density():
-    with pytest.raises(UnitConversionError, match="yogunluk"):
+    with pytest.raises(UnitConversionError, match="[yo]?[oö]?[ğg]unluk|yogunluk|yoğunluk"):
         convert_flow_to_kgs(
             100,
             "Sm3/h",

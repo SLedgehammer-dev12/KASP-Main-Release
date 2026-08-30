@@ -1,3 +1,9 @@
+"""
+KASP V4 API - LEGACY/EXPERIMENTAL
+
+UYARI: Bu sunucu legacy/experimental olarak işaretlenmiştir.
+Üretim ortamında kullanılmamalıdır. Kimlik doğrulama ve hız sınırlama yoktur.
+"""
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,6 +13,9 @@ from fastapi.responses import FileResponse
 import uvicorn
 import os
 import sys
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -14,7 +23,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from kasp.core.thermo import ThermoEngine
 from kasp.core.constants import SUPPORTED_GASES, UNIT_OPTIONS, DEFAULT_COMPOSITION
 
-app = FastAPI(title="KASP V4 API")
+app = FastAPI(
+    title="KASP V4 API",
+    description="Legacy/Experimental API - not for production use",
+    version="0.1.0-legacy"
+)
+
+logger.warning("⚠️ KASP V4 API (LEGACY) başlatıldı. Üretim kullanımı için tasarlanmamıştır.")
 
 @app.get("/api/constants")
 async def get_constants():
@@ -31,11 +46,11 @@ app.mount("/static", StaticFiles(directory=os.path.abspath(os.path.join(os.path.
 async def read_index():
     return FileResponse(os.path.abspath(os.path.join(os.path.dirname(__file__), "../web/index.html")))
 
-# Enable CORS for React frontend (just in case they install node later)
+# CORS - allow_origins="*" ile allow_credentials=True uyumsuz; credentials=False
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -128,4 +143,4 @@ async def health():
     return {"status": "healthy", "coolprop_loaded": True}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

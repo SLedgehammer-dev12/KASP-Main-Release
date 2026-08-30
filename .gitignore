@@ -23,6 +23,8 @@ Thumbs.db
 *.tmp
 releases/
 scratch/
+.jdk/
+.opencode/node_modules/
 
 git_yedek/
 .vscode/

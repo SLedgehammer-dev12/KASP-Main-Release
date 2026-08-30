@@ -95,13 +95,13 @@ def test_admin_reset_sets_must_change_password():
     os.close(fd)
     db = UnitDatabase(db_name=path)
     try:
-        db.create_default_admin(hash_password("adminpw"))
+        db.create_default_admin(hash_password("Adminpw1"))
         mgr = UserManager(db)
-        mgr.create_user("target", "original", role="user")
+        mgr.create_user("target", "Original1", role="user")
         users = mgr.list_users()
         target = next(u for u in users if u.username == "target")
 
-        ok, err = mgr.admin_reset_password(target.id, "newpass123")
+        ok, err = mgr.admin_reset_password(target.id, "Newpass123")
         assert ok
         assert err is None
 
@@ -109,7 +109,7 @@ def test_admin_reset_sets_must_change_password():
         updated = next(u for u in users if u.username == "target")
         assert updated.must_change_password is True
 
-        auth_user = mgr.authenticate("target", "newpass123")
+        auth_user = mgr.authenticate("target", "Newpass123")
         assert auth_user is not None
         assert auth_user.must_change_password is True
     finally:
@@ -126,9 +126,9 @@ def test_create_user_default_must_change_false():
     os.close(fd)
     db = UnitDatabase(db_name=path)
     try:
-        db.create_default_admin(hash_password("adminpw"))
+        db.create_default_admin(hash_password("Adminpw1"))
         mgr = UserManager(db)
-        user, err = mgr.create_user("newguy", "pw1234", role="user")
+        user, err = mgr.create_user("newguy", "Pw123456", role="user")
         assert user is not None
         assert user.must_change_password is False
     finally:

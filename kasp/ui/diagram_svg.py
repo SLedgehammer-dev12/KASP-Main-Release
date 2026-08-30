@@ -1,5 +1,7 @@
 """3-Katmanlı Termodinamik Mimari SVG diyagram üreticisi."""
 
+from release_metadata import APP_VERSION
+
 
 def generate_3layer_diagram_svg(theme: dict) -> str:
     """Tema renklerine göre SVG string'i oluşturur."""
@@ -131,7 +133,7 @@ def generate_3layer_diagram_svg(theme: dict) -> str:
 <text x="626" y="{l3_y + 72}" text-anchor="middle" font-size="9" fill="{text_sec}">Direct H-S (Mollier)</text>
 
 <!-- Alt bilgi -->
-<text x="{w // 2}" y="{h - 8}" text-anchor="middle" font-size="9" fill="{text_sec}">KASP v1.7.4 — 3-Katmanlı Termodinamik Mimari</text>
+<text x="{w // 2}" y="{h - 8}" text-anchor="middle" font-size="9" fill="{text_sec}">KASP v{APP_VERSION} — 3-Katmanlı Termodinamik Mimari</text>
 
 </svg>'''
     return svg

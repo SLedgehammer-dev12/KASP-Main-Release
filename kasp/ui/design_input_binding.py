@@ -11,10 +11,17 @@ def eos_method_from_ui_text(selected_text):
         return "coolprop", None
     if "thermopack" in selected_text:
         return "thermopack", None
+    if "AGA8" in selected_text:
+        # AGA8 sadece boru gazı (pipeline) için GERG-2008, kompresör için önerilmez
+        return "aga8", None
     if "ccp" in selected_text:
         return "ccp", None
     if "Peng-Robinson" in selected_text:
         return "pr", None
+    if "NeqSim" in selected_text:
+        if "Eksik" in selected_text or "Yok" in selected_text or "Java" in selected_text:
+            return None, "EOS Hatası: NeqSim kullanmak için Java (JRE/JDK) ve jpype1 kurmalı, neqsim.jar eklemelisiniz."
+        return "neqsim", None
     if "SRK" in selected_text:
         return "srk", None
     if "DWSIM" in selected_text:
@@ -25,7 +32,7 @@ def eos_method_from_ui_text(selected_text):
         return None, "EOS Hatası: Geçerli bir EOS metodu seçiniz (Kütüphane yüklü değil)."
 
     normalized = selected_text.lower().strip()
-    if normalized in {"coolprop", "pr", "srk", "thermopack", "ccp", "dwsim"}:
+    if normalized in {"coolprop", "pr", "srk", "thermopack", "ccp", "dwsim", "neqsim", "aga8"}:
         return normalized, None
     return normalized, f"EOS Hatası: Bilinmeyen veya yanlış eşleşen EOS metodu: {selected_text}"
 

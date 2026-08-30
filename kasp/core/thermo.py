@@ -98,6 +98,8 @@ class ThermoEngine:
         comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
         if eos_method == 'coolprop':
             return GasMixtureBuilder.build_coolprop_string(comp_frac)
+        elif eos_method == 'neqsim':
+            return GasMixtureBuilder.build_neqsim_input(comp_frac)
         elif eos_method in ['pr', 'srk', 'aga8', 'thermopack', 'ccp', 'dwsim']:
             return GasMixtureBuilder.build_thermo_data(comp_frac)
         else:
@@ -229,17 +231,6 @@ class ThermoEngine:
             lhv_mass_basis = total_lhv_energy_kj_per_mole / avg_molar_mass_kg
             hhv_mass_basis = total_hhv_energy_kj_per_mole / avg_molar_mass_kg
             
-            # Real gas correction: divide by Z at standard conditions (101325 Pa, 288.15 K)
-            if gas_obj is not None and eos_method is not None:
-                try:
-                    state_std = self.thermo_solver.get_properties(101325.0, 288.15, gas_obj, eos_method)
-                    z_std = state_std.Z
-                    if z_std > 0.1: # Safeguard
-                        lhv_mass_basis = lhv_mass_basis / z_std
-                        hhv_mass_basis = hhv_mass_basis / z_std
-                except Exception as e:
-                    self.logger.warning(f"ISO 6976 Z düzeltmesi hesaplanamadı: {e}")
-                    
             return lhv_mass_basis, hhv_mass_basis
 
         # Diğer kaynaklar (kasp veya thermo)
@@ -340,7 +331,12 @@ class ThermoEngine:
              isen_head_kj_kg = (state_isen.H - state_in.H) / 1000.0
              
              R_sp = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
-             actual_poly_eff = CompressorAerodynamics.calculate_polytropic_efficiency(state_in, state_out, R_sp)
+             actual_poly_eff = CompressorAerodynamics.calculate_polytropic_efficiency(
+                 state_in, state_out, R_sp,
+                 thermo_solver=self.thermo_solver,
+                 gas_obj=gas_obj,
+                 eos=inputs['eos_method']
+             )
              actual_isen_eff = isen_head_kj_kg / actual_head_kj_kg if actual_head_kj_kg > 0 else 0
              true_poly_head_kj_kg = actual_head_kj_kg * actual_poly_eff
              
@@ -425,7 +421,12 @@ class ThermoEngine:
             isen_eff = isen_dh / actual_dh
             
             R_sp = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
-            poly_eff = CompressorAerodynamics.calculate_polytropic_efficiency(state_in, state_out_actual, R_sp)
+            poly_eff = CompressorAerodynamics.calculate_polytropic_efficiency(
+                state_in, state_out_actual, R_sp,
+                thermo_solver=self.thermo_solver,
+                gas_obj=gas_obj,
+                eos=eos
+            )
             poly_head_j_kg = poly_eff * actual_dh
             
             # 3. Güç Hesapları

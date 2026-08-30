@@ -101,6 +101,8 @@ class EosChain:
         fractions = self._ensure_fractions()
         if eos == "coolprop":
             go = GasMixtureBuilder.build_coolprop_string(fractions)
+        elif eos == "neqsim":
+            go = GasMixtureBuilder.build_neqsim_input(fractions)
         elif eos in ("thermopack", "pr", "srk", "aga8", "ccp", "dwsim"):
             go = GasMixtureBuilder.build_thermo_data(fractions)
         else:

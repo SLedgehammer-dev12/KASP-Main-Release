@@ -164,10 +164,23 @@ def validate_pressure(value, context):
             if val <= 0:
                 return False, "Absolute pressure must be > 0"
         
-        # Check gauge pressure
+        # Check gauge pressure - convert -1.0 bar(g) to the selected unit
         if unit in ['bar(g)', 'psig']:
-            if val < -1.0:
-                return False, "Gauge pressure too low"
+            from kasp.core.units import UnitSystem
+            try:
+                # -1.0 bar(g) = -14.5038 psig approximately
+                limit_bar_g = -1.0
+                if unit == 'psig':
+                    limit = UnitSystem.convert_pressure(limit_bar_g, 'bar(g)', 'psig')
+                else:
+                    limit = limit_bar_g
+                if val < limit:
+                    return False, f"Gauge pressure too low (min {limit:.1f} {unit})"
+            except Exception:
+                # Fallback to hardcoded values if conversion fails
+                limit = -1.0 if unit == 'bar(g)' else -14.7
+                if val < limit:
+                    return False, f"Gauge pressure too low (min {limit:.1f} {unit})"
         
         # Reasonable range check
         if val > 1000:
