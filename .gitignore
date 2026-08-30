@@ -24,8 +24,7 @@ Thumbs.db
 releases/
 scratch/
 .jdk/
-.opencode/node_modules/
-
+.opencode/
 git_yedek/
 .vscode/
 deneme.kasp

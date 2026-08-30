@@ -500,34 +500,58 @@ class ThermodynamicsHandbookDialog(QDialog):
             </table>
 
             <h2>3. Sıkıştırma Yolu Yöntemleri (Path Sizing)</h2>
-            <p>Emiş koşullarından çıkış basıncına giden termodinamik sıkıştırma eğrisi boyunca <b>politropik integrali (∫ V dP)</b> çözmek için kullanılan nümerik şemalardır. Bunlar kendi başlarına birer EoS çözücü değildir, yol boyunca EoS çözücüden sürekli özellik çekerler.</p>
+            <p>Emiş koşullarından çıkış basıncına giden termodinamik sıkıştırma eğrisi boyunca <b>politropik integrali (∫ V dP)</b> çözmek için kullanılan nümerik şemalardır. Bunlar kendi başlarına birer EoS çözücü değildir; yol boyunca seçilen EoS motorundan (NeqSim, Thermopack, CoolProp vb.) sürekli fiziksel özellik çekerler.</p>
             
-            <h3>Yol Entegrasyon Metotları Karşılaştırması:</h3>
+            <h3>Sıkıştırma Yolu Yöntemleri Mühendislik Karar Matrisi: Hangi Şartta Hangi Metot Seçilmeli?</h3>
             <table>
                 <tr>
-                    <th style="width: 25%;">Yol Metodu</th>
-                    <th style="width: 25%;">Dayandığı Standart</th>
-                    <th>Mühendislik Değerlendirmesi ve Öneri</th>
+                    <th style="width: 20%;">İşletme Şartı / Gaz Tipi</th>
+                    <th style="width: 20%;">Önerilen Metot</th>
+                    <th style="width: 15%;">Hız & Kararlılık</th>
+                    <th style="width: 15%;">Referans Standart</th>
+                    <th>Mühendislik Gerekçesi & Fiziksel Mekanizma</th>
                 </tr>
                 <tr>
-                    <td><b>Metot 1: Ortalama Özellikler (Average Properties)</b></td>
-                    <td>API 617 Appendix C / ASME PTC 10</td>
-                    <td>Giriş ve çıkış durumlarındaki k ve Z ortalamasını alarak T₂'yi iterasyonla bulur. Düşük ve orta basınç oranlarında (PR < 2.5) hızlı ve endüstri standardı sonuç üretir.</td>
+                    <td><b>Aşırı Zengin Gazlar (C1–C6+), Süperkritik & Yoğun Faz</b></td>
+                    <td><b>Metot 5: Huntington-RK45</b></td>
+                    <td>Yüksek (~8 ms)</td>
+                    <td>ASME 85-GT-13</td>
+                    <td>dT/dP diferansiyel denklemini 4. derece Runge-Kutta ile sürekli çözer. Yoğunluk ve Cp gradyanları sert değişen gazlarda sıfır adım hatasıyla analitik altın standarttır.</td>
                 </tr>
                 <tr>
-                    <td><b>Metot 2: Uç Nokta Yöntemi (Endpoint Method)</b></td>
+                    <td><b>Zengin Gaz (C1–C5), Gerçek Gaz Durum Yolu</b></td>
+                    <td><b>Metot 4: Doğrudan H-S</b></td>
+                    <td>Yüksek (~4 ms)</td>
+                    <td>Schultz Mollier</td>
+                    <td>Gerçek entalpi ve entropi (Mollier) değişimlerini doğrudan çözer. f_t ampirik katsayısına ihtiyaç duymaz, over-sizing (aşırı büyük türbin/motor seçimi) riskini önler.</td>
+                </tr>
+                <tr>
+                    <td><b>Yüksek Basınç & Gerçek Gaz Türevleri (X, Y)</b></td>
+                    <td><b>Metot 6: Schultz 3-Üslü</b></td>
+                    <td>Çok Hızlı (~3 ms)</td>
+                    <td>Schultz 1962 ASME</td>
+                    <td>İzobarik genleşme (X) ve izotermal sıkışabilirlik (Y) türevlerini kullanarak n_v (hacim), m_T (sıcaklık) ve n_p (iş) üslerini ayrı ayrı hesaplar.</td>
+                </tr>
+                <tr>
+                    <td><b>ASME PTC 10 Fabrika Kabul Testleri (FAT)</b></td>
+                    <td><b>Metot 2: Uç Nokta</b></td>
+                    <td>Ultra Hızlı (~2 ms)</td>
                     <td>ASME PTC 10 Endpoint</td>
-                    <td>Politropik üssü doğrudan kompresörün çıkış koşullarına (outlet endpoint) göre hesaplar. Giriş-çıkış farklarının doğrusal olmadığı dik eğrilerde etkilidir.</td>
+                    <td>Çıkış koşullarını referans alarak f_t Schultz düzeltmesi uygular. Test standı ve garanti noktası doğrulamalarında endüstriyel referanstır.</td>
                 </tr>
                 <tr>
-                    <td><b>Metot 3: Artımlı Basınç (Incremental Pressure Path)</b></td>
-                    <td>Huntington / Schultz Dilimleme</td>
-                    <td>Basınç farkını küçük dilimlere (10-100 adım) bölerek her adımda yerel EoS durumunu çözer ve integre eder. Yüksek basınç oranlarında ve çok kademeli sistemlerde en hassas yol hesabıdır.</td>
+                    <td><b>Kademeli / Basınç Dilimli Yol Analizi</b></td>
+                    <td><b>Metot 3: Artımlı Basınç</b></td>
+                    <td>Orta (~12 ms)</td>
+                    <td>Huntington Slicing</td>
+                    <td>Basınç aralığını 10-100 adıma bölerek yerel politropik üsleri adım adım entegre eder.</td>
                 </tr>
                 <tr>
-                    <td><b>Metot 4: Doğrudan H-S Yöntemi (Mollier Path)</b></td>
-                    <td>Schultz Mollier Entegrasyonu</td>
-                    <td>Gerçek entalpi ve entropi farklarını (Mollier diyagramı üzerinde) kullanarak doğrudan entalpi yolunu integre eder. Termodinamik açıdan fiziksel olarak en tutarlı yöntemdir.</td>
+                    <td><b>Kuru Satış Gazları (Lean Gas), Ön Fizibilite</b></td>
+                    <td><b>Metot 1: Ortalama Özellikler</b></td>
+                    <td>Ultra Hızlı (~2 ms)</td>
+                    <td>API 617 Appendix C</td>
+                    <td>Giriş ve çıkış k ve Z ortalamasını alır. Düşük basınç oranlarında (PR < 1.50) ve ideal gaza yakın akışkanlarda son derece hızlıdır.</td>
                 </tr>
             </table>
 
@@ -541,7 +565,7 @@ class ThermodynamicsHandbookDialog(QDialog):
         <!-- ================= ENGLISH SECTION ================= -->
         <div class="lang-section">
             <h1>🇺🇸 KASP Thermodynamics Handbook & Help Guide</h1>
-            <p>The KASP application is designed to solve compressor sizing and performance design calculations with the highest degree of scientific and industrial precision (ASME PTC 10, API 617). This handbook provides transparent insight into the thermodynamic and aerodynamic calculation steps and guides the selection of the optimal Equation of State (EoS) for various process conditions.</p>
+            <p>The KASP application is designed to solve compressor sizing and performance design calculations with the highest degree of scientific and industrial precision (ASME PTC 10, API 617). This handbook provides transparent insight into the thermodynamic and aerodynamic calculation steps and guides the selection of the optimal Equation of State (EoS) and Compression Path Method for various process conditions.</p>
 
             <div class="info-box">
                 <b>💡 Golden Rule:</b> The compressor calculation chain operates on two distinct levels:
@@ -551,122 +575,146 @@ class ThermodynamicsHandbookDialog(QDialog):
                 </ol>
             </div>
 
-            <h2>1. State-Level EoS Solvers (State Model)</h2>
-            <p>This level determines the fundamental physical properties (density, compressibility factor Z, enthalpy H, entropy S, Cp, Cv, speed of sound, viscosity) at given P and T. Cubic equations of state solve a 3rd-degree polynomial equation:</p>
-            <pre>Z³ - (1-B)Z² + (A - 3B² - 2B)Z - (AB - B² - B³) = 0</pre>
-            <p>The solver identifies the physically meaningful root (largest real root for vapor phase, smallest real root for liquid phase) according to Gibbs free energy minimization.</p>
-
-            <h3>Supported State Models (Equations of State):</h3>
+            <h2>1. Equation of State (EoS) Engines</h2>
+            <p>Equations of State describe the thermodynamic relationships between Pressure (P), Temperature (T), and Volume (V) to evaluate essential properties such as enthalpy, entropy, compressibility factor (Z), and heat capacity (Cp).</p>
+            
             <table>
                 <tr>
-                    <th style="width: 25%;">Model (EoS)</th>
-                    <th>Description and Application Areas</th>
+                    <th style="width: 25%;">EoS Engine</th>
+                    <th style="width: 25%;">Underlying Technology</th>
+                    <th>Recommended Application & Strengths</th>
                 </tr>
                 <tr>
-                    <td><b>CoolProp (HEOS)</b></td>
-                    <td>High-accuracy industry standard library (GERG-2008 / Multi-fluid Helmholtz). Gold reference for pure fluids and lean natural gas mixtures.</td>
-                </tr>
-                <tr>
-                    <td><b>🇳🇴 Equinor NeqSim (SRK-CPA)</b></td>
-                    <td>Equinor's open-source industrial thermodynamics suite. Exceptional for C1–C6+ rich gases, polar mixtures (water, glycols), and acid gases (H₂S, CO₂ > 5%).</td>
+                    <td><b>🇳🇴 Equinor NeqSim (SRK-CPA / PVT)</b></td>
+                    <td>Java-based native library by Equinor with CPA (Cubic-Plus-Association)</td>
+                    <td><b>Oil & Gas standard.</b> Excellent for heavy C1-C6+ mixtures, polar fluids (water, MEG/TEG, methanol), and high sour gas (H₂S, CO₂ > 5%).</td>
                 </tr>
                 <tr>
                     <td><b>🌊 SINTEF thermopack</b></td>
-                    <td>Advanced C++ cubic solver from SINTEF Energy Research. Ultra-fast (~4 ms) and remarkably robust near phase boundaries.</td>
+                    <td>High-performance Fortran/C core with Cubic (Peng-Robinson, SRK)</td>
+                    <td><b>Super-fast and rock-solid.</b> Highly stable near phase boundaries and multi-component hydrocarbon mixtures (~4 ms execution).</td>
+                </tr>
+                <tr>
+                    <td><b>CoolProp (GERG-2008 / HEOS)</b></td>
+                    <td>Helmholtz energy formulations & multiparameter equations</td>
+                    <td><b>Pure fluids & lean sales gases.</b> Matches NIST experimental standards with highest accuracy for standard pipeline natural gas.</td>
                 </tr>
                 <tr>
                     <td><b>🇧🇷 Petrobras ccp</b></td>
-                    <td>Petrobras' officially validated compressor performance engine, benchmarked against ASME PTC 10 and API 617.</td>
+                    <td>Python/C engine developed by Petrobras for turbomachinery</td>
+                    <td><b>ASME PTC 10 / API 617 validation.</b> Standard industrial engine for centrifugal compressor factory acceptance tests.</td>
                 </tr>
                 <tr>
                     <td><b>Peng-Robinson / SRK</b></td>
-                    <td>Classic cubic equations of state. The global oil & gas industry standard for general hydrocarbon sizing.</td>
-                </tr>
-                <tr>
-                    <td><b>AGA8-DC92 (GERG-88)</b></td>
-                    <td>Natural gas pipeline standard (ISO 12213-2) specializing in custody-transfer density and Z-factor computations.</td>
+                    <td>Classic cubic equations of state</td>
+                    <td><b>Standard hydrocarbon processing.</b> Reliable across standard refining, petrochemical, and gas pipeline applications.</td>
                 </tr>
                 <tr>
                     <td><b>🇩🇪 DWSIM Thermodynamics</b></td>
-                    <td>.NET-based DWSIM process simulator thermodynamics library supporting extensive property packages and steam tables.</td>
+                    <td>.NET open-source CAPE-OPEN compliant engine</td>
+                    <td><b>Chemical & polar mixtures.</b> Comprehensive steam tables and chemical process simulation capabilities.</td>
                 </tr>
             </table>
 
-            <h2>2. Engineering Decision Matrix: Which EoS Under Which Conditions?</h2>
+            <h2>2. Engineering Decision Matrix: Which EoS to Choose?</h2>
             <table>
                 <tr>
-                    <th style="width: 22%;">Process / Fluid Type</th>
-                    <th style="width: 22%;">Recommended Primary EoS</th>
-                    <th style="width: 20%;">Secondary / Fallback</th>
-                    <th style="width: 14%;">Speed & Stability</th>
-                    <th style="width: 22%;">Engineering Rationale</th>
+                    <th style="width: 20%;">Process Condition / Gas Type</th>
+                    <th style="width: 20%;">Primary Recommended EoS</th>
+                    <th style="width: 15%;">Backup EoS</th>
+                    <th style="width: 15%;">Key Strength</th>
+                    <th>Engineering Rationale & Physical Mechanism</th>
                 </tr>
                 <tr>
-                    <td><b>Pipeline Sales Gas</b><br>(CH₄ > 90%, Dry)</td>
-                    <td><b>AGA8-DC92</b> or<br><b>SINTEF thermopack</b></td>
-                    <td>CoolProp (GERG-2008)</td>
-                    <td>Ultra Fast<br>(~4 ms)</td>
-                    <td>Z-factor and density match ISO 12213. Thermopack provides instantaneous, robust polytropic enthalpy paths.</td>
+                    <td><b>Rich Natural Gas (C1–C6+) & Associated Gas</b></td>
+                    <td><b>SINTEF thermopack (PR)</b></td>
+                    <td>NeqSim / Peng-Robinson</td>
+                    <td>Super Fast & VLE Stability</td>
+                    <td>Fast and robust cubic root-finding prevents non-convergence near multi-component dew points.</td>
                 </tr>
                 <tr>
-                    <td><b>Rich Gas / C1–C6+ Heavy Fractions</b> (NGL, Condensate)</td>
-                    <td><b>SINTEF thermopack</b> or<br><b>Peng-Robinson (PR)</b></td>
-                    <td>Equinor NeqSim (CPA)</td>
-                    <td>Ultra Fast & High Stability</td>
-                    <td>Cubic equations excel at hydrocarbon VLE and critical region convergence. CoolProp may be slow on 8+ components.</td>
+                    <td><b>Polar Components (H₂O, Glycol, Methanol)</b></td>
+                    <td><b>Equinor NeqSim (CPA)</b></td>
+                    <td>DWSIM / CoolProp</td>
+                    <td>Hydrogen Bonding (CPA)</td>
+                    <td>CPA accounts for associative hydrogen bonding, essential when water or hydrate inhibitors are present.</td>
                 </tr>
                 <tr>
-                    <td><b>Wet / Polar / Acid Gases</b><br>(H₂O, Glycols, H₂S, CO₂ > 5%)</td>
-                    <td><b>Equinor NeqSim (SRK-CPA)</b></td>
-                    <td>SINTEF thermopack (CPA)</td>
-                    <td>Moderate<br>(~500 ms)</td>
-                    <td>Standard cubics fail with hydrogen bonding. NeqSim CPA model captures polar association and acid gas solubility accurately.</td>
+                    <td><b>Sour Gas (H₂S > 5%, CO₂ > 10%)</b></td>
+                    <td><b>Equinor NeqSim (SRK)</b></td>
+                    <td>SINTEF thermopack</td>
+                    <td>Binary Interaction Params</td>
+                    <td>Calibrated BIP matrices accurately capture acid gas compressibility and non-ideal deviations.</td>
                 </tr>
                 <tr>
-                    <td><b>Pure Fluids & Refrigerants</b> (Pure Propane, N₂, CO₂, R134a)</td>
-                    <td><b>CoolProp (HEOS)</b></td>
-                    <td>Peng-Robinson</td>
-                    <td>Highest Precision</td>
-                    <td>Helmholtz energy formulations reproduce NIST experimental benchmarks within < 0.05% error.</td>
+                    <td><b>Lean Sales Gas (C1 > 90%) / Pure Gases (N₂, Air, CO₂)</b></td>
+                    <td><b>CoolProp (GERG-2008)</b></td>
+                    <td>SINTEF thermopack</td>
+                    <td>High Accuracy</td>
+                    <td>Helmholtz energy formulations align with NIST experimental data tables (< 0.05% error).</td>
                 </tr>
                 <tr>
                     <td><b>ASME PTC 10 / API 617 Official Verification</b></td>
                     <td><b>Petrobras ccp</b></td>
                     <td>Thermopack (Method 3)</td>
-                    <td>Official Test Code</td>
-                    <td>Strictly applies ASME PTC 10 Section 5 conversion formulations for factory acceptance and site testing.</td>
+                    <td>Official Standard</td>
+                    <td>Implements ASME PTC 10 Section 5 formulations for test-stand and field performance conversions.</td>
                 </tr>
             </table>
 
             <h2>3. Compression Path Sizing Methods</h2>
-            <p>Numerical integration schemes used to solve the <b>polytropic integral ( ∫ V dP )</b> along the thermodynamic compression curve from inlet to outlet pressure.</p>
+            <p>Numerical integration schemes used to solve the <b>polytropic integral ( ∫ V dP )</b> along the thermodynamic compression curve from inlet to outlet pressure. These methods continuously evaluate thermodynamic properties along the path via the active EoS (NeqSim, Thermopack, CoolProp, etc.).</p>
             
-            <h3>Path Integration Methods Overview:</h3>
+            <h3>Compression Methods Engineering Decision Matrix: Which Method to Choose?</h3>
             <table>
                 <tr>
-                    <th style="width: 25%;">Method</th>
-                    <th style="width: 25%;">Standard Basis</th>
-                    <th>Engineering Guidance</th>
+                    <th style="width: 20%;">Process Condition / Gas Type</th>
+                    <th style="width: 20%;">Recommended Method</th>
+                    <th style="width: 15%;">Speed & Stability</th>
+                    <th style="width: 15%;">Standard Basis</th>
+                    <th>Engineering Rationale & Physical Mechanism</th>
                 </tr>
                 <tr>
-                    <td><b>Method 1: Average Properties</b></td>
-                    <td>API 617 Appendix C / ASME PTC 10</td>
-                    <td>Averages inlet/outlet k and Z properties. Fast and robust for low-to-medium pressure ratios (PR < 2.5).</td>
+                    <td><b>Rich Gas (C1–C6+), Supercritical & Dense Phase</b></td>
+                    <td><b>Method 5: Huntington-RK45</b></td>
+                    <td>High (~8 ms)</td>
+                    <td>ASME 85-GT-13</td>
+                    <td>Continuously integrates the fundamental 1st-law ODE (dT/dP) via 4th-order Runge-Kutta. Analytical gold standard with zero discretization error under steep Cp and density gradients.</td>
                 </tr>
                 <tr>
+                    <td><b>Rich Natural Gas (C1–C5), General Sizing</b></td>
+                    <td><b>Method 4: Direct H-S Path</b></td>
+                    <td>High (~4 ms)</td>
+                    <td>Schultz Mollier</td>
+                    <td>Directly integrates the real enthalpy-entropy (Mollier) path. Eliminates empirical f_t corrections, preventing machinery over-sizing.</td>
+                </tr>
+                <tr>
+                    <td><b>High-Pressure Real Gases (X, Y Derivatives)</b></td>
+                    <td><b>Method 6: Schultz 3-Exponent</b></td>
+                    <td>Very Fast (~3 ms)</td>
+                    <td>Schultz 1962 ASME</td>
+                    <td>Evaluates isobaric (X) and isothermal (Y) compressibility derivatives to derive three distinct real-gas exponents: n_v (volume), m_T (temperature), and n_p (work).</td>
+                </tr>
+                <tr>
+                    <td><b>ASME PTC 10 Factory Acceptance Testing (FAT)</b></td>
                     <td><b>Method 2: Endpoint Method</b></td>
+                    <td>Ultra Fast (~2 ms)</td>
                     <td>ASME PTC 10 Endpoint</td>
-                    <td>Evaluates polytropic exponent directly at the compressor discharge endpoint. Suitable when outlet properties dominate.</td>
+                    <td>References discharge state properties with Schultz f_t correction. Standard for test-stand conversion and OEM performance verification.</td>
                 </tr>
                 <tr>
-                    <td><b>Method 3: Incremental Pressure Path</b></td>
-                    <td>Huntington / Schultz Slicing</td>
-                    <td>Divides the pressure span into increments (10-100 steps) and integrates local EoS properties. Best precision for high PR and multi-stage paths.</td>
+                    <td><b>Pressure-Sliced Multi-Step Analysis</b></td>
+                    <td><b>Method 3: Incremental Pressure</b></td>
+                    <td>Medium (~12 ms)</td>
+                    <td>Huntington Slicing</td>
+                    <td>Divides pressure span into 10–100 discrete increments and integrates local polytropic indices.</td>
                 </tr>
                 <tr>
-                    <td><b>Method 4: Direct H-S Method</b></td>
-                    <td>Schultz Mollier Integration</td>
-                    <td>Integrates along the Mollier enthalpy-entropy plane directly from thermodynamic state definitions. Physically the most rigorous formulation.</td>
+                    <td><b>Lean Sales Gas, Early Feasibility</b></td>
+                    <td><b>Method 1: Average Properties</b></td>
+                    <td>Ultra Fast (~2 ms)</td>
+                    <td>API 617 Appendix C</td>
+                    <td>Averages inlet and outlet k and Z properties. Very fast for low pressure ratios (PR < 1.50) and near-ideal fluids.</td>
                 </tr>
             </table>
 

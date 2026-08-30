@@ -116,6 +116,52 @@ def get_smart_eos_recommendation(gas_comp: dict) -> str:
     return "💡 <b>Kuru Satış Gazı:</b> <b>SINTEF thermopack (PR)</b>, <b>CoolProp</b> veya <b>AGA8-DC92</b> uygundur."
 
 
+def get_smart_method_recommendation(gas_comp: dict) -> str:
+    """
+    Gaz kompozisyonuna ve termodinamik özelliklerine göre en uygun Sıkıştırma Yolu Yöntemi (Path Method) tavsiyesini belirler.
+    """
+    if not gas_comp:
+        return "💡 <b>Metot Önerisi:</b> Gaz kompozisyonu giriniz."
+
+    total_pct = sum(gas_comp.values())
+    if total_pct <= 0:
+        return "💡 <b>Metot Önerisi:</b> Gaz kompozisyonu giriniz."
+
+    norm_comp = {str(k).upper(): float(v) / total_pct * 100.0 for k, v in gas_comp.items()}
+
+    # 1. Saf akışkan kontrolü (tek bileşen >= %99)
+    if len(norm_comp) == 1 or max(norm_comp.values()) >= 99.0:
+        return "💡 <b>Saf Akışkan:</b> Hızlı ve tam fiziksel doğruluk için <b>Metot 4 (Doğrudan H-S)</b> veya <b>Metot 5 (Huntington-RK45)</b> önerilir."
+
+    # 2. Polar / Asit Gazı kontrolü
+    water_pct = norm_comp.get("WATER", 0.0) + norm_comp.get("H2O", 0.0)
+    h2s_pct = norm_comp.get("HYDROGENSULFIDE", 0.0) + norm_comp.get("H2S", 0.0)
+    co2_pct = norm_comp.get("CARBONDIOXIDE", 0.0) + norm_comp.get("CO2", 0.0)
+
+    if water_pct > 0.05 or h2s_pct > 0.5 or co2_pct > 5.0:
+        return "💡 <b>Polar / Asit Gazı:</b> Entalpi-entropi dengesini doğrudan çözen <b>Metot 4 (Doğrudan H-S)</b> veya <b>Metot 5 (Huntington-RK45)</b> önerilir."
+
+    # 3. Zengin Hidrokarbon / Ağır Fraksiyon kontrolü (C6+ > 0.25% veya C3+ > 10% veya Methane < 85%)
+    heavy_c6 = (
+        norm_comp.get("HEXANE", 0.0) +
+        norm_comp.get("HEPTANE", 0.0) +
+        norm_comp.get("OCTANE", 0.0) +
+        norm_comp.get("NONANE", 0.0) +
+        norm_comp.get("DECANE", 0.0)
+    )
+    c3_plus = sum(
+        v for k, v in norm_comp.items()
+        if k in ["PROPANE", "ISOBUTANE", "BUTANE", "ISOPENTANE", "PENTANE", "HEXANE", "HEPTANE", "OCTANE", "NONANE", "DECANE"]
+    )
+    methane_pct = norm_comp.get("METHANE", 0.0)
+
+    if heavy_c6 > 0.25 or c3_plus > 10.0 or methane_pct < 85.0:
+        return "💡 <b>Zengin Gaz (C1–C6+):</b> Sürekli diferansiyel yol için <b>Metot 5 (Huntington-RK45)</b> veya <b>Metot 4 (Doğrudan H-S)</b> önerilir."
+
+    # 4. Kuru Boru Hattı Satış Gazı
+    return "💡 <b>Kuru Satış Gazı:</b> <b>Metot 5 (Huntington-RK45)</b>, <b>Metot 4 (Doğrudan H-S)</b> veya <b>Metot 6 (Schultz 3-Üslü)</b> önerilir."
+
+
 def extract_gas_composition(entries, display_to_key):
     """Build a component->percentage dict from UI table entries."""
     gas_comp = {}
@@ -223,8 +269,13 @@ class GasCompositionController:
             if hasattr(self.window, "eos_recommendation_badge") and self.window.eos_recommendation_badge is not None:
                 rec_text = get_smart_eos_recommendation(gas_comp)
                 self.window.eos_recommendation_badge.setText(rec_text)
+
+            # Dinamik Akıllı Metot Tavsiye Rozetini Güncelle
+            if hasattr(self.window, "method_recommendation_badge") and self.window.method_recommendation_badge is not None:
+                rec_method_text = get_smart_method_recommendation(gas_comp)
+                self.window.method_recommendation_badge.setText(rec_method_text)
         except Exception as exc:
-            self.window.logger.warning(f"Kompozisyon toplamı veya EoS tavsiyesi güncellenemedi: {exc}")
+            self.window.logger.warning(f"Kompozisyon toplamı veya EoS/Metot tavsiyesi güncellenemedi: {exc}")
 
     def normalize_composition(self):
         _, _, QMessageBox, QTableWidgetItem = self._qt_widgets()

@@ -554,6 +554,192 @@ class ThermoMethodSuite:
 
         return t2_guess, poly_head, z_avg, history
 
+    def method_huntington_rk45(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, step_count=20):
+        """
+        Metot 5: Huntington-RK45 Sürekli Diferansiyel Yol Entegratörü (ASME 85-GT-13).
+        dT/dP = [v * (1/eta_p - 1) + T * (dv/dT)_P] / Cp(P, T)
+        H_p = integral_{P_in}^{P_out} v(P, T(P)) dP
+        """
+        step_count = self._coerce_step_count(step_count, default=20)
+        try:
+            state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
+            z0 = state_in.Z
+            mw = state_in.MW
+            h1 = state_in.H
+        except Exception as error:
+            raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 5): {error}")
+
+        pressures = np.linspace(p_in, p_out, step_count + 1)
+        dp = pressures[1] - pressures[0]
+        t_current = t_in
+        poly_head_total = 0.0
+        z_list = [z0]
+        t_list = [t_in]
+        p_list = [p_in]
+
+        def get_derivatives(p_pa, t_k):
+            st = self.thermo_solver.get_properties(p_pa, t_k, gas_obj, eos)
+            v = 1.0 / max(1e-6, st.density)  # m3/kg
+            cp = max(100.0, st.Cp if st.Cp > 50.0 else st.Cp * 1000.0)  # J/(kg.K)
+            
+            # (dv/dT)_P
+            dt = 0.5
+            st_plus = self.thermo_solver.get_properties(p_pa, t_k + dt, gas_obj, eos)
+            v_plus = 1.0 / max(1e-6, st_plus.density)
+            dv_dt = (v_plus - v) / dt
+            
+            # 1st Law ODE
+            dt_dp = (v * (1.0 / poly_eff - 1.0) + t_k * dv_dt) / cp
+            return dt_dp, v, st.Z
+
+        try:
+            for i in range(step_count):
+                p_curr = pressures[i]
+                # RK4
+                k1_dt_dp, v1, z_curr = get_derivatives(p_curr, t_current)
+                
+                p_mid = p_curr + 0.5 * dp
+                t_k2 = t_current + 0.5 * dp * k1_dt_dp
+                k2_dt_dp, v2, _ = get_derivatives(p_mid, t_k2)
+                
+                t_k3 = t_current + 0.5 * dp * k2_dt_dp
+                k3_dt_dp, v3, _ = get_derivatives(p_mid, t_k3)
+                
+                p_next = p_curr + dp
+                t_k4 = t_current + dp * k3_dt_dp
+                k4_dt_dp, v4, z_next = get_derivatives(p_next, t_k4)
+                
+                t_current += (dp / 6.0) * (k1_dt_dp + 2.0 * k2_dt_dp + 2.0 * k3_dt_dp + k4_dt_dp)
+                poly_head_total += (dp / 6.0) * (v1 + 4.0 * ((v2 + v3) / 2.0) + v4)
+                
+                z_list.append(z_next)
+                t_list.append(t_current)
+                p_list.append(p_next)
+
+            poly_head_kj_kg = poly_head_total / 1000.0
+            z_avg = float(np.mean(z_list))
+            
+            history = {
+                "method_used": "huntington_rk45",
+                "pressure": p_list,
+                "temperature": t_list,
+                "z_factor": z_list,
+                "step_count": step_count,
+                "converged": True,
+                "termination_reason": "converged",
+            }
+            self.logger.info(
+                f"✓ Metot 5 (Huntington-RK45) tamamlandı: T_out={t_current:.1f} K ({t_current-273.15:.1f}°C), "
+                f"H_poly={poly_head_kj_kg:.2f} kJ/kg, Z_avg={z_avg:.4f}"
+            )
+            return t_current, poly_head_kj_kg, z_avg, history
+        except Exception as exc:
+            self.logger.warning(f"Metot 5 RK4 hatası: {exc}")
+            raise
+
+    def method_schultz_3exp(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
+        """
+        Metot 6: Schultz 3-Üslü Gerçek Gaz Modeli (Schultz 1962, ASME Original).
+        X = (T/Z)*(dZ/dT)_P
+        Y = 1 - (P/Z)*(dZ/dP)_T
+        n_v = k / [Y - X*(k-1)*(1/eta_p - 1)]
+        m_T = (R*Z/Cp) * (1/eta_p + X)
+        """
+        max_iter = self._coerce_iteration_limit(max_iter)
+        tolerance = self._coerce_tolerance(tolerance)
+        
+        try:
+            state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
+            z1, k1 = state_in.Z, state_in.k
+            cp1 = state_in.Cp if state_in.Cp > 50.0 else state_in.Cp * 1000.0
+            mw = state_in.MW
+        except Exception as error:
+            raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 6): {error}")
+
+        r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
+        pr = p_out / p_in
+        t2_guess = t_in * math.pow(pr, (k1 - 1.0) / (k1 * poly_eff))
+        
+        history = {
+            "temperature": [t_in],
+            "z_factor": [z1],
+            "k_value": [k1],
+            "iteration": [0],
+            "converged": False,
+            "method_used": "schultz_3exp",
+            "termination_reason": None,
+        }
+
+        z2 = z1
+        for iteration in range(max_iter):
+            t2_old = t2_guess
+            try:
+                state_out = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+                z2, k2 = state_out.Z, state_out.k
+                cp2 = state_out.Cp if state_out.Cp > 50.0 else state_out.Cp * 1000.0
+            except Exception as error:
+                self.logger.warning(f"Metot 6 iterasyon hatası: {error}")
+                break
+
+            t_avg = (t_in + t2_guess) / 2.0
+            p_avg = (p_in + p_out) / 2.0
+            
+            # Calculate X and Y compressibility derivatives at average state
+            dt = 0.5
+            dp = 5000.0
+            st_avg = self.thermo_solver.get_properties(p_avg, t_avg, gas_obj, eos)
+            z_avg_pt = st_avg.Z
+            cp_avg = st_avg.Cp if st_avg.Cp > 50.0 else st_avg.Cp * 1000.0
+            k_avg = st_avg.k
+            
+            st_t_plus = self.thermo_solver.get_properties(p_avg, t_avg + dt, gas_obj, eos)
+            dz_dt = (st_t_plus.Z - z_avg_pt) / dt
+            
+            st_p_plus = self.thermo_solver.get_properties(p_avg + dp, t_avg, gas_obj, eos)
+            dz_dp = (st_p_plus.Z - z_avg_pt) / dp
+            
+            X = (t_avg / max(1e-4, z_avg_pt)) * dz_dt
+            Y = 1.0 - (p_avg / max(1e-4, z_avg_pt)) * dz_dp
+            
+            # Temperature exponent m_T
+            m_T = (r_specific * z_avg_pt / max(100.0, cp_avg)) * (1.0 / poly_eff + X)
+            t2_calc = t_in * math.pow(pr, m_T)
+            t2_guess = t2_old + 0.5 * (t2_calc - t2_old)
+            
+            history["temperature"].append(t2_guess)
+            history["z_factor"].append(z2)
+            history["k_value"].append(k2)
+            history["iteration"].append(iteration + 1)
+            
+            if abs(t2_guess - t2_old) < tolerance:
+                # Polytropic volume exponent n_v
+                denom = Y - X * (k_avg - 1.0) * (1.0 / poly_eff - 1.0)
+                n_v = k_avg / denom if abs(denom) > 1e-4 else k_avg / Y
+                exp_v = (n_v - 1.0) / n_v if abs(n_v) > 1e-4 else (k_avg - 1.0) / k_avg
+                
+                z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(z1, z2)
+                poly_head = self._calculate_polytropic_head(
+                    z_avg, r_specific, t_in, pr, exp_v
+                )
+                history["converged"] = True
+                history["termination_reason"] = "converged"
+                history["X"] = X
+                history["Y"] = Y
+                history["n_v"] = n_v
+                history["m_T"] = m_T
+                self.logger.info(
+                    f"✓ Metot 6 (Schultz 3-Exp) tamamlandı: T_out={t2_guess:.1f} K ({t2_guess-273.15:.1f}°C), "
+                    f"H_poly={poly_head:.2f} kJ/kg, X={X:.4f}, Y={Y:.4f}, n_v={n_v:.4f}"
+                )
+                return t2_guess, poly_head, z_avg, history
+
+        # Fallback if loop finishes
+        z_avg_final = CompressorAerodynamics._calculate_z_average_logarithmic(z1, z2)
+        n_final = (k1 - 1.0) / (k1 * poly_eff)
+        poly_head = self._calculate_polytropic_head(z_avg_final, r_specific, t_in, pr, n_final)
+        history["termination_reason"] = "max_iterations"
+        return t2_guess, poly_head, z_avg_final, history
+
     def find_isentropic_temperature(self, p_in, t_in, p_out, s_target, gas_obj, eos, state_in):
         # CoolProp direkt flash kaldirildi — sayisal cozucu (SolverChain) daha guvenilir
         from kasp.core.aerodynamics import CompressorAerodynamics

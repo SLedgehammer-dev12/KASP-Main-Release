@@ -769,9 +769,9 @@ class ThermoEngine:
             modified_inputs = dict(inputs)
             modified_inputs.update({
                 "p_in": float(perturbed_measurements["p_in"]),
-                "p_in_unit": "bara",
+                "p_in_unit": "bar",
                 "p_out": float(perturbed_measurements["p_out"]),
-                "p_out_unit": "bara",
+                "p_out_unit": "bar",
                 "t_in": float(perturbed_measurements["t_in"]),
                 "t_in_unit": "K",
                 "flow": float(perturbed_measurements["flow"]),
@@ -925,6 +925,8 @@ class ThermoEngine:
                     method_endpoint_fn=self.method_suite.method_endpoint,
                     method_incremental_fn=self.method_suite.method_incremental_pressure,
                     method_direct_hs_fn=self.method_suite.method_direct_hs,
+                    method_huntington_fn=self.method_suite.method_huntington_rk45,
+                    method_schultz_3exp_fn=self.method_suite.method_schultz_3exp,
                 )
 
                 # run_stage_loop temizledigi _active_eos_chain'i post-processing icin tekrar aktiflestir

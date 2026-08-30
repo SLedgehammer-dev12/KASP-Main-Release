@@ -21,6 +21,10 @@ def select_design_method_key(method_label):
         return "incremental"
     if "Metot 4" in method_label or "H-S" in method_label or "Doğrudan" in method_label:
         return "direct_hs"
+    if "Metot 5" in method_label or "Huntington" in method_label or "RK45" in method_label or "Diferansiyel" in method_label:
+        return "huntington_rk45"
+    if "Metot 6" in method_label or "Schultz 3" in method_label or "3-Üslü" in method_label or "3-Exp" in method_label:
+        return "schultz_3exp"
     return "average"
 
 

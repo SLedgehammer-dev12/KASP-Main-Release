@@ -34,10 +34,12 @@ def get_design_flow_units():
 
 def get_design_method_options():
     return [
-        "Metot 1: Ortalama Özellikler",
+        "Metot 5: Huntington-RK45 Diferansiyel",
+        "Metot 4: Doğrudan H-S",
+        "Metot 6: Schultz 3-Üslü Gerçek Gaz",
         "Metot 2: Uç Nokta",
         "Metot 3: Artımlı Basınç",
-        "Metot 4: Doğrudan H-S",
+        "Metot 1: Ortalama Özellikler",
     ]
 
 
@@ -401,6 +403,22 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     window.method_combo = QComboBox()
     window.method_combo.addItems(get_design_method_options())
 
+    window.method_recommendation_badge = QLabel("💡 <b>Metot Önerisi:</b> Analiz ediliyor...")
+    window.method_recommendation_badge.setWordWrap(True)
+    window.method_recommendation_badge.setStyleSheet(
+        "color: #1e3a8a; "
+        "background-color: #eff6ff; "
+        "border: 1px solid #bfdbfe; "
+        "border-radius: 4px; "
+        "padding: 4px 8px; "
+        "font-size: 11px; "
+        "font-weight: 500; "
+        "margin-top: 2px;"
+    )
+
+    sizing_layout.addRow("Sıkıştırma Metodu:", window.method_combo)
+    sizing_layout.addRow("", window.method_recommendation_badge)
+
     poly_layout = QHBoxLayout()
     window.poly_eff_edit = QLineEdit("90.0")
     window.poly_eff_edit.setValidator(QDoubleValidator(50.0, 95.0, 1))
@@ -573,7 +591,7 @@ def wire_help_guidance(window):
         },
         "method_combo": {
             "title": "Sıkıştırma Yolu Yöntemi",
-            "desc": "<b>Ortalama Özellikler (Metot 1):</b> API 617 standardında giriş/çıkış ortalamasını alan hızlı yaklaşım.<br><b>Uç Nokta (Metot 2):</b> Çıkış özelliklerini referans alan entegrasyon.<br><b>Artımlı Basınç (Metot 3):</b> Basınç aralığını dilimlere bölüp adım adım entegre eden yol.<br><b>Doğrudan H-S (Metot 4):</b> Gerçek entalpi ve entropi değişimlerini entegre eden en kararlı ve hassas fiziksel yöntemdir."
+            "desc": "<b>Ortalama Özellikler (Metot 1):</b> API 617 standardında giriş/çıkış ortalamasını alan hızlı yaklaşım.<br><b>Uç Nokta (Metot 2):</b> Çıkış özelliklerini referans alan ASME PTC 10 Schultz entegrasyonu.<br><b>Artımlı Basınç (Metot 3):</b> Basınç aralığını dilimlere bölüp adım adım entegre eden yol.<br><b>Doğrudan H-S (Metot 4):</b> Gerçek entalpi ve entropi değişimlerini entegre eden kararlı fiziksel yöntem.<br><b>Huntington-RK45 (Metot 5):</b> Termodinamik 1. Yasa diferansiyel denklemini (dT/dP) 4. derece Runge-Kutta ile sürekli çözen analitik altın standart.<br><b>Schultz 3-Üslü (Metot 6):</b> X (izobarik) ve Y (izotermal) sıkıştırılabilirlik türevleriyle 3 ayrı gerçek gaz üssü (nv, mT, np) hesaplayan model."
         },
         "consistency_check": {
             "title": "Tutarlılık İterasyonu",

@@ -23,6 +23,8 @@ class ThermoDesignOrchestrator:
         method_endpoint_fn,
         method_incremental_fn,
         method_direct_hs_fn,
+        method_huntington_fn=None,
+        method_schultz_3exp_fn=None,
     ):
         if method_key == "endpoint":
             return method_endpoint_fn
@@ -30,6 +32,10 @@ class ThermoDesignOrchestrator:
             return method_incremental_fn
         if method_key == "direct_hs":
             return method_direct_hs_fn
+        if method_key == "huntington_rk45" and method_huntington_fn is not None:
+            return method_huntington_fn
+        if method_key == "schultz_3exp" and method_schultz_3exp_fn is not None:
+            return method_schultz_3exp_fn
         return method_average_fn
 
     def run_stage_loop(
@@ -55,6 +61,8 @@ class ThermoDesignOrchestrator:
         method_endpoint_fn,
         method_incremental_fn,
         method_direct_hs_fn,
+        method_huntington_fn=None,
+        method_schultz_3exp_fn=None,
     ):
         # EosChain'i solver'a bagla — get_properties otomatik kullanir
         if eos_chain is not None:
@@ -81,6 +89,8 @@ class ThermoDesignOrchestrator:
                 method_endpoint_fn=method_endpoint_fn,
                 method_incremental_fn=method_incremental_fn,
                 method_direct_hs_fn=method_direct_hs_fn,
+                method_huntington_fn=method_huntington_fn,
+                method_schultz_3exp_fn=method_schultz_3exp_fn,
             )
         finally:
             if eos_chain is not None:
@@ -109,6 +119,8 @@ class ThermoDesignOrchestrator:
         method_endpoint_fn,
         method_incremental_fn,
         method_direct_hs_fn,
+        method_huntington_fn=None,
+        method_schultz_3exp_fn=None,
     ):
         method_callback = self._resolve_method_callback(
             method_key,
@@ -116,6 +128,8 @@ class ThermoDesignOrchestrator:
             method_endpoint_fn=method_endpoint_fn,
             method_incremental_fn=method_incremental_fn,
             method_direct_hs_fn=method_direct_hs_fn,
+            method_huntington_fn=method_huntington_fn,
+            method_schultz_3exp_fn=method_schultz_3exp_fn,
         )
 
         curr_p_in = p_in_pa
@@ -145,7 +159,7 @@ class ThermoDesignOrchestrator:
             retries = 0
             while True:
                 try:
-                    if method_key == "incremental":
+                    if method_key in ("incremental", "huntington_rk45"):
                         t_out_k, poly_head, z_avg, history = method_callback(
                             curr_p_in, curr_t_in, curr_p_out, poly_eff_tgt, gas_obj, eos, step_count
                         )
@@ -217,8 +231,8 @@ class ThermoDesignOrchestrator:
                 stage_delta_h_kj = poly_head / max(0.3, poly_eff_tgt) if poly_head > 0 else abs(stage_delta_h_kj)
             r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
 
-            # Schultz Düzeltme Katsayısı (ASME PTC 10) - direct_hs zaten gerçek Z/Δh kullandığı için f_t=1.0
-            if method_key == "direct_hs":
+            # Schultz Düzeltme Katsayısı (ASME PTC 10) - direct_hs ve huntington_rk45 zaten gerçek Z/Δh integrali kullandığı için f_t=1.0
+            if method_key in ("direct_hs", "huntington_rk45"):
                 f_t = 1.0
             else:
                 f_t = CompressorAerodynamics.calculate_schultz_factor(

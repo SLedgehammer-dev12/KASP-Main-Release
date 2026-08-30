@@ -33,6 +33,9 @@ class UnitSystem:
 
     PRESSURE_ALIASES = {
         "kg/cmÂ²": "kg/cm²",
+        "bara": "bar",
+        "bar(a)": "bar",
+        "bar_a": "bar",
     }
 
     @classmethod
