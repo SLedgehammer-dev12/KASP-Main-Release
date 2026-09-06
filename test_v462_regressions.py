@@ -64,6 +64,7 @@ def test_design_calculation_returns_without_hanging():
         "mech_eff": 98.0,
         "use_consistency_iteration": False,
         "method_max_iter": 25,
+        "enable_uncertainty": False,
     }
 
     with ThreadPoolExecutor(max_workers=1) as executor:

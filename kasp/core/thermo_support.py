@@ -35,10 +35,10 @@ NORMAL_VOLUME_UNITS = {"Nm3/h", "Nm³/h", "NmÂ³/h"}
 MOLAR_FLOW_UNITS = {"kgmol/h", "kmol/h"}
 
 
-def convert_pressure_to_pa(value, unit, ambient_pressure_pa=None):
+def convert_pressure_to_pa(value, unit, ambient_pressure_pa=None, altitude_m=None):
     try:
         UnitSystem.validate_pressure_value(value, unit)
-        return UnitSystem.convert_pressure(value, unit, "Pa", ambient_pressure_pa)
+        return UnitSystem.convert_pressure(value, unit, "Pa", ambient_pressure_pa=ambient_pressure_pa, altitude_m=altitude_m)
     except UnitConversionError as error:
         raise UnitConversionError(f"Basinc donusum hatasi: {error}", value, unit)
 

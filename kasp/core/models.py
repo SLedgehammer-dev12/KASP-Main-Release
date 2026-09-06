@@ -18,10 +18,11 @@ class ThermodynamicState:
     Z: float            # Sıkıştırılabilirlik faktörü
     k: float            # İzentropik (Özgül ısı) oranı (Cp/Cv)
     MW: float           # Molar kütle (g/mol)
-    Cp: float           # Sabit basınçta özgül ısı (kJ/kg/K)
-    Cv: float           # Sabit hacimde özgül ısı (kJ/kg/K)
+    Cp: float           # Sabit basınçta özgül ısı (J/kg/K)
+    Cv: float           # Sabit hacimde özgül ısı (J/kg/K)
     density: float      # Yoğunluk (kg/m³)
     phase: str          # 'gas', 'liquid', 'supercritical', vs.
+    speed_of_sound: float = 0.0  # Ses hızı (m/s)
     raw_props: Dict[str, Any] = field(default_factory=dict) # Orijinal kütüphane property verisi
 
 @dataclass

@@ -123,10 +123,10 @@ class ThermodynamicSolver:
             self._cache_misses += 1
 
     @staticmethod
-    def _speed_of_sound(k_value, pressure_pa, density):
-        if density <= 0:
+    def _speed_of_sound(k_value, pressure_pa, density, Z=1.0):
+        if density <= 0 or pressure_pa <= 0 or k_value <= 0:
             return 0.0
-        return math.sqrt(max(k_value * pressure_pa / density, 0.0))
+        return math.sqrt(max(float(k_value) * float(pressure_pa) / float(density), 0.0))
 
     @staticmethod
     def _classify_phase(Z: float, density: float, raw_phase: str | None = None) -> str:
@@ -169,19 +169,22 @@ class ThermodynamicSolver:
         speed_of_sound=None,
     ):
         if speed_of_sound is None:
-            speed_of_sound = ThermodynamicSolver._speed_of_sound(k, P_pa, density)
+            speed_of_sound = ThermodynamicSolver._speed_of_sound(k, P_pa, density, Z)
         normalized_phase = ThermodynamicSolver._classify_phase(Z, density, phase)
+        # Standart J/(kg*K) birim sözleşmesi güvencesi
+        norm_cp = float(Cp) if Cp is not None and math.isfinite(Cp) else 1000.0
+        norm_cv = float(Cv) if Cv is not None and math.isfinite(Cv) else (norm_cp / (k if k > 1.0 else 1.4))
         return ThermodynamicState(
-            P=P_pa,
-            T=T_k,
-            H=H,
-            S=S,
-            Z=Z,
-            k=k,
-            MW=MW,
-            Cp=Cp,
-            Cv=Cv,
-            density=density,
+            P=float(P_pa),
+            T=float(T_k),
+            H=float(H),
+            S=float(S),
+            Z=float(Z),
+            k=float(k),
+            MW=float(MW),
+            Cp=norm_cp,
+            Cv=norm_cv,
+            density=float(density),
             phase=normalized_phase,
             raw_props={
                 "fallback": bool(fallback),

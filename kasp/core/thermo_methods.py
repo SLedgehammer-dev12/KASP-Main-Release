@@ -554,9 +554,10 @@ class ThermoMethodSuite:
 
         return t2_guess, poly_head, z_avg, history
 
-    def method_huntington_rk45(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, step_count=20):
+    def method_huntington_rk45(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, step_count=20, adaptive=True, tol=1e-4):
         """
         Metot 5: Huntington-RK45 Sürekli Diferansiyel Yol Entegratörü (ASME 85-GT-13).
+        Adaptif Adım Boyutlu Runge-Kutta-Fehlberg (RKF45) algoritması içerir.
         dT/dP = [v * (1/eta_p - 1) + T * (dv/dT)_P] / Cp(P, T)
         H_p = integral_{P_in}^{P_out} v(P, T(P)) dP
         """
@@ -569,52 +570,134 @@ class ThermoMethodSuite:
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 5): {error}")
 
-        pressures = np.linspace(p_in, p_out, step_count + 1)
-        dp = pressures[1] - pressures[0]
-        t_current = t_in
-        poly_head_total = 0.0
-        z_list = [z0]
-        t_list = [t_in]
-        p_list = [p_in]
-
         def get_derivatives(p_pa, t_k):
             st = self.thermo_solver.get_properties(p_pa, t_k, gas_obj, eos)
             v = 1.0 / max(1e-6, st.density)  # m3/kg
-            cp = max(100.0, st.Cp if st.Cp > 50.0 else st.Cp * 1000.0)  # J/(kg.K)
+            cp = max(100.0, float(st.Cp))  # J/(kg.K)
             
-            # (dv/dT)_P
+            # (dv/dT)_P via central/forward difference
             dt = 0.5
             st_plus = self.thermo_solver.get_properties(p_pa, t_k + dt, gas_obj, eos)
             v_plus = 1.0 / max(1e-6, st_plus.density)
             dv_dt = (v_plus - v) / dt
             
-            # 1st Law ODE
+            # 1st Law ODE: dT/dP
             dt_dp = (v * (1.0 / poly_eff - 1.0) + t_k * dv_dt) / cp
             return dt_dp, v, st.Z
 
+        total_dp = p_out - p_in
+        if abs(total_dp) < 1.0:
+            return t_in, 0.0, z0, {
+                "method_used": "huntington_rk45",
+                "pressure": [p_in],
+                "temperature": [t_in],
+                "z_factor": [z0],
+                "step_count": 0,
+                "converged": True,
+                "termination_reason": "zero_dp",
+            }
+
+        t_current = t_in
+        p_current = p_in
+        poly_head_total = 0.0
+        z_list = [z0]
+        t_list = [t_in]
+        p_list = [p_in]
+
         try:
-            for i in range(step_count):
-                p_curr = pressures[i]
-                # RK4
-                k1_dt_dp, v1, z_curr = get_derivatives(p_curr, t_current)
-                
-                p_mid = p_curr + 0.5 * dp
-                t_k2 = t_current + 0.5 * dp * k1_dt_dp
-                k2_dt_dp, v2, _ = get_derivatives(p_mid, t_k2)
-                
-                t_k3 = t_current + 0.5 * dp * k2_dt_dp
-                k3_dt_dp, v3, _ = get_derivatives(p_mid, t_k3)
-                
-                p_next = p_curr + dp
-                t_k4 = t_current + dp * k3_dt_dp
-                k4_dt_dp, v4, z_next = get_derivatives(p_next, t_k4)
-                
-                t_current += (dp / 6.0) * (k1_dt_dp + 2.0 * k2_dt_dp + 2.0 * k3_dt_dp + k4_dt_dp)
-                poly_head_total += (dp / 6.0) * (v1 + 4.0 * ((v2 + v3) / 2.0) + v4)
-                
-                z_list.append(z_next)
-                t_list.append(t_current)
-                p_list.append(p_next)
+            if not adaptive:
+                # Fixed-step RK4 fallback
+                pressures = np.linspace(p_in, p_out, step_count + 1)
+                dp = pressures[1] - pressures[0]
+                for i in range(step_count):
+                    p_curr = pressures[i]
+                    k1_dt_dp, v1, z_curr = get_derivatives(p_curr, t_current)
+                    
+                    p_mid = p_curr + 0.5 * dp
+                    t_k2 = t_current + 0.5 * dp * k1_dt_dp
+                    k2_dt_dp, v2, _ = get_derivatives(p_mid, t_k2)
+                    
+                    t_k3 = t_current + 0.5 * dp * k2_dt_dp
+                    k3_dt_dp, v3, _ = get_derivatives(p_mid, t_k3)
+                    
+                    p_next = p_curr + dp
+                    t_k4 = t_current + dp * k3_dt_dp
+                    k4_dt_dp, v4, z_next = get_derivatives(p_next, t_k4)
+                    
+                    t_current += (dp / 6.0) * (k1_dt_dp + 2.0 * k2_dt_dp + 2.0 * k3_dt_dp + k4_dt_dp)
+                    poly_head_total += (dp / 6.0) * (v1 + 4.0 * ((v2 + v3) / 2.0) + v4)
+                    
+                    z_list.append(z_next)
+                    t_list.append(t_current)
+                    p_list.append(p_next)
+            else:
+                # Adaptive RKF45 (Runge-Kutta-Fehlberg)
+                h = total_dp / max(step_count, 10)
+                h_min = abs(total_dp) * 1e-6
+                h_max = abs(total_dp) * 0.25
+                max_iterations = 500
+                iter_count = 0
+
+                while (p_current < p_out - 1e-6) and (iter_count < max_iterations):
+                    iter_count += 1
+                    if p_current + h > p_out:
+                        h = p_out - p_current
+
+                    # RKF45 stages
+                    k1, v1, z1 = get_derivatives(p_current, t_current)
+                    k2, v2, _ = get_derivatives(p_current + (1.0 / 4.0) * h, t_current + (1.0 / 4.0) * h * k1)
+                    k3, v3, _ = get_derivatives(
+                        p_current + (3.0 / 8.0) * h,
+                        t_current + (3.0 / 32.0) * h * k1 + (9.0 / 32.0) * h * k2,
+                    )
+                    k4, v4, _ = get_derivatives(
+                        p_current + (12.0 / 13.0) * h,
+                        t_current + (1932.0 / 2197.0) * h * k1 - (7200.0 / 2197.0) * h * k2 + (7296.0 / 2197.0) * h * k3,
+                    )
+                    k5, v5, _ = get_derivatives(
+                        p_current + h,
+                        t_current + (439.0 / 216.0) * h * k1 - 8.0 * h * k2 + (3680.0 / 513.0) * h * k3 - (845.0 / 4104.0) * h * k4,
+                    )
+                    k6, v6, _ = get_derivatives(
+                        p_current + 0.5 * h,
+                        t_current - (8.0 / 27.0) * h * k1 + 2.0 * h * k2 - (3544.0 / 2565.0) * h * k3 + (1859.0 / 4104.0) * h * k4 - (11.0 / 40.0) * h * k5,
+                    )
+
+                    # 4th and 5th order solutions
+                    t4 = t_current + h * (
+                        (25.0 / 216.0) * k1 + (1408.0 / 2565.0) * k3 + (2197.0 / 4104.0) * k4 - (1.0 / 5.0) * k5
+                    )
+                    t5 = t_current + h * (
+                        (16.0 / 135.0) * k1 + (6656.0 / 12825.0) * k3 + (28561.0 / 56430.0) * k4 - (9.0 / 50.0) * k5 + (2.0 / 55.0) * k6
+                    )
+                    
+                    # Local truncation error
+                    err = abs(t5 - t4)
+                    tol_effective = max(tol, 1e-6) * (1.0 + abs(t_current) * 1e-4)
+
+                    if err <= tol_effective or h <= h_min:
+                        # Accept step
+                        dh = h * (
+                            (16.0 / 135.0) * v1 + (6656.0 / 12825.0) * v3 + (28561.0 / 56430.0) * v4 - (9.0 / 50.0) * v5 + (2.0 / 55.0) * v6
+                        )
+                        poly_head_total += dh
+                        p_current += h
+                        t_current = t5
+                        
+                        st_end = self.thermo_solver.get_properties(p_current, t_current, gas_obj, eos)
+                        z_list.append(st_end.Z)
+                        t_list.append(t_current)
+                        p_list.append(p_current)
+
+                        # Step size adjustment for accepted step
+                        scale = 0.84 * ((tol_effective / max(err, 1e-12)) ** 0.2)
+                        scale = max(0.2, min(2.5, scale))
+                        h = max(h_min, min(h_max, h * scale))
+                    else:
+                        # Reject step, reduce step size
+                        scale = 0.84 * ((tol_effective / max(err, 1e-12)) ** 0.2)
+                        scale = max(0.1, min(0.5, scale))
+                        h = max(h_min, h * scale)
 
             poly_head_kj_kg = poly_head_total / 1000.0
             z_avg = float(np.mean(z_list))
@@ -624,17 +707,17 @@ class ThermoMethodSuite:
                 "pressure": p_list,
                 "temperature": t_list,
                 "z_factor": z_list,
-                "step_count": step_count,
+                "step_count": len(p_list) - 1,
                 "converged": True,
                 "termination_reason": "converged",
             }
             self.logger.info(
                 f"✓ Metot 5 (Huntington-RK45) tamamlandı: T_out={t_current:.1f} K ({t_current-273.15:.1f}°C), "
-                f"H_poly={poly_head_kj_kg:.2f} kJ/kg, Z_avg={z_avg:.4f}"
+                f"H_poly={poly_head_kj_kg:.2f} kJ/kg, Z_avg={z_avg:.4f}, Adım={len(p_list)-1}"
             )
             return t_current, poly_head_kj_kg, z_avg, history
         except Exception as exc:
-            self.logger.warning(f"Metot 5 RK4 hatası: {exc}")
+            self.logger.warning(f"Metot 5 RK45 hatası: {exc}")
             raise
 
     def method_schultz_3exp(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
@@ -651,7 +734,7 @@ class ThermoMethodSuite:
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
             z1, k1 = state_in.Z, state_in.k
-            cp1 = state_in.Cp if state_in.Cp > 50.0 else state_in.Cp * 1000.0
+            cp1 = max(100.0, float(state_in.Cp))
             mw = state_in.MW
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 6): {error}")
@@ -676,7 +759,7 @@ class ThermoMethodSuite:
             try:
                 state_out = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
                 z2, k2 = state_out.Z, state_out.k
-                cp2 = state_out.Cp if state_out.Cp > 50.0 else state_out.Cp * 1000.0
+                cp2 = max(100.0, float(state_out.Cp))
             except Exception as error:
                 self.logger.warning(f"Metot 6 iterasyon hatası: {error}")
                 break
@@ -689,7 +772,7 @@ class ThermoMethodSuite:
             dp = 5000.0
             st_avg = self.thermo_solver.get_properties(p_avg, t_avg, gas_obj, eos)
             z_avg_pt = st_avg.Z
-            cp_avg = st_avg.Cp if st_avg.Cp > 50.0 else st_avg.Cp * 1000.0
+            cp_avg = max(100.0, float(st_avg.Cp))
             k_avg = st_avg.k
             
             st_t_plus = self.thermo_solver.get_properties(p_avg, t_avg + dt, gas_obj, eos)

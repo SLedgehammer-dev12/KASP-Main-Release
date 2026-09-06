@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import ssl
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -147,21 +148,36 @@ class GitHubReleaseClient:
             "Accept": "application/vnd.github+json",
             "User-Agent": "KASP-Updater",
         }
+        self._cached_releases: list[ReleaseInfo] | None = None
+        self._last_fetch_time: float = 0.0
 
-    def fetch_releases(self, *, include_prereleases: bool = False) -> list[ReleaseInfo]:
-        request = urllib.request.Request(self.api_url, headers=self.headers)
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout, context=_get_ssl_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Release listesi alinamadi: {exc}") from exc
+    def fetch_releases(
+        self,
+        *,
+        include_prereleases: bool = False,
+        force: bool = False,
+        max_age_seconds: float = 86400.0,
+    ) -> list[ReleaseInfo]:
+        if not force and self._cached_releases is not None and (time.time() - self._last_fetch_time < max_age_seconds):
+            logger.debug("Önbellekten release listesi döndürülüyor (TTL: %.0fs)", max_age_seconds)
+            releases = self._cached_releases
+        else:
+            request = urllib.request.Request(self.api_url, headers=self.headers)
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout, context=_get_ssl_context()) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except urllib.error.URLError as exc:
+                raise RuntimeError(f"Release listesi alinamadi: {exc}") from exc
 
-        if isinstance(payload, dict):
-            payload = [payload]
-        if not isinstance(payload, list):
-            raise RuntimeError("Release listesi beklenen formatta degil.")
+            if isinstance(payload, dict):
+                payload = [payload]
+            if not isinstance(payload, list):
+                raise RuntimeError("Release listesi beklenen formatta degil.")
 
-        releases = [self._parse_release(item) for item in payload]
+            releases = [self._parse_release(item) for item in payload]
+            self._cached_releases = releases
+            self._last_fetch_time = time.time()
+
         releases = [release for release in releases if not release.draft]
         if not include_prereleases:
             releases = [release for release in releases if not release.prerelease]
@@ -220,6 +236,28 @@ class GitHubReleaseClient:
 
     @staticmethod
     def _parse_release(item: dict) -> ReleaseInfo:
+        body = item.get("body") or ""
+        
+        def _extract_sha256(raw_asset):
+            digest = raw_asset.get("digest", "")
+            if digest.startswith("sha256:"):
+                return digest.replace("sha256:", "")
+            name = raw_asset.get("name") or ""
+            if name:
+                pattern = re.escape(name) + r"[\s\S]*?([a-fA-F0-9]{64})"
+                match = re.search(pattern, body)
+                if match:
+                    return match.group(1)
+            # Try finding SHA256: <hash>
+            sha_match = re.search(r"sha256[:\s]+([a-fA-F0-9]{64})", body, re.IGNORECASE)
+            if sha_match:
+                return sha_match.group(1)
+            # Fallback: if there is only 1 asset and 1 hash in body
+            hashes = re.findall(r"([a-fA-F0-9]{64})", body)
+            if len(hashes) == 1:
+                return hashes[0]
+            return None
+
         assets = tuple(
             ReleaseAsset(
                 name=sanitize_asset_filename(
@@ -228,7 +266,7 @@ class GitHubReleaseClient:
                 download_url=asset.get("browser_download_url") or "",
                 size=int(asset.get("size") or 0),
                 content_type=asset.get("content_type") or "application/octet-stream",
-                sha256=asset.get("digest", "").replace("sha256:", "") if asset.get("digest", "").startswith("sha256:") else None,
+                sha256=_extract_sha256(asset),
             )
             for asset in item.get("assets", [])
             if asset.get("browser_download_url")
@@ -236,7 +274,7 @@ class GitHubReleaseClient:
         return ReleaseInfo(
             tag_name=item.get("tag_name") or "",
             name=item.get("name") or item.get("tag_name") or "",
-            body=item.get("body") or "",
+            body=body,
             html_url=item.get("html_url") or "",
             published_at=item.get("published_at") or "",
             prerelease=bool(item.get("prerelease")),

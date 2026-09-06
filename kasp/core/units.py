@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from .exceptions import UnitConversionError
 
 
@@ -39,6 +40,24 @@ class UnitSystem:
     }
 
     @classmethod
+    def altitude_to_ambient_pressure(cls, altitude_m=0.0):
+        """
+        Uluslararası Standart Atmosfer (ISA) modeline göre rakımdan (metre)
+        yerel atmosferik basıncı (Pa) hesaplar.
+        """
+        h = max(-500.0, float(altitude_m or 0.0))
+        t0 = cls.STANDARD_TEMP_K  # 288.15 K
+        l_rate = 0.0065  # K/m
+        p0 = cls.STD_PRESS_PA  # 101325.0 Pa
+        exponent = (cls.GRAVITATIONAL_ACCELERATION * 0.0289644) / (cls.R_UNIVERSAL_J_MOL_K * l_rate)
+        if h > 11000.0:
+            p_11k = p0 * ((1.0 - (l_rate * 11000.0) / t0) ** exponent)
+            return p_11k * math.exp(
+                -cls.GRAVITATIONAL_ACCELERATION * 0.0289644 * (h - 11000.0) / (cls.R_UNIVERSAL_J_MOL_K * 216.65)
+            )
+        return p0 * ((1.0 - (l_rate * h) / t0) ** exponent)
+
+    @classmethod
     def _canonical_pressure_unit(cls, unit):
         return cls.PRESSURE_ALIASES.get(unit, unit)
 
@@ -54,8 +73,13 @@ class UnitSystem:
             raise UnitConversionError(f"Gecersiz {quantity_name} degeri: {value}", value, unit) from error
 
     @classmethod
-    def convert_pressure(cls, value, from_unit, to_unit="Pa", ambient_pressure_pa=None):
-        ambient = ambient_pressure_pa if ambient_pressure_pa is not None else cls.STD_PRESS_PA
+    def convert_pressure(cls, value, from_unit, to_unit="Pa", ambient_pressure_pa=None, altitude_m=None):
+        if ambient_pressure_pa is not None:
+            ambient = ambient_pressure_pa
+        elif altitude_m is not None:
+            ambient = cls.altitude_to_ambient_pressure(altitude_m)
+        else:
+            ambient = cls.STD_PRESS_PA
         value = cls._coerce_numeric(value, "basinc", from_unit)
         from_unit = cls._canonical_pressure_unit(from_unit)
         to_unit = cls._canonical_pressure_unit(to_unit)

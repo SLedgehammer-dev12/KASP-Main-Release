@@ -132,8 +132,8 @@ class ThermoEngine:
     # -------------------------------------------------------------------------
     # 2. BİRİM DÖNÜŞÜM METOTLARI
     # -------------------------------------------------------------------------
-    def convert_pressure_to_pa(self, value, unit, ambient_pressure_pa=None):
-        return convert_pressure_to_pa_helper(value, unit, ambient_pressure_pa)
+    def convert_pressure_to_pa(self, value, unit, ambient_pressure_pa=None, altitude_m=None):
+        return convert_pressure_to_pa_helper(value, unit, ambient_pressure_pa=ambient_pressure_pa, altitude_m=altitude_m)
 
     def convert_temperature_to_k(self, value, unit):
         return convert_temperature_to_k_helper(value, unit)
@@ -650,16 +650,18 @@ class ThermoEngine:
         )
 
     def _prepare_design_context(self, inputs):
-        ambient_pressure_pa = inputs.get("ambient_pressure_pa", self.STD_PRESS_PA)
-        p_in_pa = self.convert_pressure_to_pa(float(inputs["p_in"]), inputs["p_in_unit"], ambient_pressure_pa)
+        ambient_pressure_pa = inputs.get("ambient_pressure_pa")
+        altitude_m = inputs.get("altitude_m")
+        p_in_pa = self.convert_pressure_to_pa(float(inputs["p_in"]), inputs["p_in_unit"], ambient_pressure_pa=ambient_pressure_pa, altitude_m=altitude_m)
         t_in_k = self.convert_temperature_to_k(float(inputs["t_in"]), inputs["t_in_unit"])
-        p_out_pa = self.convert_pressure_to_pa(float(inputs["p_out"]), inputs["p_out_unit"], ambient_pressure_pa)
+        p_out_pa = self.convert_pressure_to_pa(float(inputs["p_out"]), inputs["p_out_unit"], ambient_pressure_pa=ambient_pressure_pa, altitude_m=altitude_m)
 
         if p_out_pa <= p_in_pa:
             raise ValueError(f"Cikis basinci ({p_out_pa/1e5:.2f} bar) giristen kucuk/esit olamaz.")
 
-        eos = inputs["eos_method"]
-        gas_obj = self._create_gas_object(inputs["gas_comp"], eos)
+        eos = inputs.get("eos_method") or inputs.get("eos") or "coolprop"
+        gas_comp = inputs.get("gas_comp") or inputs.get("gas_composition") or {}
+        gas_obj = self._create_gas_object(gas_comp, eos)
         total_mass_flow_kgs = self.convert_flow_to_kgs(
             float(inputs["flow"]),
             inputs["flow_unit"],
@@ -672,7 +674,7 @@ class ThermoEngine:
         eos_chain = EosChain(
             self.thermo_solver._fallback_tracker,
             self.thermo_solver,
-            raw_composition=inputs.get("gas_comp", {}),
+            raw_composition=gas_comp,
         )
 
         num_units = max(1, int(inputs.get("num_units", 1)))
@@ -843,7 +845,7 @@ class ThermoEngine:
         motor_kw = total_shaft_kw / mech_eff
         unit_kw = motor_kw * 1.04
 
-        fuel_composition = inputs.get("fuel_gas_comp", inputs["gas_comp"])
+        fuel_composition = inputs.get("fuel_gas_comp") or inputs.get("gas_comp") or inputs.get("gas_composition") or {}
         fuel_gas_obj = self._create_gas_object(fuel_composition, context.get("eos", "pr"))
         lhv, hhv = self._calculate_heating_values(
             fuel_composition,

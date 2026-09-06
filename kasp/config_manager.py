@@ -132,7 +132,7 @@ class ConfigManager:
         logger.info(f"Configuration updated: {key_path} = {value}")
     
     def _merge_config(self, user_config: Dict):
-        """Merge user config with defaults"""
+        """Merge user config with defaults, enforcing SSOT APP_VERSION"""
         def merge_dict(base: Dict, override: Dict):
             for key, value in override.items():
                 if key in base and isinstance(base[key], dict) and isinstance(value, dict):
@@ -141,6 +141,9 @@ class ConfigManager:
                     base[key] = value
         
         merge_dict(self.config, user_config)
+        # Ensure version is always SSOT from release_metadata
+        if "app" in self.config and isinstance(self.config["app"], dict):
+            self.config["app"]["version"] = APP_VERSION
 
 # Singleton instance
 _config_manager = None

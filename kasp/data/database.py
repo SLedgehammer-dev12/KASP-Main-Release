@@ -5,6 +5,7 @@ import sys
 import threading
 import logging
 import os
+import re
 
 
 def _resolve_db_path(db_name="kasp_database.db"):
@@ -133,7 +134,20 @@ class UnitDatabase:
             raise
 
     def _add_column_if_not_exists(self, table_name, column_name, column_type):
-        """Eksik kolonu tabloya ekler"""
+        """Eksik kolonu tabloya ekler (SQL injection korumalı)"""
+        ALLOWED_TABLES = {"Turbines", "Compressors", "CalculationHistory", "Users"}
+        if table_name not in ALLOWED_TABLES:
+            self.logger.error(f"Geçersiz tablo adı: {table_name}")
+            return False
+
+        if not re.match(r"^[a-zA-Z0-9_]+$", column_name):
+            self.logger.error(f"Geçersiz kolon adı: {column_name}")
+            return False
+
+        if not re.match(r"^[a-zA-Z0-9_\s\(\)\'\"\.\-]+$", column_type):
+            self.logger.error(f"Geçersiz kolon veri tipi: {column_type}")
+            return False
+
         cursor = self.get_cursor()
         try:
             cursor.execute(f"PRAGMA table_info({table_name})")

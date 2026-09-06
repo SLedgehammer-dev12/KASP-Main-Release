@@ -8,6 +8,7 @@ try:
     import matplotlib
     matplotlib.use("Qt5Agg")
     from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
     from matplotlib.figure import Figure
     import matplotlib.pyplot as plt
     MATPLOTLIB_LOADED = True
@@ -16,14 +17,16 @@ except ImportError as import_error:
     MATPLOTLIB_LOADED = False
     MATPLOTLIB_IMPORT_ERROR = import_error
     from PyQt5.QtWidgets import QWidget as FigureCanvas
+    NavigationToolbar = None
 
 from PyQt5.QtWidgets import QVBoxLayout, QLabel
 from PyQt5.QtCore import Qt
 
 class MplCanvas(FigureCanvas):
-    """DPI-aware Matplotlib canvas with responsive resize."""
+    """DPI-aware Matplotlib canvas with responsive resize and toolbar support."""
 
     def __init__(self, parent=None, width=8, height=5, dpi=None):
+        self._toolbar = None
         if dpi is None:
             try:
                 from kasp.ui.responsive import get_dpi
@@ -48,6 +51,14 @@ class MplCanvas(FigureCanvas):
             warning_label.setAlignment(Qt.AlignCenter)
             warning_label.setStyleSheet("color: red; font-weight: bold;")
             self.layout.addWidget(warning_label)
+
+    def get_toolbar(self, parent=None):
+        """Matplotlib NavigationToolbar (Zoom, Pan, Home, Save) oluşturur veya döndürür."""
+        if not MATPLOTLIB_LOADED or NavigationToolbar is None or not hasattr(self, "fig"):
+            return None
+        if self._toolbar is None:
+            self._toolbar = NavigationToolbar(self, parent or self.parent())
+        return self._toolbar
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -215,25 +226,38 @@ class GraphGenerator:
             t_isen_values = np.linspace(t_in_k - 273.15, t_out_isen_k - 273.15, 20)
             s_isen_line = [s_in] * 20
             
-            # Gerçek proses çizgisi (Gerçek politropik eğri hesabı)
-            pressures = np.geomspace(p_in_pa, p_out_pa, 20)
+            # Gerçek proses çizgisi (Metot geçmişi varsa doğrudan kullan, yoksa politropik yol)
+            stage0 = results.get("stages", [{}])[0] if results.get("stages") else {}
+            history = results.get("history") or stage0.get("history") or {}
+            p_hist = history.get("pressure")
+            t_hist = history.get("temperature")
+
             t_actual_values = []
             s_actual_values = []
-            
-            poly_eff_frac = inputs['poly_eff'] / 100.0
-            k_val = props_in.k if props_in.k > 1.0 else 1.4
-            n_minus_1_over_n = (k_val - 1) / (k_val * poly_eff_frac)
-            
-            for p in pressures:
-                t_k_path = t_in_k * (p / p_in_pa) ** n_minus_1_over_n
-                try:
-                    props = self.engine.thermo_solver.get_properties(p, t_k_path, gas_obj, eos_method)
-                    t_actual_values.append(t_k_path - 273.15)
-                    s_actual_values.append(props.S / 1000)
-                except Exception:
-                    # Hata varsa lineer yaklaşımla devam et
-                    pass
-            
+
+            if p_hist and t_hist and len(p_hist) == len(t_hist) and len(p_hist) >= 2:
+                for p_val, t_val in zip(p_hist, t_hist):
+                    try:
+                        props = self.engine.thermo_solver.get_properties(p_val, t_val, gas_obj, eos_method)
+                        t_actual_values.append(t_val - 273.15)
+                        s_actual_values.append(props.S / 1000.0)
+                    except Exception:
+                        pass
+
+            if len(t_actual_values) < 2:
+                pressures = np.geomspace(p_in_pa, p_out_pa, 20)
+                poly_eff_frac = inputs.get('poly_eff', 85.0) / 100.0
+                k_val = props_in.k if props_in.k > 1.0 else 1.4
+                n_minus_1_over_n = (k_val - 1) / (k_val * poly_eff_frac)
+                for p in pressures:
+                    t_k_path = t_in_k * (p / p_in_pa) ** n_minus_1_over_n
+                    try:
+                        props = self.engine.thermo_solver.get_properties(p, t_k_path, gas_obj, eos_method)
+                        t_actual_values.append(t_k_path - 273.15)
+                        s_actual_values.append(props.S / 1000.0)
+                    except Exception:
+                        pass
+
             # Eğer hesaplama başarısız olduysa lineer geri dönüş (fallback)
             if len(t_actual_values) < 2:
                 t_actual_values = np.linspace(t_in_k - 273.15, t_out_actual_k - 273.15, 20)
@@ -298,27 +322,44 @@ class GraphGenerator:
             v_in = 1 / props_in.density  # m³/kg
             v_out = 1 / props_out.density
             
-            # Politropik proses eğrisi
-            pressures = np.geomspace(p_in_pa, p_out_pa, 50)
+            # Politropik proses eğrisi (Metot geçmişi varsa doğrudan kullan)
+            stage0 = results.get("stages", [{}])[0] if results.get("stages") else {}
+            history = results.get("history") or stage0.get("history") or {}
+            p_hist = history.get("pressure")
+            t_hist = history.get("temperature")
+
             volumes = []
-            
-            for p in pressures:
-                try:
-                    # Politropik ilişki: P * v^n = sabit
-                    poly_eff_frac = inputs['poly_eff'] / 100.0
-                    n_minus_1_over_n = (props_in.k - 1) / (props_in.k * poly_eff_frac)
-                    n = 1 / (1 - n_minus_1_over_n) if abs(n_minus_1_over_n) > 1e-6 else props_in.k
-                    v = v_in * (p_in_pa / p) ** (1/n)
-                    volumes.append(v)
-                except Exception as e:
-                    logger.debug("Polytropic volume calc failed at P=%.1f: %s", p, e)
-                    volumes.append(np.nan)
+            pressures_actual = []
+
+            if p_hist and t_hist and len(p_hist) == len(t_hist) and len(p_hist) >= 2:
+                for p_val, t_val in zip(p_hist, t_hist):
+                    try:
+                        p_state = self.engine.thermo_solver.get_properties(p_val, t_val, gas_obj, eos_method)
+                        volumes.append(1.0 / p_state.density)
+                        pressures_actual.append(p_val)
+                    except Exception:
+                        pass
+
+            if len(volumes) < 2:
+                pressures = np.geomspace(p_in_pa, p_out_pa, 50)
+                volumes = []
+                pressures_actual = list(pressures)
+                for p in pressures:
+                    try:
+                        poly_eff_frac = inputs.get('poly_eff', 85.0) / 100.0
+                        n_minus_1_over_n = (props_in.k - 1) / (props_in.k * poly_eff_frac)
+                        n = 1 / (1 - n_minus_1_over_n) if abs(n_minus_1_over_n) > 1e-6 else props_in.k
+                        v = v_in * (p_in_pa / p) ** (1/n)
+                        volumes.append(v)
+                    except Exception as e:
+                        logger.debug("Polytropic volume calc failed at P=%.1f: %s", p, e)
+                        volumes.append(np.nan)
             
             # İzentropik proses eğrisi
+            pressures_isen = np.geomspace(p_in_pa, p_out_pa, 50)
             volumes_isen = []
-            for p in pressures:
+            for p in pressures_isen:
                 try:
-                    # İzentropik ilişki: P * v^k = sabit
                     v = v_in * (p_in_pa / p) ** (1/props_in.k)
                     volumes_isen.append(v)
                 except Exception as e:
@@ -326,9 +367,9 @@ class GraphGenerator:
                     volumes_isen.append(np.nan)
             
             # Grafik çizimi
-            ax.plot([v * 1000 for v in volumes], [p / 1000 for p in pressures], 
+            ax.plot([v * 1000 for v in volumes], [p / 1000 for p in pressures_actual], 
                    'b-', linewidth=2, label='Politropik Proses')
-            ax.plot([v * 1000 for v in volumes_isen], [p / 1000 for p in pressures], 
+            ax.plot([v * 1000 for v in volumes_isen], [p / 1000 for p in pressures_isen], 
                    'r--', linewidth=2, label='İzentropik Proses', alpha=0.7)
             
             # Noktalar
@@ -446,8 +487,8 @@ class GraphGenerator:
                 temp_history = [t for i, t in zip(iterations, temperatures) if i > 0]
                 iter_points = [i for i in iterations if i > 0]
                 
-                # Giriş sıcaklığını referans olarak ekle
-                temp_base = temperatures[0] - 273.15
+                # Giriş sıcaklığını referans olarak ekle (temperatures zaten °C cinsindedir)
+                temp_base = temperatures[0]
                 
                 # İterasyon farkını çiz (Yakınsama hızı)
                 temp_diffs = [abs(temp_history[i] - temp_history[i-1]) for i in range(1, len(temp_history))]
@@ -569,21 +610,38 @@ class GraphGenerator:
             h2_actual = state_out.H / 1000.0
             s2_actual = state_out.S / 1000.0
 
-            k_val = state_in.k if state_in.k > 1.0 else 1.4
-            poly_eff_frac = results.get("actual_poly_efficiency", inputs.get("poly_eff", 85.0) / 100.0)
-            if poly_eff_frac > 1.0:
-                poly_eff_frac /= 100.0
-            n_path = (k_val - 1) / (k_val * poly_eff_frac)
-            pressures = np.geomspace(p_in_pa, p_out_pa, 40)
+            # Gerçek proses çizgisi (Metot geçmişi varsa doğrudan kullan)
+            stage0 = results.get("stages", [{}])[0] if results.get("stages") else {}
+            history = results.get("history") or stage0.get("history") or {}
+            p_hist = history.get("pressure")
+            t_hist = history.get("temperature")
+
             h_path, s_path = [], []
-            for p in pressures:
-                t_k = t_in_k * (p / p_in_pa) ** n_path
-                try:
-                    p_state = self.engine.thermo_solver.get_properties(p, t_k, gas_obj, eos_method)
-                    h_path.append(p_state.H / 1000.0)
-                    s_path.append(p_state.S / 1000.0)
-                except Exception:
-                    pass
+            if p_hist and t_hist and len(p_hist) == len(t_hist) and len(p_hist) >= 2:
+                for p_val, t_val in zip(p_hist, t_hist):
+                    try:
+                        p_state = self.engine.thermo_solver.get_properties(p_val, t_val, gas_obj, eos_method)
+                        h_path.append(p_state.H / 1000.0)
+                        s_path.append(p_state.S / 1000.0)
+                    except Exception:
+                        pass
+
+            if len(h_path) < 2:
+                k_val = state_in.k if state_in.k > 1.0 else 1.4
+                poly_eff_frac = results.get("actual_poly_efficiency", inputs.get("poly_eff", 85.0) / 100.0)
+                if poly_eff_frac > 1.0:
+                    poly_eff_frac /= 100.0
+                n_path = (k_val - 1) / (k_val * poly_eff_frac)
+                pressures = np.geomspace(p_in_pa, p_out_pa, 40)
+                h_path, s_path = [], []
+                for p in pressures:
+                    t_k = t_in_k * (p / p_in_pa) ** n_path
+                    try:
+                        p_state = self.engine.thermo_solver.get_properties(p, t_k, gas_obj, eos_method)
+                        h_path.append(p_state.H / 1000.0)
+                        s_path.append(p_state.S / 1000.0)
+                    except Exception:
+                        pass
             if len(h_path) < 2:
                 h_path, s_path = [h1, h2_actual], [s1, s2_actual]
 

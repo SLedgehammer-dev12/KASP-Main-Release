@@ -481,6 +481,11 @@ class DesignResultsPresenter:
             if canvas:
                 canvas.setParent(self.window.graph_widget)
                 self.window.default_graph_label.setVisible(False)
+                toolbar = getattr(canvas, "get_toolbar", lambda p: None)(self.window.graph_widget)
+                if toolbar is not None:
+                    toolbar.setParent(self.window.graph_widget)
+                    self.window.graph_layout.addWidget(toolbar)
+                    toolbar.show()
                 self.window.graph_layout.addWidget(canvas)
                 if hasattr(canvas, "draw_idle"):
                     canvas.draw_idle()

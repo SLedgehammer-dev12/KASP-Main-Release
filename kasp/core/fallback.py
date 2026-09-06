@@ -13,7 +13,7 @@ from kasp.core.mixture import GasMixtureBuilder
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_EOS_ORDER = ["thermopack", "pr", "srk", "aga8"]
+FALLBACK_EOS_ORDER = ["thermopack", "neqsim", "pr", "srk", "aga8"]
 FALLBACK_SOLVER_ORDER = ["fd_nr", "aj_nr", "brent"]
 
 
@@ -65,7 +65,7 @@ class EosChainBrokenError(Exception):
 class EosChain:
     """Akilli EOS fallback zinciri.
 
-    Zincir: preferred_eos → thermopack → pr → srk → aga8 → ideal_gaz
+    Zincir: preferred_eos → thermopack / neqsim → pr → srk → aga8 → ideal_gaz
     - Kirik EOS'lar atlanir (1 kez basarisiz = run boyunca isaretli)
     - Ilk calisan EOS kullanilir, sonrakiler denenmez
     - Stage lock-in: ilk basarili EOS kilitlenir, stage boyunca degismez
@@ -93,6 +93,24 @@ class EosChain:
                 self._raw_composition
             )
         return self._comp_fractions
+
+    def _build_fallback_chain(self, preferred_eos: str) -> list[str]:
+        fractions = self._ensure_fractions()
+        water = fractions.get("WATER", 0.0) + fractions.get("H2O", 0.0)
+        h2s = fractions.get("HYDROGENSULFIDE", 0.0) + fractions.get("H2S", 0.0)
+        co2 = fractions.get("CARBONDIOXIDE", 0.0) + fractions.get("CO2", 0.0)
+
+        is_polar = (water > 0.0005 or h2s > 0.005 or co2 > 0.05)
+        if is_polar:
+            base_order = ["neqsim", "thermopack", "pr", "srk", "aga8"]
+        else:
+            base_order = ["thermopack", "neqsim", "pr", "srk", "aga8"]
+
+        chain = [preferred_eos]
+        for eos in base_order:
+            if eos != preferred_eos:
+                chain.append(eos)
+        return chain
 
     def _build_gas_obj(self, eos: str):
         if eos in self._gas_obj_cache:
@@ -128,10 +146,7 @@ class EosChain:
                 f"{self._tracker.eos_broken_reason(self._locked_eos)}"
             )
 
-        chain = [preferred_eos]
-        for eos in FALLBACK_EOS_ORDER:
-            if eos != preferred_eos:
-                chain.append(eos)
+        chain = self._build_fallback_chain(preferred_eos)
 
         first_error = None
         for eos in chain:

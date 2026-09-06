@@ -34,13 +34,20 @@ def test_huntington_rk45_methane():
     t_out, poly_head, z_avg, history = suite.method_huntington_rk45(
         p_in, t_in, p_out, poly_eff, gas_obj, "coolprop", step_count=15
     )
-    
+
     assert t_out > t_in
     assert poly_head > 0.0
     assert 0.7 < z_avg < 1.1
     assert history["converged"] is True
     assert history["method_used"] == "huntington_rk45"
-    assert len(history["temperature"]) == 16
+    assert len(history["temperature"]) >= 2
+
+    # Test fixed-step mode
+    t_fixed, poly_fixed, z_fixed, hist_fixed = suite.method_huntington_rk45(
+        p_in, t_in, p_out, poly_eff, gas_obj, "coolprop", step_count=15, adaptive=False
+    )
+    assert len(hist_fixed["temperature"]) == 16
+    assert abs(t_out - t_fixed) < 1.0  # Adaptive and fixed should match closely
 
 
 def test_schultz_3exp_methane():

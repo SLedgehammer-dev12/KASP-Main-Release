@@ -14,6 +14,70 @@ def compute_stage_pressure_ratio(total_pressure_ratio, intercooler_dp, num_stage
     ) ** (1.0 / num_stages)
 
 
+def optimize_stage_pressure_ratios(
+    p_in_pa: float,
+    p_out_pa: float,
+    num_stages: int,
+    intercooler_dp: float = 0.0,
+    t_in_k: float = 293.15,
+    ic_t_k: float = 293.15,
+    k_isen: float = 1.3,
+) -> list[float]:
+    """
+    Çok kademeli kompresörler için kademe basınç oranlarını optimize eder.
+    Ara soğutucu basınç kaybını (intercooler_dp) ve kademe giriş sıcaklıklarını dikkate alarak
+    kademeler arası eşit iş (Equal Work) veya dengeli basınç dağılımı sağlar.
+    """
+    if num_stages <= 1:
+        return [p_out_pa / p_in_pa]
+
+    total_pr = p_out_pa / p_in_pa
+    r_uniform = compute_stage_pressure_ratio(total_pr, intercooler_dp, num_stages)
+
+    if abs(t_in_k - ic_t_k) < 1.0 or num_stages <= 1:
+        return [r_uniform] * num_stages
+
+    # Equal Work optimization when inlet temperatures differ (ambient vs intercooler)
+    m = (k_isen - 1.0) / k_isen if k_isen > 1.05 else 0.25
+
+    def eval_p_out(r1):
+        w1_factor = (r1 ** m - 1.0)
+        p_curr = p_in_pa
+        for s in range(num_stages):
+            t_s = t_in_k if s == 0 else ic_t_k
+            r_s = max(1.001, (1.0 + (t_in_k / t_s) * w1_factor) ** (1.0 / m)) if s > 0 else r1
+            p_out_s = p_curr * r_s
+            if s < num_stages - 1:
+                p_curr = p_out_s * (1.0 - intercooler_dp)
+            else:
+                p_curr = p_out_s
+        return p_curr - p_out_pa
+
+    try:
+        # Simple bisection solver
+        r_low, r_high = 1.001, max(2.0, total_pr)
+        for _ in range(40):
+            r_mid = 0.5 * (r_low + r_high)
+            diff = eval_p_out(r_mid)
+            if abs(diff) < 1.0:
+                break
+            if diff > 0:
+                r_high = r_mid
+            else:
+                r_low = r_mid
+        r1_opt = 0.5 * (r_low + r_high)
+    except Exception:
+        r1_opt = r_uniform
+
+    w1_factor = (r1_opt ** m - 1.0)
+    ratios = []
+    for s in range(num_stages):
+        t_s = t_in_k if s == 0 else ic_t_k
+        r_s = max(1.001, (1.0 + (t_in_k / t_s) * w1_factor) ** (1.0 / m)) if s > 0 else r1_opt
+        ratios.append(r_s)
+    return ratios
+
+
 def select_design_method_key(method_label):
     if "Metot 2" in method_label or "Endpoint" in method_label or "Uç Nokta" in method_label:
         return "endpoint"
