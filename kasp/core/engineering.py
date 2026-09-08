@@ -17,16 +17,20 @@ ALL_EOS_LABELS = {
     "neqsim": "NeqSim (CPA/SRK/PR)",
 }
 METHOD_NAMES = {
+    "Metot 5: Huntington-RK45": "Huntington-RK45",
+    "Metot 4: Doğrudan H-S": "Direct H-S (Mollier)",
+    "Metot 6: Schultz 3-Üslü": "Schultz 3-Exponent",
     "Metot 1: Ortalama Özellikler": "Ortalama Özellikler",
     "Metot 2: Uç Nokta": "Uç Nokta",
     "Metot 3: Artımlı Basınç": "Artımlı Entegrasyon",
-    "Metot 4: Doğrudan H-S": "Direct H-S (Mollier)",
 }
 ALL_METHOD_LABELS = [
+    "Metot 5: Huntington-RK45",
+    "Metot 4: Doğrudan H-S",
+    "Metot 6: Schultz 3-Üslü",
     "Metot 1: Ortalama Özellikler",
     "Metot 2: Uç Nokta",
     "Metot 3: Artımlı Basınç",
-    "Metot 4: Doğrudan H-S",
 ]
 
 

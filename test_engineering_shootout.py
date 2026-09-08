@@ -165,7 +165,7 @@ def test_method_shootout_methods_have_different_labels():
     results = run_method_shootout(engine, inputs)
     labels = [r["label"] for r in results]
     assert len(labels) == len(set(labels))
-    assert len(labels) == 4
+    assert len(labels) == len(METHOD_NAMES)
 
 
 # ─────────────────────── Shootout Edge Cases ───────────────────────
