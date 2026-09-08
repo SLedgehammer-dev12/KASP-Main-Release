@@ -116,9 +116,15 @@ def get_smart_eos_recommendation(gas_comp: dict) -> str:
     return "💡 <b>Kuru Satış Gazı:</b> <b>SINTEF thermopack (PR)</b>, <b>CoolProp</b> veya <b>AGA8-DC92</b> uygundur."
 
 
-def get_smart_method_recommendation(gas_comp: dict) -> str:
+def get_smart_method_recommendation(
+    gas_comp: dict,
+    p_in: float = None,
+    p_out: float = None,
+    pr: float = None,
+) -> str:
     """
-    Gaz kompozisyonuna ve termodinamik özelliklerine göre en uygun Sıkıştırma Yolu Yöntemi (Path Method) tavsiyesini belirler.
+    Gaz kompozisyonuna ve proses koşullarına (basınç oranı, sıcaklık) göre en uygun
+    Sıkıştırma Yolu Yöntemi (Path Method) tavsiyesini belirler.
     """
     if not gas_comp:
         return "💡 <b>Metot Önerisi:</b> Gaz kompozisyonu giriniz."
@@ -129,11 +135,16 @@ def get_smart_method_recommendation(gas_comp: dict) -> str:
 
     norm_comp = {str(k).upper(): float(v) / total_pct * 100.0 for k, v in gas_comp.items()}
 
+    # Basınç oranı (PR) hesapla (verilmişse)
+    calc_pr = pr
+    if calc_pr is None and p_in is not None and p_out is not None and p_in > 0:
+        calc_pr = p_out / p_in
+
     # 1. Saf akışkan kontrolü (tek bileşen >= %99)
     if len(norm_comp) == 1 or max(norm_comp.values()) >= 99.0:
         return "💡 <b>Saf Akışkan:</b> Hızlı ve tam fiziksel doğruluk için <b>Metot 4 (Doğrudan H-S)</b> veya <b>Metot 5 (Huntington-RK45)</b> önerilir."
 
-    # 2. Polar / Asit Gazı kontrolü
+    # 2. Polar / Nemli / Asit Gazı kontrolü (H2O, H2S, CO2)
     water_pct = norm_comp.get("WATER", 0.0) + norm_comp.get("H2O", 0.0)
     h2s_pct = norm_comp.get("HYDROGENSULFIDE", 0.0) + norm_comp.get("H2S", 0.0)
     co2_pct = norm_comp.get("CARBONDIOXIDE", 0.0) + norm_comp.get("CO2", 0.0)
@@ -158,7 +169,11 @@ def get_smart_method_recommendation(gas_comp: dict) -> str:
     if heavy_c6 > 0.25 or c3_plus > 10.0 or methane_pct < 85.0:
         return "💡 <b>Zengin Gaz (C1–C6+):</b> Sürekli diferansiyel yol için <b>Metot 5 (Huntington-RK45)</b> veya <b>Metot 4 (Doğrudan H-S)</b> önerilir."
 
-    # 4. Kuru Boru Hattı Satış Gazı
+    # 4. Yüksek Basınç Oranı (PR >= 2.5)
+    if calc_pr is not None and calc_pr >= 2.5:
+        return f"💡 <b>Yüksek Basınç Oranı (PR={calc_pr:.2f}):</b> Ayrık durum türevleri için <b>Metot 6 (Schultz 3-Üslü)</b> veya <b>Metot 5 (Huntington-RK45)</b> önerilir."
+
+    # 5. Kuru Boru Hattı Satış Gazı
     return "💡 <b>Kuru Satış Gazı:</b> <b>Metot 5 (Huntington-RK45)</b>, <b>Metot 4 (Doğrudan H-S)</b> veya <b>Metot 6 (Schultz 3-Üslü)</b> önerilir."
 
 
@@ -222,6 +237,7 @@ class GasCompositionController:
             combo.addItems(self.window.COMMON_COMPONENTS_DISPLAY)
             if display_name in self.window.COMMON_COMPONENTS_DISPLAY:
                 combo.setCurrentText(display_name)
+            combo.currentIndexChanged.connect(self.update_total_label)
             self.window.composition_table.setCellWidget(row, 0, combo)
 
             percent_item = QTableWidgetItem(str(percentage))
@@ -245,6 +261,7 @@ class GasCompositionController:
 
         combo = QComboBox()
         combo.addItems(self.window.COMMON_COMPONENTS_DISPLAY)
+        combo.currentIndexChanged.connect(self.update_total_label)
         self.window.composition_table.setCellWidget(row_count, 0, combo)
         self.window.composition_table.setItem(row_count, 1, QTableWidgetItem("0"))
         self.update_total_label()
@@ -272,7 +289,16 @@ class GasCompositionController:
 
             # Dinamik Akıllı Metot Tavsiye Rozetini Güncelle
             if hasattr(self.window, "method_recommendation_badge") and self.window.method_recommendation_badge is not None:
-                rec_method_text = get_smart_method_recommendation(gas_comp)
+                p_in_val = None
+                p_out_val = None
+                try:
+                    if hasattr(self.window, "p_in_edit") and self.window.p_in_edit:
+                        p_in_val = float((self.window.p_in_edit.text() or "").replace(",", "."))
+                    if hasattr(self.window, "p_out_edit") and self.window.p_out_edit:
+                        p_out_val = float((self.window.p_out_edit.text() or "").replace(",", "."))
+                except Exception:
+                    pass
+                rec_method_text = get_smart_method_recommendation(gas_comp, p_in=p_in_val, p_out=p_out_val)
                 self.window.method_recommendation_badge.setText(rec_method_text)
         except Exception as exc:
             self.window.logger.warning(f"Kompozisyon toplamı veya EoS/Metot tavsiyesi güncellenemedi: {exc}")

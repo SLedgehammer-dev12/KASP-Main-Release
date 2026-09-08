@@ -276,6 +276,7 @@ def build_gas_group(window, left_layout):
         combo.addItems(window.COMMON_COMPONENTS_DISPLAY)
         if display_name in window.COMMON_COMPONENTS_DISPLAY:
             combo.setCurrentText(display_name)
+        combo.currentIndexChanged.connect(window._update_composition_total_label)
         window.composition_table.setCellWidget(row, 0, combo)
 
         percent_item = QTableWidgetItem(str(percentage))
@@ -403,7 +404,10 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     window.method_combo = QComboBox()
     window.method_combo.addItems(get_design_method_options())
 
-    window.method_recommendation_badge = QLabel("💡 <b>Metot Önerisi:</b> Analiz ediliyor...")
+    from kasp.ui.gas_composition_workflow import get_smart_method_recommendation
+    default_comp = {window.DISPLAY_TO_COOLPROP_KEY.get(d, d): p for d, p in get_default_gas_rows()}
+    initial_rec = get_smart_method_recommendation(default_comp)
+    window.method_recommendation_badge = QLabel(initial_rec)
     window.method_recommendation_badge.setWordWrap(True)
     window.method_recommendation_badge.setStyleSheet(
         "color: #1e3a8a; "

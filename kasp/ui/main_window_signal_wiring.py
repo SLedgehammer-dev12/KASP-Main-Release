@@ -66,6 +66,11 @@ class MainWindowSignalController:
         window.composition_table.model().rowsInserted.connect(window._update_composition_total_label)
         window.composition_table.model().rowsRemoved.connect(window._update_composition_total_label)
 
+        if hasattr(window, "p_in_edit") and window.p_in_edit:
+            window.p_in_edit.textChanged.connect(window._update_composition_total_label)
+        if hasattr(window, "p_out_edit") and window.p_out_edit:
+            window.p_out_edit.textChanged.connect(window._update_composition_total_label)
+
         window.turbine_table.itemSelectionChanged.connect(window.on_turbine_selection_changed)
 
         window.generate_report_btn.clicked.connect(window.handle_design_report)

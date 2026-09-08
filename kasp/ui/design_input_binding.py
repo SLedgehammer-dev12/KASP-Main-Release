@@ -220,6 +220,7 @@ class DesignInputBinder:
             display_name = window.COOLPROP_GAS_MAP.get(component_key, component_key)
             if display_name in window.COMMON_COMPONENTS_DISPLAY:
                 combo.setCurrentText(display_name)
+            combo.currentIndexChanged.connect(window._update_composition_total_label)
 
             window.composition_table.setCellWidget(row, 0, combo)
 

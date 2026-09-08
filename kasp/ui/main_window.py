@@ -327,6 +327,7 @@ class KaspMainWindow(QMainWindow):
         self._update_button_state()
         self._apply_saved_theme()
         self._apply_saved_language()
+        self._update_composition_total_label()
 
     def _apply_saved_theme(self):
         try:

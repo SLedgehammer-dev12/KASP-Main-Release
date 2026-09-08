@@ -179,6 +179,15 @@ def test_smart_method_recommendation():
     assert "Kuru Satış Gazı" in rec_lean
     assert "Metot 5" in rec_lean or "Metot 4" in rec_lean
 
+    # High pressure ratio
+    rec_pr = get_smart_method_recommendation(
+        {"METHANE": 92.0, "ETHANE": 5.0, "NITROGEN": 3.0},
+        p_in=10.0,
+        p_out=30.0,
+    )
+    assert "Yüksek Basınç Oranı" in rec_pr
+    assert "Metot 6" in rec_pr
+
 
 def test_design_method_options_ordering():
     from kasp.ui.design_left_panel_builders import get_design_method_options
@@ -190,4 +199,5 @@ def test_design_method_options_ordering():
     assert "Metot 5" in options[0]
     assert "Metot 4" in options[1]
     assert "Metot 6" in options[2]
+
 
