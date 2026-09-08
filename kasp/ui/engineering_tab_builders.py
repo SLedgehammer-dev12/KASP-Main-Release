@@ -227,39 +227,74 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
 
 def _populate_trace_tree(tree, results):
     tree.clear()
+    if not results or not isinstance(results, dict):
+        return
     stages = results.get("stages", [])
+    if not isinstance(stages, list):
+        return
     for stage_data in stages:
+        if not isinstance(stage_data, dict):
+            continue
         stage_num = stage_data.get("stage", "?")
         stage_item = QTreeWidgetItem(tree, [f"Kademe {stage_num}", f"p_in={_fmt_bar(stage_data.get('p_in'))}, p_out={_fmt_bar(stage_data.get('p_out'))}"])
         history = stage_data.get("method_history", {})
+        if not isinstance(history, dict):
+            continue
         method = history.get("method_used", "?")
-        method_item = QTreeWidgetItem(stage_item, ["Metot", method])
+        QTreeWidgetItem(stage_item, ["Metot", str(method)])
         conv = "✓" if history.get("converged", False) else "✗"
         reason = history.get("termination_reason", "")
         QTreeWidgetItem(stage_item, ["Yakınsama", f"{conv} {reason}"])
 
-        # Iterasyon detayları
-        temps = history.get("temperature", [])
-        pressures = history.get("pressure", [])
-        z_factors = history.get("z_factor", [])
-        k_values = history.get("k_value", [])
-        for i in range(len(temps)):
-            t = temps[i] - 273.15 if isinstance(temps[i], (int, float)) and temps[i] > 100 else temps[i]
-            p = pressures[i] / 1e5 if isinstance(pressures[i], (int, float)) else pressures[i]
-            z = z_factors[i] if i < len(z_factors) else "—"
-            k = f"{k_values[i]:.4f}" if i < len(k_values) else "—"
+        # Iterasyon detayları (liste uzunluğu uyuşmazlıklarına karşı güvenli döngü)
+        temps = history.get("temperature") or []
+        pressures = history.get("pressure") or []
+        z_factors = history.get("z_factor") or []
+        k_values = history.get("k_value") or []
+
+        if not isinstance(temps, list):
+            temps = [temps]
+        if not isinstance(pressures, list):
+            pressures = [pressures]
+        if not isinstance(z_factors, list):
+            z_factors = [z_factors]
+        if not isinstance(k_values, list):
+            k_values = [k_values]
+
+        max_steps = max(len(temps), len(pressures), len(z_factors), len(k_values), 0)
+        for i in range(max_steps):
+            t_val = temps[i] if i < len(temps) else None
+            p_val = pressures[i] if i < len(pressures) else None
+            z_val = z_factors[i] if i < len(z_factors) else None
+            k_val = k_values[i] if i < len(k_values) else None
+
+            if isinstance(t_val, (int, float)):
+                t_str = f"{t_val - 273.15:.1f}°C" if t_val > 100 else f"{t_val:.1f}°C"
+            else:
+                t_str = f"{t_val}°C" if t_val is not None else "—"
+
+            if isinstance(p_val, (int, float)):
+                p_str = f"{p_val / 1e5:.2f}bar"
+            else:
+                p_str = f"{p_val}bar" if p_val is not None else "—"
+
+            z_str = f"{z_val:.4f}" if isinstance(z_val, (int, float)) else (str(z_val) if z_val is not None else "—")
+            k_str = f"{k_val:.4f}" if isinstance(k_val, (int, float)) else (str(k_val) if k_val is not None else "—")
+
             QTreeWidgetItem(stage_item, [
-                f"Iter {i}",
-                f"T={_fmt(t)}°C, P={_fmt(p)}bar, Z={_fmt(z)}, k={k}"
+                f"Iter / Adım {i}",
+                f"T={t_str}, P={p_str}, Z={z_str}, k={k_str}"
             ])
 
         # Metot 4 özel: inner iteration detail
         iter_detail = history.get("iterations_detail", [])
-        for d in iter_detail:
-            QTreeWidgetItem(stage_item, [
-                d.get("iter", "?"),
-                f"T={_fmt(d.get('T'))}K, H={_fmt(d.get('H'))}J, dH={_fmt(d.get('dH'))}J"
-            ])
+        if isinstance(iter_detail, list):
+            for d in iter_detail:
+                if isinstance(d, dict):
+                    QTreeWidgetItem(stage_item, [
+                        str(d.get("iter", "?")),
+                        f"T={_fmt(d.get('T'))}K, H={_fmt(d.get('H'))}J, dH={_fmt(d.get('dH'))}J"
+                    ])
 
         # Metot 4 özel: derived values
         if "t_isentropic" in history:
@@ -267,10 +302,17 @@ def _populate_trace_tree(tree, results):
             QTreeWidgetItem(stage_item, ["ΔH_isen", f"{_fmt(history.get('delta_h_isentropic_kj', 0))} kJ/kg"])
             QTreeWidgetItem(stage_item, ["σ", f"{_fmt(history.get('sigma_backcomputed', 0))}"])
 
+        # Metot 6 özel: derived values (X, Y, n_v, m_T)
+        if "X" in history and "Y" in history:
+            QTreeWidgetItem(stage_item, ["X (İzobarik)", f"{_fmt(history.get('X'))}"])
+            QTreeWidgetItem(stage_item, ["Y (İzotermal)", f"{_fmt(history.get('Y'))}"])
+            QTreeWidgetItem(stage_item, ["n_v (Hacim Üssü)", f"{_fmt(history.get('n_v'))}"])
+            QTreeWidgetItem(stage_item, ["m_T (Sıcaklık Üssü)", f"{_fmt(history.get('m_T'))}"])
+
         # İntegral analiz
         integral = history.get("integral_analysis", {})
-        if integral:
-            int_item = QTreeWidgetItem(stage_item, ["İntegral Analiz", f"k={_fmt(integral.get('k_min'))}–{_fmt(integral.get('k_max'))}, aralık=%{_fmt(integral.get('k_range_percent'))}"])
+        if isinstance(integral, dict) and integral:
+            QTreeWidgetItem(stage_item, ["İntegral Analiz", f"k={_fmt(integral.get('k_min'))}–{_fmt(integral.get('k_max'))}, aralık=%{_fmt(integral.get('k_range_percent'))}"])
 
     tree.expandAll()
 

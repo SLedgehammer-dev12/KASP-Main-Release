@@ -201,3 +201,55 @@ def test_design_method_options_ordering():
     assert "Metot 6" in options[2]
 
 
+def test_populate_trace_tree_safe_against_index_error():
+    """Verify _populate_trace_tree never throws IndexError even with uneven history lists."""
+    from PyQt5.QtWidgets import QApplication, QTreeWidget
+    import sys
+    
+    app = QApplication.instance() or QApplication(sys.argv)
+    tree = QTreeWidget()
+    
+    from kasp.ui.engineering_tab_builders import _populate_trace_tree
+    
+    # 1. Metot 6 with uneven / single item lists
+    malformed_results = {
+        "stages": [
+            {
+                "stage": 1,
+                "p_in": 1000000.0,
+                "p_out": 3000000.0,
+                "method_history": {
+                    "method_used": "schultz_3exp",
+                    "converged": True,
+                    "termination_reason": "converged",
+                    "temperature": [300.0, 350.0, 360.0],
+                    "pressure": [1000000.0], # len 1 vs len 3
+                    "z_factor": [0.95, 0.94],
+                    "k_value": [],
+                    "X": 0.05,
+                    "Y": 0.98,
+                    "n_v": 1.25,
+                    "m_T": 0.22,
+                }
+            },
+            {
+                "stage": 2,
+                "p_in": 3000000.0,
+                "p_out": 7000000.0,
+                "method_history": {
+                    "method_used": "direct_hs",
+                    "temperature": [310.0, 370.0],
+                    "pressure": [3000000.0, 7000000.0],
+                    "t_isentropic": 355.0,
+                    "iterations_detail": [{"iter": "0.1", "T": 365.0, "H": 1000.0, "dH": 10.0}],
+                }
+            }
+        ]
+    }
+    
+    # Must not raise IndexError
+    _populate_trace_tree(tree, malformed_results)
+    assert tree.topLevelItemCount() == 2
+
+
+

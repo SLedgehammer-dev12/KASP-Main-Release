@@ -744,6 +744,7 @@ class ThermoMethodSuite:
         t2_guess = t_in * math.pow(pr, (k1 - 1.0) / (k1 * poly_eff))
         
         history = {
+            "pressure": [p_in],
             "temperature": [t_in],
             "z_factor": [z1],
             "k_value": [k1],
@@ -789,6 +790,7 @@ class ThermoMethodSuite:
             t2_calc = t_in * math.pow(pr, m_T)
             t2_guess = t2_old + 0.5 * (t2_calc - t2_old)
             
+            history["pressure"].append(p_out)
             history["temperature"].append(t2_guess)
             history["z_factor"].append(z2)
             history["k_value"].append(k2)
