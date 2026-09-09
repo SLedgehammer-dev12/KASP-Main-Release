@@ -79,8 +79,8 @@ class ThemeManager:
     }
     
     @staticmethod
-    def apply_theme(theme_name: str = "light"):
-        """Apply theme to application"""
+    def get_stylesheet(theme_name: str = "light") -> str:
+        """Generate and return the stylesheet string for the requested theme."""
         if theme_name not in ThemeManager.THEMES:
             theme_name = "light"
 
@@ -94,9 +94,9 @@ class ThemeManager:
             _px = lambda v: v
             _pt = lambda v: v
 
-        stylesheet = f"""
-            /* Main Window & Dialogs */
-            QMainWindow, QDialog, QAbstractScrollArea {{
+        return f"""
+            /* Main Window, Dialogs & Base Containers */
+            QMainWindow, QDialog, QAbstractScrollArea, QWidget#central_widget, QWidget#LeftContainer, QWidget#left_content, QSplitter {{
                 background-color: {theme['background']};
                 color: {theme['text']};
             }}
@@ -143,13 +143,19 @@ class ThemeManager:
             QGroupBox:disabled {{
                 color: {theme['text_secondary']};
             }}
+
+            QGroupBox QLabel {{
+                color: {theme['text']};
+            }}
             
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                padding: 0 6px;
+                padding: 0 8px;
                 left: 10px;
                 color: {theme['primary']};
+                font-size: {_pt(11)}pt;
+                font-weight: bold;
             }}
             
             /* Buttons */
@@ -198,6 +204,17 @@ class ThemeManager:
                 border: 1px solid {theme['border']};
             }}
             
+            QComboBox {{
+                padding: {_px(5)}px {_px(28)}px {_px(5)}px {_px(10)}px;
+                min-height: {_px(28)}px;
+            }}
+
+            QComboBox.unit_combo, QComboBox[class="unit_combo"] {{
+                padding: {_px(3)}px {_px(18)}px {_px(3)}px {_px(6)}px;
+                min-height: {_px(26)}px;
+                font-size: {_pt(10)}pt;
+            }}
+            
             QComboBox::drop-down {{
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
@@ -208,10 +225,22 @@ class ThemeManager:
                 border-top-right-radius: 6px;
                 border-bottom-right-radius: 6px;
             }}
+
+            QComboBox.unit_combo::drop-down, QComboBox[class="unit_combo"]::drop-down {{
+                width: {_px(16)}px;
+            }}
             
             QComboBox::down-arrow {{
-                image: none;
-                border: none;
+                width: 0;
+                height: 0;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {theme['text_secondary']};
+                margin-right: {_px(2)}px;
+            }}
+
+            QComboBox::down-arrow:hover {{
+                border-top-color: {theme['primary']};
             }}
             
             QComboBox QAbstractItemView {{
@@ -222,6 +251,47 @@ class ThemeManager:
                 selection-color: white;
                 color: {theme['text']};
                 padding: {_px(4)}px;
+                font-size: {_pt(10)}pt;
+            }}
+
+            QComboBox QAbstractItemView::item {{
+                min-height: {_px(26)}px;
+                padding: {_px(4)}px {_px(8)}px;
+            }}
+
+            QComboBox#main_gas_combo {{
+                font-size: {_pt(11)}pt;
+                font-weight: bold;
+                padding: {_px(6)}px {_px(30)}px {_px(6)}px {_px(12)}px;
+                min-height: {_px(32)}px;
+            }}
+
+            QLabel#selected_gas_badge {{
+                background-color: {theme['surface']};
+                color: {theme['text']};
+                border: 1px solid {theme['border']};
+                border-left: 4px solid {theme['primary']};
+                border-radius: 6px;
+                padding: {_px(6)}px {_px(10)}px;
+                font-size: {_pt(10)}pt;
+                font-weight: bold;
+            }}
+            QLabel#selected_gas_badge[gasType="pure"] {{
+                border-left-color: {theme['success']};
+            }}
+            QLabel#selected_gas_badge[gasType="mixture"] {{
+                border-left-color: {theme['primary']};
+            }}
+            QLabel#selected_gas_badge[gasType="custom"] {{
+                border-left-color: {theme['secondary']};
+            }}
+
+            QTableWidget QComboBox {{
+                font-size: {_pt(10)}pt;
+                font-weight: 500;
+                padding: {_px(3)}px {_px(24)}px {_px(3)}px {_px(8)}px;
+                min-height: {_px(26)}px;
+                border-radius: 4px;
             }}
             
             /* Validation States via Dynamic Properties */
@@ -247,6 +317,59 @@ class ThemeManager:
             }}
 
             /* Custom Object Styles */
+            QFrame#StickyActionBar {{
+                background-color: {theme['surface']};
+                border-top: 2px solid {theme['border']};
+                border-radius: 0px;
+                padding: {_px(4)}px;
+            }}
+
+            QLabel#live_metrics_badge {{
+                background-color: {theme['surface']};
+                color: {theme['text']};
+                border: 1px solid {theme['border']};
+                border-left: 4px solid {theme['primary']};
+                border-radius: 6px;
+                padding: {_px(5)}px {_px(10)}px;
+                font-size: {_pt(10)}pt;
+                font-weight: bold;
+            }}
+
+            QFrame#presets_bar {{
+                background-color: {theme['surface']};
+                border: 1px solid {theme['border']};
+                border-radius: 8px;
+                padding: {_px(4)}px;
+            }}
+
+            QPushButton.preset_btn {{
+                background-color: {theme['background']};
+                color: {theme['text']};
+                border: 1px solid {theme['border']};
+                border-radius: 5px;
+                padding: {_px(4)}px {_px(8)}px;
+                font-size: {_pt(9)}pt;
+                font-weight: bold;
+            }}
+            QPushButton.preset_btn:hover {{
+                background-color: {theme['primary']};
+                color: white;
+                border-color: {theme['primary']};
+            }}
+
+            QPushButton.collapse_toggle_btn {{
+                background-color: transparent;
+                color: {theme['primary']};
+                border: none;
+                font-weight: bold;
+                font-size: {_pt(10)}pt;
+                text-align: left;
+                padding: 2px 4px;
+            }}
+            QPushButton.collapse_toggle_btn:hover {{
+                color: {theme['secondary']};
+            }}
+
             QFrame#HelpGuidancePanel {{
                 background-color: {theme['surface']};
                 border: 1px solid {theme['border']};
@@ -560,8 +683,32 @@ class ThemeManager:
                 border-radius: 4px;
             }}
         """
-        
-        QApplication.instance().setStyleSheet(stylesheet)
+
+    get_theme_stylesheet = get_stylesheet
+
+    @staticmethod
+    def apply_theme(theme_name: str = "light"):
+        """Apply theme to application"""
+        if theme_name not in ThemeManager.THEMES:
+            theme_name = "light"
+        theme = ThemeManager.THEMES[theme_name]
+        stylesheet = ThemeManager.get_stylesheet(theme_name)
+        app = QApplication.instance()
+        if app:
+            try:
+                from PyQt5.QtGui import QPalette, QColor
+                palette = QPalette()
+                palette.setColor(QPalette.Window, QColor(theme["background"]))
+                palette.setColor(QPalette.WindowText, QColor(theme["text"]))
+                palette.setColor(QPalette.Base, QColor(theme["surface"]))
+                palette.setColor(QPalette.AlternateBase, QColor(theme["background"]))
+                palette.setColor(QPalette.Text, QColor(theme["text"]))
+                palette.setColor(QPalette.Button, QColor(theme["surface"]))
+                palette.setColor(QPalette.ButtonText, QColor(theme["text"]))
+                app.setPalette(palette)
+            except Exception:
+                pass
+            app.setStyleSheet(stylesheet)
     
     @staticmethod
     def get_icon_color(theme_name: str = "light") -> str:

@@ -28,3 +28,4 @@ scratch/
 git_yedek/
 .vscode/
 deneme.kasp
+kasp_lockout.json*

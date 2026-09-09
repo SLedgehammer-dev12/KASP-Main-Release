@@ -41,18 +41,23 @@ def _get_app_data_dir() -> str:
 _lockout_file = os.path.join(_get_app_data_dir(), "kasp_lockout.json")
 
 
+FAILURE_RESET_WINDOW = 900  # 15 dakika inaktivite sonrasi hatali deneme sayaci sifirlanir
+
+
 def _load_lockout_state():
     try:
-        with open(_lockout_file) as f:
+        with open(_lockout_file, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {"failures": 0, "last_failure": 0, "lockout_until": 0}
 
 
 def _save_lockout_state(state):
     try:
-        with open(_lockout_file, "w") as f:
-            json.dump(state, f)
+        tmp_file = _lockout_file + f".{os.getpid()}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp_file, _lockout_file)
     except OSError as e:
         logger.warning("Lockout state kaydedilemedi: %s", e)
 
@@ -82,45 +87,93 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
-def record_attempt(success):
-    state = _load_lockout_state()
-    if success:
-        state["failures"] = 0
-        state["lockout_until"] = 0
-    else:
-        state["failures"] = state.get("failures", 0) + 1
-        state["last_failure"] = time.time()
-    _save_lockout_state(state)
-
-
-def check_lockout():
+def record_attempt(success: bool) -> tuple[bool, str]:
+    """Kayit denemesi islemi.
+    
+    Returns:
+        tuple[bool, str]: (kilitlendi_mi, kilit_mesaji)
+    """
     state = _load_lockout_state()
     now = time.time()
 
-    if state.get("lockout_until", 0) and now < state["lockout_until"]:
-        remaining_sec = int(state["lockout_until"] - now)
-        mins = max(1, remaining_sec // 60 + (1 if remaining_sec % 60 else 0))
-        return True, f"{mins} dakika kilitli"
+    if success:
+        state["failures"] = 0
+        state["lockout_until"] = 0
+        state["last_failure"] = 0
+        state["last_lockout_end"] = 0
+        _save_lockout_state(state)
+        return False, ""
 
-    failures = state.get("failures", 0)
-    for level_failures, lockout_mins in LOCKOUT_LEVELS:
-        if failures >= level_failures and now > state.get("last_failure", 0):
-            state["lockout_until"] = now + lockout_mins * 60
+    # Inaktivite penceresi: Eger kilit bitiminden / son hatadan sonra 15 dk gectiyse sayaci sifirla
+    last_failure = state.get("last_failure", 0)
+    last_lockout_end = state.get("last_lockout_end", 0)
+    lockout_until = state.get("lockout_until", 0)
+    ref_time = max(last_failure, last_lockout_end, lockout_until)
+    if last_failure and (now - ref_time > FAILURE_RESET_WINDOW):
+        state["failures"] = 0
+        state["last_lockout_end"] = 0
+
+    failures = state.get("failures", 0) + 1
+    state["failures"] = failures
+    state["last_failure"] = now
+
+    # Seviyeleri buyukten kucuge tara (10, 8, 5, 3)
+    lockout_mins = 0
+    for level_failures, mins in sorted(LOCKOUT_LEVELS, key=lambda x: x[0], reverse=True):
+        if failures >= level_failures:
+            # Tam esik asiminda veya en ust seviye (>=10) asildiginda kilitle
+            if failures == level_failures or failures >= LOCKOUT_LEVELS[-1][0]:
+                lockout_mins = mins
+            break
+
+    if lockout_mins > 0:
+        state["lockout_until"] = now + lockout_mins * 60
+        _save_lockout_state(state)
+        return True, f"{lockout_mins} dakika kilitlendi"
+
+    _save_lockout_state(state)
+    return False, ""
+
+
+def check_lockout() -> tuple[bool, str]:
+    """Kilit durumunu salt-okunur (read-only) olarak sorgular.
+    
+    Sure doldugunda kilidi kaldirir ve False doner. Asla yeni kilit baslatmaz.
+    
+    Returns:
+        tuple[bool, str]: (kilitli_mi, kilit_mesaji)
+    """
+    state = _load_lockout_state()
+    now = time.time()
+    lockout_until = state.get("lockout_until", 0)
+
+    if lockout_until > 0:
+        if now < lockout_until:
+            remaining_sec = int(lockout_until - now)
+            if remaining_sec >= 60:
+                mins = remaining_sec // 60
+                secs = remaining_sec % 60
+                return True, f"{mins} dk {secs:02d} sn kilitli"
+            else:
+                return True, f"{remaining_sec} saniye kilitli"
+        else:
+            # Kilit suresi doldu! Kilidi temizle ve dosyayada guncelle
+            state["last_lockout_end"] = lockout_until
+            state["lockout_until"] = 0
             _save_lockout_state(state)
-            return True, f"{lockout_mins} dakika kilitlendi"
+            return False, ""
 
     return False, ""
 
 
-def get_lockout_remaining():
+def get_lockout_remaining() -> int:
+    """Bir sonraki kilit seviyesine kadar kalan hatali deneme hakkini dondurur."""
     state = _load_lockout_state()
     failures = state.get("failures", 0)
-    remaining = 999
     for level_failures, _ in LOCKOUT_LEVELS:
         if failures < level_failures:
-            remaining = level_failures - failures
-            break
-    return remaining
+            return level_failures - failures
+    return 1
 
 class InputValidator:
     """Validates and sanitizes user inputs"""

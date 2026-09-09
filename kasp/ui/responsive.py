@@ -61,7 +61,13 @@ def get_dpi():
 
 def get_scale_factor():
     """Return UI scale factor relative to 96 DPI baseline.  Clamped [0.85, 2.2]."""
+    import sys
+
     dpi = get_dpi()
+    if sys.platform == "darwin":
+        # macOS uses Cocoa points (72 pt/in) with Retina DPR (2.0).
+        # Prevent 72/96 = 0.75 from penalizing Retina MacBooks with downscaling.
+        return max(1.0, min(2.2, dpi / 72.0))
     factor = dpi / 96.0
     return max(0.85, min(2.2, factor))
 
@@ -151,6 +157,8 @@ def scaled_font_pt(base_pt: int) -> int:
     The result also accounts for the screen category so that fonts stay
     readable on small laptop displays.
     """
+    import sys
+
     dpi = get_dpi()
     cat = get_screen_category()
 
@@ -164,8 +172,14 @@ def scaled_font_pt(base_pt: int) -> int:
     else:
         bump = 0
 
-    # Small screens → keep fonts compact
-    if cat == "small":
+    if sys.platform == "darwin":
+        # On macOS Retina displays (e.g., 13" MacBook M1 Pro), Apple standard text
+        # is 13pt body / 11pt subhead. Ensure comfortable readability for small base sizes.
+        if base_pt < 11:
+            bump = max(bump, 1)
+
+    # Small screens → keep fonts compact (except macOS where point grid is standard)
+    if cat == "small" and sys.platform != "darwin":
         bump = max(0, bump - 1)
 
     return max(7, base_pt + bump)
@@ -195,10 +209,12 @@ def compute_initial_window_size(
     Returns a ``(width, height)`` tuple.
     """
     sw, sh = get_screen_geometry()
-    w = min(target_w, int(sw * max_fraction))
-    h = min(target_h, int(sh * max_fraction))
-    w = max(w, scaled_px(900))
-    h = max(h, scaled_px(550))
+    max_w = int(sw * max_fraction)
+    max_h = int(sh * max_fraction)
+    w = min(target_w, max_w)
+    h = min(target_h, max_h)
+    w = max(w, min(900, max_w))
+    h = max(h, min(550, max_h))
     logger.info(
         f"✓ Responsive window size: {w}×{h} "
         f"(screen={sw}×{sh}, target={target_w}×{target_h})"
@@ -230,13 +246,17 @@ def apply_responsive_font(app, base_pt: int = 9):
     Must be called **after** ``QApplication`` is created.
     """
     try:
+        import sys
         from PyQt5.QtGui import QFont
 
-        pt = scaled_font_pt(base_pt)
-        font = QFont("SF Pro, Segoe UI, Helvetica Neue, Arial", pt)
+        # On macOS Retina displays, boost 9pt base to at least 10pt for comfortable reading
+        effective_base = 10 if sys.platform == "darwin" and base_pt < 10 else base_pt
+        pt = scaled_font_pt(effective_base)
+        font_family = "Helvetica Neue, Arial, Segoe UI" if sys.platform == "darwin" else "SF Pro, Segoe UI, Helvetica Neue, Arial"
+        font = QFont(font_family, pt)
         app.setFont(font)
         logger.info(
-            f"✓ Responsive font: SF Pro/Segoe UI {pt}pt "
+            f"✓ Responsive font: {font_family} {pt}pt "
             f"(base={base_pt}, DPI={get_dpi():.0f}, "
             f"cat={get_screen_category()})"
         )
@@ -265,3 +285,66 @@ def compact_spacing() -> int:
 def compact_font_delta() -> int:
     """Small negative delta to shrink fonts on tiny screens."""
     return -1 if is_small_screen() else 0
+
+
+# ---------------------------------------------------------------------------
+# Legacy compatibility helpers
+# ---------------------------------------------------------------------------
+
+class _BreakpointMeta:
+    def __init__(self, category: str):
+        self.category = category
+
+BREAKPOINTS = [
+    _BreakpointMeta("XS"),
+    _BreakpointMeta("SM"),
+    _BreakpointMeta("MD"),
+    _BreakpointMeta("LG"),
+    _BreakpointMeta("XL"),
+]
+
+
+def current_breakpoint() -> _BreakpointMeta:
+    cat = get_screen_category()
+    mapping = {"small": "SM", "medium": "MD", "large": "LG", "ultrawide": "XL"}
+    return _BreakpointMeta(mapping.get(cat, "MD"))
+
+
+def breakpoint_stretch_factors() -> tuple[int, int]:
+    cat = get_screen_category()
+    if cat == "small":
+        return 1, 1
+    if cat == "medium":
+        return 1, 2
+    return 1, 3
+
+
+def breakpoint_two_column() -> bool:
+    return is_large_screen()
+
+
+def breakpoint_graph_columns() -> int:
+    cat = get_screen_category()
+    mapping = {"small": 1, "medium": 2, "large": 2, "ultrawide": 3}
+    return mapping.get(cat, 2)
+
+
+def scaled_font_size(pt: int) -> int:
+    return scaled_font_pt(pt)
+
+
+def invalidate_screen_cache():
+    pass
+
+
+def compute_centered_position(w: int, h: int) -> tuple[int, int]:
+    try:
+        from PyQt5.QtWidgets import QDesktopWidget
+        desk = QDesktopWidget()
+        sg = desk.availableGeometry(desk.primaryScreen())
+        x = (sg.width() - w) // 2
+        y = (sg.height() - h) // 2
+        return max(0, x), max(0, y)
+    except Exception:
+        return 50, 50
+

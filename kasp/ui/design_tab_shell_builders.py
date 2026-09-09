@@ -33,7 +33,18 @@ def build_design_tab_shell(window):
     splitter = QSplitter(Qt.Horizontal)
     splitter.setChildrenCollapsible(False)
 
+    from PyQt5.QtWidgets import QFrame
+    from kasp.ui.responsive import scaled_px
+
+    left_container = QWidget()
+    left_container.setObjectName("LeftContainer")
+    window.left_container = left_container
+    left_container_layout = QVBoxLayout(left_container)
+    left_container_layout.setContentsMargins(0, 0, 0, 0)
+    left_container_layout.setSpacing(0)
+
     left_content = QWidget()
+    left_content.setObjectName("left_content")
     left_content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
     left_layout = QVBoxLayout(left_content)
     margins = get_design_tab_margins()
@@ -48,6 +59,14 @@ def build_design_tab_shell(window):
         "QScrollArea { border: none; background: transparent; }"
         "QScrollArea > QWidget > QWidget { background: transparent; }"
     )
+    left_container_layout.addWidget(left_scroll, 1)
+
+    window.sticky_action_bar = QFrame()
+    window.sticky_action_bar.setObjectName("StickyActionBar")
+    window.sticky_action_layout = QVBoxLayout(window.sticky_action_bar)
+    window.sticky_action_layout.setContentsMargins(margins[0], scaled_px(6), margins[2], scaled_px(6))
+    window.sticky_action_layout.setSpacing(scaled_px(6))
+    left_container_layout.addWidget(window.sticky_action_bar, 0)
 
     right_scroll = QScrollArea()
     right_scroll.setWidgetResizable(True)
@@ -70,7 +89,7 @@ def build_design_tab_shell(window):
     right_layout.addWidget(window.results_tabs)
     right_scroll.setWidget(right_panel)
 
-    splitter.addWidget(left_scroll)
+    splitter.addWidget(left_container)
     splitter.addWidget(right_scroll)
     splitter.setSizes([500, 500])
     splitter.setStretchFactor(0, 1)

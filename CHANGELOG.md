@@ -4,6 +4,21 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.4.1] — 2026-09-09
+
+### Fixed
+- **Windows Password Lockout Bug** — Fixed perpetual lockout loop in `check_lockout` on Windows. Re-enabled password field immediately when timer hits zero, added live countdown in seconds and atomic UTF-8 state file persistence.
+- **Engineering Trace Tree Stability** — Resolved `IndexError` in trace tree rendering across variable step lengths.
+- **Method Recommendation Badge** — Resolved static analyzing placeholder; wired live signals to composition table and pressure edits.
+
+### Added & Improved
+- **13-inch MacBook Retina UI Optimization** — macOS Cocoa 72 DPI Retina scaling guard, 10-11pt base fonts, high-contrast text and active gas status badge.
+- **Left Panel Ergonomics Overhaul** — 2-column stacked process conditions grid (45% vertical reduction), sticky action bar pinned to bottom, collapsible project notes and gas table, quick-preset chips (`Doğal Gaz`, `LNG`, `CO₂`, `H₂`), and live PR & ΔP badge.
+- **3-Theme Header Contrast** — Verified WCAG 2.0 AAA contrast for Light (`#0F62FE`), Dark (`#3B82F6`), and Engineering (`#00B4D8`) themes, synchronized `app.setPalette` to eliminate macOS dark-mode bleed-through.
+- **6-Method Shootout** — Expanded Engineering comparison to evaluate all 6 methods including Huntington-RK45 and Schultz 3-Exponent.
+
+---
+
 ## [v2.0.1] — 2026-05-29
 
 ### Fixed

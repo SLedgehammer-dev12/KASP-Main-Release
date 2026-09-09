@@ -31,8 +31,9 @@ class LoginDialog(QDialog):
         self._user_manager = user_manager
         self._remaining_lockout = get_lockout_remaining()
         self._lockout_timer = None
+        self._was_locked = False
         self._setup_ui()
-        self._update_lockout_state()
+        self._update_lockout_state(is_initial=True)
 
     def _setup_ui(self):
         self.setWindowTitle(tr("KASP — Giriş"))
@@ -112,17 +113,23 @@ class LoginDialog(QDialog):
             self._authenticated_user = user
             self.accept()
         else:
-            record_attempt(success=False)
+            just_locked, lock_msg = record_attempt(success=False)
             self._password_edit.clear()
             self._password_edit.setFocus()
-            self._status_label.setText(tr("Hatalı kullanıcı adı veya şifre."))
-            self._status_label.setStyleSheet("color: #c62828;")
-            self._update_lockout_state()
+            if just_locked:
+                self._was_locked = True
+                self._update_lockout_state()
+            else:
+                remaining = get_lockout_remaining()
+                self._status_label.setText(
+                    tr(f"Hatalı kullanıcı adı veya şifre. (Kalan deneme: {remaining})")
+                )
+                self._status_label.setStyleSheet("color: #c62828;")
 
     def authenticated_user(self):
         return getattr(self, "_authenticated_user", None)
 
-    def _update_lockout_state(self):
+    def _update_lockout_state(self, is_initial=False):
         locked, msg = check_lockout()
 
         if self._lockout_timer:
@@ -130,11 +137,12 @@ class LoginDialog(QDialog):
             self._lockout_timer = None
 
         if locked:
+            self._was_locked = True
             self._login_btn.setEnabled(False)
             self._username_edit.setEnabled(False)
             self._password_edit.setEnabled(False)
             self._status_label.setText(f"⏳ {msg}")
-            self._status_label.setStyleSheet("color: #c62828;")
+            self._status_label.setStyleSheet("color: #c62828; font-weight: bold;")
             self._lockout_timer = QTimer(self)
             self._lockout_timer.timeout.connect(self._on_lockout_tick)
             self._lockout_timer.start(self._LOCKOUT_TIMER_INTERVAL)
@@ -142,12 +150,18 @@ class LoginDialog(QDialog):
             self._login_btn.setEnabled(True)
             self._username_edit.setEnabled(True)
             self._password_edit.setEnabled(True)
-            remaining = get_lockout_remaining()
-            if remaining > 0:
-                level_info = _find_lockout_level(remaining)
+            self._password_edit.setFocus()
+
+            if self._was_locked:
+                self._was_locked = False
+                remaining = get_lockout_remaining()
                 self._status_label.setText(
-                    tr(f"Kalan deneme: {level_info}")
+                    tr(f"Kilit açıldı. Lütfen şifrenizi girin. (Kalan deneme: {remaining})")
                 )
+                self._status_label.setStyleSheet("color: #15803D; font-weight: bold;")
+            elif not is_initial:
+                remaining = get_lockout_remaining()
+                self._status_label.setText(tr(f"Kalan deneme: {remaining}"))
                 self._status_label.setStyleSheet("color: #b25300;")
             else:
                 self._status_label.setText("")
@@ -157,18 +171,11 @@ class LoginDialog(QDialog):
         locked, msg = check_lockout()
         if not locked:
             self._update_lockout_state()
-            self._password_edit.setFocus()
         else:
             self._status_label.setText(f"⏳ {msg}")
+            self._status_label.setStyleSheet("color: #c62828; font-weight: bold;")
 
     def reject(self):
         if self._lockout_timer:
             self._lockout_timer.stop()
         super().reject()
-
-
-def _find_lockout_level(remaining_attempts):
-    for limit, _ in LOCKOUT_LEVELS:
-        if remaining_attempts < limit:
-            return max(1, limit - remaining_attempts)
-    return max(1, LOCKOUT_LEVELS[-1][0] - remaining_attempts + 1)

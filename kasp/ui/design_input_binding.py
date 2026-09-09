@@ -209,7 +209,15 @@ class DesignInputBinder:
             return
 
         from PyQt5.QtCore import Qt
+        from PyQt5.QtGui import QFont
         from PyQt5.QtWidgets import QComboBox, QTableWidgetItem
+        from kasp.ui.responsive import scaled_font_pt
+
+        cell_font = QFont()
+        cell_font.setPointSize(scaled_font_pt(10))
+
+        table_font = QFont()
+        table_font.setPointSize(scaled_font_pt(11))
 
         for component_key, percentage in gas_comp.items():
             row = window.composition_table.rowCount()
@@ -217,13 +225,19 @@ class DesignInputBinder:
 
             combo = QComboBox()
             combo.addItems(window.COMMON_COMPONENTS_DISPLAY)
+            combo.setFont(cell_font)
             display_name = window.COOLPROP_GAS_MAP.get(component_key, component_key)
             if display_name in window.COMMON_COMPONENTS_DISPLAY:
                 combo.setCurrentText(display_name)
+            combo.setToolTip(f"Bileşen: {combo.currentText()}")
             combo.currentIndexChanged.connect(window._update_composition_total_label)
 
             window.composition_table.setCellWidget(row, 0, combo)
 
             percent_item = QTableWidgetItem(str(percentage))
             percent_item.setTextAlignment(Qt.AlignCenter)
+            percent_item.setFont(table_font)
             window.composition_table.setItem(row, 1, percent_item)
+
+        if hasattr(window, "gas_composition_workflow") and hasattr(window.gas_composition_workflow, "update_selected_gas_badge"):
+            window.gas_composition_workflow.update_selected_gas_badge()

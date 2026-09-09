@@ -228,42 +228,107 @@ class GasCompositionController:
 
     def _populate_table(self, composition):
         Qt, QComboBox, _, QTableWidgetItem = self._qt_widgets()
+        from PyQt5.QtGui import QFont
+        from kasp.ui.responsive import scaled_font_pt
+
+        cell_font = QFont()
+        cell_font.setPointSize(scaled_font_pt(10))
+
+        table_font = QFont()
+        table_font.setPointSize(scaled_font_pt(11))
 
         self.window.composition_table.setRowCount(len(composition))
         for row, (component_key, percentage) in enumerate(composition.items()):
             display_name = self.window.COOLPROP_GAS_MAP.get(component_key, component_key)
 
             combo = QComboBox()
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(8)
             combo.addItems(self.window.COMMON_COMPONENTS_DISPLAY)
+            combo.setFont(cell_font)
             if display_name in self.window.COMMON_COMPONENTS_DISPLAY:
                 combo.setCurrentText(display_name)
+            combo.setToolTip(f"Bileşen: {combo.currentText()}")
             combo.currentIndexChanged.connect(self.update_total_label)
             self.window.composition_table.setCellWidget(row, 0, combo)
 
             percent_item = QTableWidgetItem(str(percentage))
             percent_item.setTextAlignment(Qt.AlignCenter)
+            percent_item.setFont(table_font)
             self.window.composition_table.setItem(row, 1, percent_item)
 
         self.update_total_label()
 
+    def update_selected_gas_badge(self, gas_name=None):
+        """Update the high-visibility badge card for the active gas."""
+        if not hasattr(self.window, "selected_gas_badge") or self.window.selected_gas_badge is None:
+            return
+
+        if gas_name is None and hasattr(self.window, "gas_combo") and self.window.gas_combo:
+            gas_name = self.window.gas_combo.currentText()
+
+        gas_name = gas_name or "Özel Karışım"
+
+        if gas_name == "Özel Karışım":
+            badge_text = "🔹 Özel Karışım (Kullanıcı Tanımlı)"
+            gas_type = "custom"
+        elif gas_name == "Air":
+            badge_text = "🔵 Standart Kuru Hava (N₂ %78, O₂ %21, Ar %1)"
+            gas_type = "mixture"
+        else:
+            std_comp = standard_composition_for_gas(gas_name)
+            if len(std_comp) == 1 and 100.0 in std_comp.values():
+                badge_text = f"🟢 Saf Akışkan: {gas_name} (%100)"
+                gas_type = "pure"
+            else:
+                comp_count = len(std_comp)
+                badge_text = f"🔵 Doğal Gaz Karışımı ({comp_count} Bileşen)"
+                gas_type = "mixture"
+
+        self.window.selected_gas_badge.setText(badge_text)
+        self.window.selected_gas_badge.setProperty("gasType", gas_type)
+        if hasattr(self.window.selected_gas_badge, "style"):
+            self.window.selected_gas_badge.style().unpolish(self.window.selected_gas_badge)
+            self.window.selected_gas_badge.style().polish(self.window.selected_gas_badge)
+
+        if hasattr(self.window, "gas_combo") and self.window.gas_combo:
+            self.window.gas_combo.setToolTip(f"Seçili Gaz: {gas_name}")
+
     def on_gas_selection_changed(self, gas_name):
         if gas_name != "Özel Karışım":
             self.load_standard_gas_composition(gas_name)
+        self.update_selected_gas_badge(gas_name)
 
     def load_standard_gas_composition(self, gas_name):
         self._populate_table(standard_composition_for_gas(gas_name))
 
     def add_component_row(self):
-        _, QComboBox, _, QTableWidgetItem = self._qt_widgets()
+        Qt, QComboBox, _, QTableWidgetItem = self._qt_widgets()
+        from PyQt5.QtGui import QFont
+        from kasp.ui.responsive import scaled_font_pt
+
+        cell_font = QFont()
+        cell_font.setPointSize(scaled_font_pt(10))
+
+        table_font = QFont()
+        table_font.setPointSize(scaled_font_pt(11))
 
         row_count = self.window.composition_table.rowCount()
         self.window.composition_table.insertRow(row_count)
 
         combo = QComboBox()
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(8)
         combo.addItems(self.window.COMMON_COMPONENTS_DISPLAY)
+        combo.setFont(cell_font)
+        combo.setToolTip("Bileşen seçiniz")
         combo.currentIndexChanged.connect(self.update_total_label)
         self.window.composition_table.setCellWidget(row_count, 0, combo)
-        self.window.composition_table.setItem(row_count, 1, QTableWidgetItem("0"))
+
+        percent_item = QTableWidgetItem("0")
+        percent_item.setTextAlignment(Qt.AlignCenter)
+        percent_item.setFont(table_font)
+        self.window.composition_table.setItem(row_count, 1, percent_item)
         self.update_total_label()
 
     def remove_component_row(self):

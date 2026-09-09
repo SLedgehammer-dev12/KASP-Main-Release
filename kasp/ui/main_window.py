@@ -150,6 +150,7 @@ class KaspMainWindow(QMainWindow):
         
         # Central widget setup
         self.central_widget = QWidget()
+        self.central_widget.setObjectName("central_widget")
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
         
