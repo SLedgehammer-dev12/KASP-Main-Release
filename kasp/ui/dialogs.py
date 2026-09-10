@@ -819,3 +819,167 @@ class ChangePasswordDialog(QDialog):
 
     def get_passwords(self):
         return getattr(self, "_old_password", ""), getattr(self, "_new_password", "")
+
+
+class SecuritySettingsDialog(QDialog):
+    """Kullanıcının güvenlik sorusunu belirlemesi ve kurtarma anahtarını yönetmesi için pencere."""
+
+    def __init__(self, user_manager, current_user, parent=None):
+        super().__init__(parent)
+        self._user_manager = user_manager
+        self._user = current_user
+        self.setWindowTitle("🛡️ Güvenlik ve Şifre Kurtarma Ayarları")
+        try:
+            from kasp.ui.responsive import scaled
+            w, h = scaled(460), scaled(420)
+        except Exception:
+            w, h = 460, 420
+        self.setFixedSize(w, h)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        from kasp.core.user_manager import DEFAULT_SECURITY_QUESTIONS
+        from PyQt5.QtWidgets import QGroupBox, QPushButton, QMessageBox, QApplication
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(18, 16, 18, 16)
+
+        # 1. Güvenlik Sorusu Grubu
+        q_box = QGroupBox("❓ Güvenlik Sorusu ve Yanıtı")
+        q_layout = QVBoxLayout(q_box)
+        q_layout.setSpacing(8)
+
+        q_info = QLabel("Şifrenizi unutursanız hesabınızı bu soru ile kurtarabilirsiniz:")
+        q_info.setWordWrap(True)
+        q_info.setStyleSheet("color: #666; font-size: 11px;")
+        q_layout.addWidget(q_info)
+
+        self._combo_q = QComboBox()
+        for q in DEFAULT_SECURITY_QUESTIONS:
+            self._combo_q.addItem(q)
+        self._combo_q.addItem("Özel bir soru belirle...")
+        self._combo_q.currentIndexChanged.connect(self._on_q_selection_changed)
+        q_layout.addWidget(self._combo_q)
+
+        self._custom_q_edit = QLineEdit()
+        self._custom_q_edit.setPlaceholderText("Kendi güvenlik sorunuzu yazın...")
+        self._custom_q_edit.setVisible(False)
+        q_layout.addWidget(self._custom_q_edit)
+
+        self._ans_edit = QLineEdit()
+        self._ans_edit.setPlaceholderText("Güvenlik sorusunun cevabı (en az 2 karakter)")
+        q_layout.addWidget(self._ans_edit)
+
+        save_q_btn = QPushButton("💾 Güvenlik Sorusunu Kaydet")
+        save_q_btn.clicked.connect(self._save_security_question)
+        q_layout.addWidget(save_q_btn)
+
+        layout.addWidget(q_box)
+
+        # 2. Acil Durum Kurtarma Anahtarı Grubu
+        k_box = QGroupBox("🔑 Acil Durum Kurtarma Anahtarı (Master Key)")
+        k_layout = QVBoxLayout(k_box)
+        k_layout.setSpacing(8)
+
+        k_info = QLabel(
+            "Kurtarma anahtarınızı güvenli bir yere (kasaya veya parola yöneticisine) kaydedin.\n"
+            "Şifrenizi ve güvenlik sorunuzu unutursanız bu anahtarla anında sıfırlayabilirsiniz."
+        )
+        k_info.setWordWrap(True)
+        k_info.setStyleSheet("color: #666; font-size: 11px;")
+        k_layout.addWidget(k_info)
+
+        h_layout = QHBoxLayout()
+        self._key_display = QLineEdit()
+        self._key_display.setReadOnly(True)
+        self._key_display.setPlaceholderText("Henüz oluşturulmadı")
+        h_layout.addWidget(self._key_display)
+
+        copy_btn = QPushButton("📋 Kopyala")
+        copy_btn.clicked.connect(self._copy_key)
+        h_layout.addWidget(copy_btn)
+        k_layout.addLayout(h_layout)
+
+        gen_key_btn = QPushButton("🔄 Yeni Kurtarma Anahtarı Üret")
+        gen_key_btn.clicked.connect(self._generate_new_key)
+        k_layout.addWidget(gen_key_btn)
+
+        layout.addWidget(k_box)
+
+        # Kapat butonu
+        close_btn = QPushButton("Kapat")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+        # Mevcut durumu yükle
+        if self._user:
+            q, _ = self._user_manager.get_security_question(self._user.username)
+            if q:
+                idx = self._combo_q.findText(q)
+                if idx >= 0:
+                    self._combo_q.setCurrentIndex(idx)
+                else:
+                    self._combo_q.setCurrentIndex(self._combo_q.count() - 1)
+                    self._custom_q_edit.setText(q)
+                    self._custom_q_edit.setVisible(True)
+
+    def _on_q_selection_changed(self, index):
+        is_custom = (index == self._combo_q.count() - 1)
+        self._custom_q_edit.setVisible(is_custom)
+        if is_custom:
+            self._custom_q_edit.setFocus()
+
+    def _save_security_question(self):
+        from PyQt5.QtWidgets import QMessageBox
+        if self._combo_q.currentIndex() == self._combo_q.count() - 1:
+            q = self._custom_q_edit.text().strip()
+        else:
+            q = self._combo_q.currentText().strip()
+
+        ans = self._ans_edit.text().strip()
+        if not q:
+            QMessageBox.warning(self, "Hata", "Lütfen bir güvenlik sorusu seçin veya girin.")
+            return
+        if len(ans) < 2:
+            QMessageBox.warning(self, "Hata", "Cevap en az 2 karakter olmalıdır.")
+            return
+
+        ok, err = self._user_manager.set_security_question(self._user.id, q, ans)
+        if ok:
+            QMessageBox.information(self, "Başarılı", "Güvenlik sorunuz ve yanıtınız başarıyla kaydedildi.")
+            self._ans_edit.clear()
+        else:
+            QMessageBox.warning(self, "Hata", err or "Kaydedilemedi.")
+
+    def _generate_new_key(self):
+        from PyQt5.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Kurtarma Anahtarı Üret",
+            "Yeni bir kurtarma anahtarı üretildiğinde varsa önceki anahtarınız geçersiz olacaktır.\n"
+            "Devam etmek istiyor musunuz?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        key, err = self._user_manager.generate_and_save_recovery_key(self._user.id)
+        if key:
+            self._key_display.setText(key)
+            QMessageBox.information(
+                self,
+                "Yeni Kurtarma Anahtarı",
+                f"Yeni Kurtarma Anahtarınız:\n\n{key}\n\nLütfen bu anahtarı güvenli bir yere not ediniz.",
+            )
+        else:
+            QMessageBox.warning(self, "Hata", err or "Anahtar üretilemedi.")
+
+    def _copy_key(self):
+        from PyQt5.QtWidgets import QApplication, QMessageBox
+        k = self._key_display.text().strip()
+        if k:
+            QApplication.clipboard().setText(k)
+            QMessageBox.information(self, "Kopyalandı", "Kurtarma anahtarı panoya kopyalandı.")
+

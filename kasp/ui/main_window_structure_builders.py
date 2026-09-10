@@ -28,6 +28,7 @@ def get_main_menu_specs():
             ("📚 Kütüphane Yöneticisi", None, "open_library_manager"),
             ("🧹 Önbelleği Temizle", None, "clear_engine_cache"),
             ("🔑 Şifre Değiştir", None, "change_password"),
+            ("🛡️ Güvenlik ve Kurtarma", None, "open_security_settings"),
             None,
             ("👥 Kullanıcı Yönetimi", None, "show_admin_panel"),
         ],

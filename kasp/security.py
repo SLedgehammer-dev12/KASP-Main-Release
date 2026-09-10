@@ -175,6 +175,43 @@ def get_lockout_remaining() -> int:
             return level_failures - failures
     return 1
 
+
+def reset_lockout_state():
+    """Tüm kilit ve hata sayaçlarını tamamen sıfırlar."""
+    state = {
+        "failures": 0,
+        "last_failure": 0,
+        "lockout_until": 0,
+        "last_lockout_end": 0,
+    }
+    _save_lockout_state(state)
+
+
+def generate_recovery_key() -> str:
+    """16 karakterlik (4x4) Base32 benzeri okunabilir kurtarma anahtarı üretir.
+    Örnek: KASP-7F9B-3K2E-8A4D
+    """
+    chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    blocks = ["".join(secrets.choice(chars) for _ in range(4)) for _ in range(3)]
+    return f"KASP-{blocks[0]}-{blocks[1]}-{blocks[2]}"
+
+
+def normalize_recovery_key(key: str) -> str:
+    """Kurtarma anahtarındaki boşlukları, tireleri ve harf büyüklüklerini standartlaştırır."""
+    if not key:
+        return ""
+    clean = key.strip().upper().replace(" ", "").replace("-", "")
+    if clean.startswith("KASP") and len(clean) == 16:
+        return f"KASP-{clean[4:8]}-{clean[8:12]}-{clean[12:16]}"
+    return key.strip().upper()
+
+
+def normalize_security_answer(answer: str) -> str:
+    """Güvenlik sorusu cevabını küçük harfe çevirip baştaki/sondaki boşlukları temizler."""
+    if not answer:
+        return ""
+    return answer.strip().lower()
+
 class InputValidator:
     """Validates and sanitizes user inputs"""
     

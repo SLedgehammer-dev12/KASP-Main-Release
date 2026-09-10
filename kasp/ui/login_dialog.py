@@ -39,9 +39,9 @@ class LoginDialog(QDialog):
         self.setWindowTitle(tr("KASP — Giriş"))
         try:
             from kasp.ui.responsive import scaled
-            w, h = scaled(400), scaled(260)
+            w, h = scaled(400), scaled(295)
         except Exception:
-            w, h = 400, 260
+            w, h = 400, 295
         self.setFixedSize(w, h)
         self.setWindowFlags(
             Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint
@@ -87,6 +87,32 @@ class LoginDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
+
+        forgot_layout = QHBoxLayout()
+        forgot_layout.setAlignment(Qt.AlignCenter)
+        self._forgot_btn = QPushButton(tr("❓ Şifremi Unuttum"))
+        self._forgot_btn.setFlat(True)
+        self._forgot_btn.setCursor(Qt.PointingHandCursor)
+        self._forgot_btn.setStyleSheet(
+            "QPushButton { border: none; color: #2563EB; font-size: 11px; text-decoration: underline; background: transparent; }"
+            "QPushButton:hover { color: #1D4ED8; }"
+        )
+        self._forgot_btn.clicked.connect(self._open_password_recovery)
+        forgot_layout.addWidget(self._forgot_btn)
+        layout.addLayout(forgot_layout)
+
+    def _open_password_recovery(self):
+        from kasp.ui.password_recovery_dialog import PasswordRecoveryDialog
+        curr_user = self._username_edit.text().strip()
+        dialog = PasswordRecoveryDialog(self._user_manager, self, default_username=curr_user)
+        if dialog.exec_() == QDialog.Accepted:
+            if dialog.recovered_username:
+                self._username_edit.setText(dialog.recovered_username)
+            self._password_edit.clear()
+            self._password_edit.setFocus()
+            self._update_lockout_state()
+            self._status_label.setText(tr("Şifreniz sıfırlandı. Lütfen yeni şifrenizle giriş yapın."))
+            self._status_label.setStyleSheet("color: #15803D; font-weight: bold;")
 
     def _toggle_password_visibility(self, checked):
         self._password_edit.setEchoMode(

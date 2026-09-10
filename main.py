@@ -102,6 +102,32 @@ def main():
         
         # Install global exception handler
         install_exception_handler()
+
+        # CLI rescue: Acil durum admin şifre sıfırlama
+        if "--reset-admin" in sys.argv:
+            print("\n" + "=" * 65)
+            print(f"KASP v{APP_VERSION} — ACİL DURUM YÖNETİCİ SIFIRLAMA ARACI")
+            print("=" * 65)
+            from kasp.data.database import UnitDatabase
+            from kasp.core.user_manager import UserManager
+            db = UnitDatabase()
+            user_mgr = UserManager(db)
+            ok, pw, key = user_mgr.cli_emergency_reset_admin()
+            if ok:
+                print("✓ Yönetici (admin) hesabı başarıyla sıfırlandı.")
+                print(f"  • Kullanıcı Adı         : admin")
+                print(f"  • Geçici Şifre          : {pw}")
+                print(f"  • Yeni Kurtarma Anahtarı: {key}")
+                print("\nÖNEMLİ BİLGİ:")
+                print("1. İlk girişte yeni bir şifre belirlemeniz istenecektir.")
+                print("2. Yeni Kurtarma Anahtarını güvenli bir yere kaydediniz.")
+                print("3. Kilit ve başarısız deneme sayaçları sıfırlanmıştır.")
+                print("=" * 65 + "\n")
+                logger.info("Admin şifresi CLI üzerinden acil durum aracıyla sıfırlandı.")
+                sys.exit(0)
+            else:
+                print("❌ HATA: Admin hesabı sıfırlanamadı.")
+                sys.exit(1)
         
         # CRITICAL FIX: High DPI must be set BEFORE QApplication creation
         if hasattr(Qt, 'AA_EnableHighDpiScaling'):

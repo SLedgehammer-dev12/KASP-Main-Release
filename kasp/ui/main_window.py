@@ -1108,6 +1108,19 @@ class KaspMainWindow(QMainWindow):
                 if not forced:
                     return
 
+    def open_security_settings(self):
+        from kasp.security import Session
+        from kasp.core.user_manager import UserManager
+        from kasp.data.database import UnitDatabase
+        from kasp.ui.dialogs import SecuritySettingsDialog
+        user = Session.current_user()
+        if user is None:
+            return
+        db = UnitDatabase()
+        user_mgr = UserManager(db)
+        dialog = SecuritySettingsDialog(user_mgr, user, self)
+        dialog.exec_()
+
     def logout(self):
         from kasp.security import Session
         Session.logout()

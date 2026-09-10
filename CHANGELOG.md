@@ -4,6 +4,15 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.4.2] — 2026-09-10
+
+### Added & Improved
+- **Offline Multi-Layer Password Recovery & Security Question** — Integrated Security Question & Answer mechanism with case-insensitive normalization and PBKDF2 hashing, 16-character Master Recovery Key (`KASP-XXXX-XXXX-XXXX`) for emergency administrator recovery, and "❓ Şifremi Unuttum" wizard in LoginDialog.
+- **CLI Emergency Rescue Tool (`--reset-admin`)** — Added `python3 main.py --reset-admin` command to safely reset admin credentials to defaults, force password change on next login, generate a fresh recovery key, and clear lockout states without touching calculation history or equipment models.
+- **In-App Security & Recovery Settings** — Added `SecuritySettingsDialog` under Tools menu for self-service question management and key generation.
+
+---
+
 ## [v2.4.1] — 2026-09-09
 
 ### Fixed

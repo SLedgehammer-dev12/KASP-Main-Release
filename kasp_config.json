@@ -1,6 +1,6 @@
 {
     "app": {
-        "version": "2.4.1",
+        "version": "2.4.2",
         "language": "tr",
         "theme": "engineering",
         "auto_save": true,
@@ -41,7 +41,7 @@
         "repo_name": "KASP-Main-Release",
         "last_dismissed_tag": "",
         "engineering_mode": false,
-        "last_seen_release_notes_tag": "v2.4.1"
+        "last_seen_release_notes_tag": "v2.4.2"
     },
     "auth": {
         "password_hash": "",
