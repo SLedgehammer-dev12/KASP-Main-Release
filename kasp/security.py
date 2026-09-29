@@ -8,14 +8,17 @@ import os
 import time
 import json
 import hashlib
+import hmac
 import secrets
+import string
 import sys
 from typing import Any, Union
 import logging
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PASSWORD = "kasp2024"
+# DEFAULT_PASSWORD kaldirildi (P4-6). Ilk kurulumda rastgele tek-seferlik parola uretilecek.
+# Gerekirse `generate_initial_admin_password()` ile uretilebilir.
 
 LOCKOUT_LEVELS = [
     (3, 1),
@@ -44,12 +47,53 @@ _lockout_file = os.path.join(_get_app_data_dir(), "kasp_lockout.json")
 FAILURE_RESET_WINDOW = 900  # 15 dakika inaktivite sonrasi hatali deneme sayaci sifirlanir
 
 
+def generate_initial_admin_password(length: int = 16) -> str:
+    """Ilk kurulum icin guvenli rastgele tek-seferlik parola uretir.
+
+    Alfanumerik + ozel karakterlerden olusur. Kullaniciya bir kez gosterilir,
+    must_change_password=1 ile zorunlu degistirme saglanir.
+    """
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _empty_user_state():
+    return {"failures": 0, "last_failure": 0, "lockout_until": 0, "last_lockout_end": 0}
+
+
 def _load_lockout_state():
+    """Kullanici bazli kilit durumunu yukler.
+
+    Eski duz (flat) format otomatik olarak '_global' kullanicisina tasinir.
+    """
     try:
         with open(_lockout_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {"failures": 0, "last_failure": 0, "lockout_until": 0}
+        return {"users": {}}
+
+    if not isinstance(data, dict):
+        return {"users": {}}
+    if "users" not in data:
+        legacy = {
+            "failures": data.get("failures", 0),
+            "last_failure": data.get("last_failure", 0),
+            "lockout_until": data.get("lockout_until", 0),
+            "last_lockout_end": data.get("last_lockout_end", 0),
+        }
+        users = {"_global": legacy} if any(legacy.values()) else {}
+        return {"users": users}
+    if not isinstance(data.get("users"), dict):
+        data["users"] = {}
+    return data
+
+
+def _user_key(username):
+    return (username or "_global").strip().lower() or "_global"
+
+
+def _user_state(state, username):
+    return state["users"].setdefault(_user_key(username), _empty_user_state())
 
 
 def _save_lockout_state(state):
@@ -76,46 +120,51 @@ def verify_password(password: str, stored_hash: str) -> bool:
             converted = stored_hash.replace("_sha256", ":sha256").replace("$", ":")
             _, algo, iters, salt, expected = converted.split(":")
             dk = hashlib.pbkdf2_hmac(algo, password.encode(), salt.encode(), int(iters))
-            return dk.hex() == expected
+            return hmac.compare_digest(dk.hex(), expected)
         except (ValueError, AttributeError):
             return False
     try:
         _, algo, iters, salt, expected = stored_hash.split(":")
         dk = hashlib.pbkdf2_hmac(algo, password.encode(), salt.encode(), int(iters))
-        return dk.hex() == expected
+        return hmac.compare_digest(dk.hex(), expected)
     except (ValueError, AttributeError):
         return False
 
 
-def record_attempt(success: bool) -> tuple[bool, str]:
-    """Kayit denemesi islemi.
-    
+def record_attempt(success: bool, username: str | None = None) -> tuple[bool, str]:
+    """Kayit denemesi islemi (kullanici bazli).
+
+    Args:
+        success: Deneme basarili mi
+        username: Kilidin uygulanacagi kullanici (None ise global kova)
+
     Returns:
         tuple[bool, str]: (kilitlendi_mi, kilit_mesaji)
     """
     state = _load_lockout_state()
+    user = _user_state(state, username)
     now = time.time()
 
     if success:
-        state["failures"] = 0
-        state["lockout_until"] = 0
-        state["last_failure"] = 0
-        state["last_lockout_end"] = 0
+        user["failures"] = 0
+        user["lockout_until"] = 0
+        user["last_failure"] = 0
+        user["last_lockout_end"] = 0
         _save_lockout_state(state)
         return False, ""
 
     # Inaktivite penceresi: Eger kilit bitiminden / son hatadan sonra 15 dk gectiyse sayaci sifirla
-    last_failure = state.get("last_failure", 0)
-    last_lockout_end = state.get("last_lockout_end", 0)
-    lockout_until = state.get("lockout_until", 0)
+    last_failure = user.get("last_failure", 0)
+    last_lockout_end = user.get("last_lockout_end", 0)
+    lockout_until = user.get("lockout_until", 0)
     ref_time = max(last_failure, last_lockout_end, lockout_until)
     if last_failure and (now - ref_time > FAILURE_RESET_WINDOW):
-        state["failures"] = 0
-        state["last_lockout_end"] = 0
+        user["failures"] = 0
+        user["last_lockout_end"] = 0
 
-    failures = state.get("failures", 0) + 1
-    state["failures"] = failures
-    state["last_failure"] = now
+    failures = user.get("failures", 0) + 1
+    user["failures"] = failures
+    user["last_failure"] = now
 
     # Seviyeleri buyukten kucuge tara (10, 8, 5, 3)
     lockout_mins = 0
@@ -127,7 +176,7 @@ def record_attempt(success: bool) -> tuple[bool, str]:
             break
 
     if lockout_mins > 0:
-        state["lockout_until"] = now + lockout_mins * 60
+        user["lockout_until"] = now + lockout_mins * 60
         _save_lockout_state(state)
         return True, f"{lockout_mins} dakika kilitlendi"
 
@@ -135,17 +184,18 @@ def record_attempt(success: bool) -> tuple[bool, str]:
     return False, ""
 
 
-def check_lockout() -> tuple[bool, str]:
+def check_lockout(username: str | None = None) -> tuple[bool, str]:
     """Kilit durumunu salt-okunur (read-only) olarak sorgular.
-    
+
     Sure doldugunda kilidi kaldirir ve False doner. Asla yeni kilit baslatmaz.
-    
+
     Returns:
         tuple[bool, str]: (kilitli_mi, kilit_mesaji)
     """
     state = _load_lockout_state()
+    user = _user_state(state, username)
     now = time.time()
-    lockout_until = state.get("lockout_until", 0)
+    lockout_until = user.get("lockout_until", 0)
 
     if lockout_until > 0:
         if now < lockout_until:
@@ -158,32 +208,34 @@ def check_lockout() -> tuple[bool, str]:
                 return True, f"{remaining_sec} saniye kilitli"
         else:
             # Kilit suresi doldu! Kilidi temizle ve dosyayada guncelle
-            state["last_lockout_end"] = lockout_until
-            state["lockout_until"] = 0
+            user["last_lockout_end"] = lockout_until
+            user["lockout_until"] = 0
             _save_lockout_state(state)
             return False, ""
 
     return False, ""
 
 
-def get_lockout_remaining() -> int:
+def get_lockout_remaining(username: str | None = None) -> int:
     """Bir sonraki kilit seviyesine kadar kalan hatali deneme hakkini dondurur."""
     state = _load_lockout_state()
-    failures = state.get("failures", 0)
+    failures = _user_state(state, username).get("failures", 0)
     for level_failures, _ in LOCKOUT_LEVELS:
         if failures < level_failures:
             return level_failures - failures
     return 1
 
 
-def reset_lockout_state():
-    """Tüm kilit ve hata sayaçlarını tamamen sıfırlar."""
-    state = {
-        "failures": 0,
-        "last_failure": 0,
-        "lockout_until": 0,
-        "last_lockout_end": 0,
-    }
+def reset_lockout_state(username: str | None = None):
+    """Kilit ve hata sayaclarini sifirlar.
+
+    username verilirse yalnizca o kullanici; verilmezse tum kullanicilar.
+    """
+    state = _load_lockout_state()
+    if username is None:
+        state["users"] = {}
+    else:
+        state["users"].pop(_user_key(username), None)
     _save_lockout_state(state)
 
 
@@ -243,9 +295,16 @@ class InputValidator:
         return sanitized.strip()
     
     @staticmethod
-    def validate_file_path(path: str, allowed_extensions: list = None) -> bool:
+    def validate_file_path(path: str, allowed_extensions: list = None, allowed_dir: str = None) -> bool:
         """Validate file path for security"""
         try:
+            if not path or not isinstance(path, str):
+                return False
+
+            if os.path.isabs(path) and not allowed_dir:
+                logger.warning(f"Absolute path rejected without allowed_dir: {path}")
+                return False
+
             # Normalize the path to resolve any '..' components
             normalized = os.path.normpath(path)
             
@@ -254,6 +313,13 @@ class InputValidator:
             if '..' in normalized.split(os.sep):
                 logger.warning(f"Potential path traversal attempt: {path}")
                 return False
+
+            if allowed_dir:
+                real_allowed = os.path.realpath(allowed_dir)
+                real_target = os.path.realpath(path)
+                if not (real_target == real_allowed or real_target.startswith(real_allowed + os.sep)):
+                    logger.warning(f"Path outside allowed directory: {path}")
+                    return False
             
             # Check file extension if provided
             if allowed_extensions:
@@ -296,6 +362,11 @@ class Session:
     """Global oturum yöneticisi."""
     _permission_manager = None
     _current_user = None
+    _strict_auth = False
+
+    @classmethod
+    def set_strict_auth(cls, enabled: bool):
+        cls._strict_auth = bool(enabled)
 
     @classmethod
     def login(cls, user):
@@ -310,6 +381,7 @@ class Session:
     @classmethod
     def logout(cls):
         cls._current_user = None
+        cls._strict_auth = False
         if cls._permission_manager:
             cls._permission_manager.current_user = None
             cls._permission_manager.set_user_role("user")
@@ -340,6 +412,19 @@ class Session:
             return get_config_manager().get("updates.engineering_mode", False)
         except Exception:
             return False
+
+    @classmethod
+    def authorize(cls, action: str) -> bool:
+        """Islem bazli yetki kontrolu.
+
+        Oturum yoksa (dev/CLI/baslangic) geriye donuk uyumluluk icin izin verilir;
+        ancak manage_users ve delete aksiyonlari veya strict_auth aktifken izin verilmez.
+        """
+        if cls._current_user is None:
+            if getattr(cls, "_strict_auth", False) or action in ("manage_users", "delete"):
+                return False
+            return True
+        return cls.has_permission(action)
 
 
 _permission_manager = None

@@ -108,22 +108,37 @@ def main():
             print("\n" + "=" * 65)
             print(f"KASP v{APP_VERSION} — ACİL DURUM YÖNETİCİ SIFIRLAMA ARACI")
             print("=" * 65)
+            auto_confirm = "--yes" in sys.argv or "-y" in sys.argv
+            is_interactive = sys.stdin is not None and sys.stdin.isatty()
+            if not auto_confirm:
+                if not is_interactive:
+                    logger.warning("Güvenlik uyarısı: Etkileşimsiz ortamda --yes olmadan --reset-admin reddedildi.")
+                    print("❌ HATA: Etkileşimsiz (non-TTY) ortamda sıfırlama için '--yes' bayrağı gereklidir.")
+                    sys.exit(1)
+                confirm = input("Admin hesabını sıfırlamak istediğinize emin misiniz? [e/H]: ").strip().lower()
+                if confirm not in ("e", "evet", "y", "yes"):
+                    logger.warning("Admin şifre sıfırlama işlemi kullanıcı tarafından iptal edildi.")
+                    print("İşlem iptal edildi.")
+                    sys.exit(0)
             from kasp.data.database import UnitDatabase
             from kasp.core.user_manager import UserManager
             db = UnitDatabase()
             user_mgr = UserManager(db)
             ok, pw, key = user_mgr.cli_emergency_reset_admin()
             if ok:
+                logger.warning("GÜVENLİK UYARISI: Admin şifresi CLI üzerinden acil durum aracıyla sıfırlandı.")
                 print("✓ Yönetici (admin) hesabı başarıyla sıfırlandı.")
                 print(f"  • Kullanıcı Adı         : admin")
-                print(f"  • Geçici Şifre          : {pw}")
-                print(f"  • Yeni Kurtarma Anahtarı: {key}")
+                if is_interactive:
+                    print(f"  • Geçici Şifre          : {pw}")
+                    print(f"  • Yeni Kurtarma Anahtarı: {key}")
+                else:
+                    print("  • Not: Etkileşimsiz (non-TTY) çıktı algılandı; şifre güvenlik nedeniyle ekrana yazdırılmadı.")
                 print("\nÖNEMLİ BİLGİ:")
                 print("1. İlk girişte yeni bir şifre belirlemeniz istenecektir.")
                 print("2. Yeni Kurtarma Anahtarını güvenli bir yere kaydediniz.")
                 print("3. Kilit ve başarısız deneme sayaçları sıfırlanmıştır.")
                 print("=" * 65 + "\n")
-                logger.info("Admin şifresi CLI üzerinden acil durum aracıyla sıfırlandı.")
                 sys.exit(0)
             else:
                 print("❌ HATA: Admin hesabı sıfırlanamadı.")
@@ -172,21 +187,23 @@ def main():
             logger.warning(f"⚠ Application icon not found: {icon_path}")
         
         # Login authentication — Gelişmiş Kullanıcı Yönetimi
-        from kasp.security import hash_password, DEFAULT_PASSWORD, Session
+        from kasp.security import hash_password, generate_initial_admin_password, Session
         from kasp.core.user_manager import UserManager
         from kasp.data.database import UnitDatabase
 
         db = UnitDatabase()
         user_manager = UserManager(db)
 
-        # İlk çalıştırma: Varsayılan admin oluştur
-        default_pw_hash = hash_password(DEFAULT_PASSWORD)
-        db.create_default_admin(default_pw_hash)
-        # Mevcut kurulumlarda admin hala varsayılan parolaysa şifre değiştirme zorunlu kıl
-        db.ensure_default_admin_must_change_password(default_pw_hash)
+        # İlk çalıştırma: Varsayılan admin olustur (rastgele tek-seferlik parola, P4-6)
+        initial_pw = generate_initial_admin_password()
+        initial_pw_hash = hash_password(initial_pw)
+        db.create_default_admin(initial_pw_hash)
+        # Mevcut kurulumlarda admin must_change_password=1 olmali (P4-6)
+        db.ensure_default_admin_must_change_password()
+        # Rastgele parola loglanmaz; kullaniciya LoginDialog'da gosterilir
 
         from kasp.ui.login_dialog import LoginDialog
-        login = LoginDialog(user_manager)
+        login = LoginDialog(user_manager, initial_password=initial_pw)
         if login.exec_() != LoginDialog.Accepted:
             logger.info("Login cancelled by user")
             sys.exit(0)
@@ -197,6 +214,7 @@ def main():
             sys.exit(1)
 
         Session.login(authenticated_user)
+        Session.set_strict_auth(True)
         logger.info(f"✓ Login successful — user: {authenticated_user.username} ({authenticated_user.role})")
 
         # Must-change-password kontrolü

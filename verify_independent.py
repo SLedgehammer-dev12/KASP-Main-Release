@@ -18,8 +18,19 @@ def independent_verification():
     
     # Isentropic State (Outlet)
     p2 = 6000000.0  # 60 bar
-    h2_is = CP.PropsSI('Hmass', 'P', p2, 'Smass', s1, gas)
-    t2_is = CP.PropsSI('T', 'P', p2, 'Smass', s1, gas)
+    try:
+        h2_is = CP.PropsSI('Hmass', 'P', p2, 'Smass', s1, gas)
+        t2_is = CP.PropsSI('T', 'P', p2, 'Smass', s1, gas)
+    except ValueError:
+        lo, hi = t1, t1 * 2.0
+        for _ in range(45):
+            mid = 0.5 * (lo + hi)
+            if CP.PropsSI('Smass', 'P', p2, 'T', mid, gas) < s1:
+                lo = mid
+            else:
+                hi = mid
+        t2_is = 0.5 * (lo + hi)
+        h2_is = CP.PropsSI('Hmass', 'P', p2, 'T', t2_is, gas)
     s2_is = CP.PropsSI('Smass', 'P', p2, 'T', t2_is, gas)
     z2_is = CP.PropsSI('Z', 'P', p2, 'T', t2_is, gas)
     
@@ -60,9 +71,23 @@ def independent_verification():
         
     actual_power = mass_flow * head_poly / poly_eff_target
     
+    assert abs(s2_is - s1) < 1e-6
+    assert 150.0 <= head_is <= 190.0
+    assert 155.0 <= head_poly <= 195.0
+    assert 2500.0 <= actual_power <= 3200.0
+    assert t2_guess > t1
+
     print(f"Polytropic Head (PTC 10): {head_poly:.2f} kJ/kg")
     print(f"Actual Gas Power (85% eff): {actual_power:.2f} kW")
     print(f"Final T2: {t2_guess - 273.15:.2f} C")
+    return {
+        "head_is_kj_kg": head_is,
+        "power_is_kw": power_is,
+        "head_poly_kj_kg": head_poly,
+        "actual_power_kw": actual_power,
+        "t2_c": t2_guess - 273.15,
+    }
 
 if __name__ == '__main__':
     independent_verification()
+

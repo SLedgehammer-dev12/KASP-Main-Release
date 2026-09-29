@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 class GasMixtureBuilder:
     """Build gas mixture payloads for CoolProp, Thermo, and NeqSim backends."""
 
+    COMPONENT_MAP = SUPPORTED_GASES
+
     THERMO_ID_MAP = {
         "METHANE": "methane",
         "ETHANE": "ethane",
@@ -87,6 +89,7 @@ class GasMixtureBuilder:
             raise FluidPropertyError("Gaz kompozisyonu toplami pozitif olmalidir")
         if abs(total - 100.0) > 0.1:
             logger.warning("Gaz kompozisyonu toplami %.2f. Normalize ediliyor...", total)
+        if abs(total - 100.0) > 1e-9:
             return {
                 component: (percentage / total) * 100.0
                 for component, percentage in canonical_composition.items()
@@ -145,46 +148,69 @@ class GasMixtureBuilder:
     def build_coolprop_string(composition_fraction: dict[str, float]) -> str:
         if len(composition_fraction) == 1:
             component, fraction = next(iter(composition_fraction.items()))
-            if abs(fraction - 1.0) < 1e-6:
-                safe_name = SUPPORTED_GASES.get(component.upper())
+            if fraction > 1e-6:
+                safe_name = SUPPORTED_GASES.get(normalize_component(component))
                 if safe_name:
                     return safe_name
                 raise FluidPropertyError(f"CoolProp desteksiz: {component}")
 
-        components = []
+        valid_entries: list[tuple[str, float]] = []
         for component, fraction in composition_fraction.items():
             if fraction <= 1e-6:
                 continue
-            safe_name = SUPPORTED_GASES.get(component.upper())
+            safe_name = SUPPORTED_GASES.get(normalize_component(component))
             if safe_name:
-                components.append(f"{safe_name}[{fraction:.8f}]")
+                valid_entries.append((safe_name, float(fraction)))
             else:
                 logger.warning("Bilinmeyen gaz: %s, atlaniyor", component)
 
-        if not components:
+        if not valid_entries:
             raise FluidPropertyError("Gecerli CoolProp gaz bileseni bulunamadi")
+
+        if len(valid_entries) == 1:
+            return valid_entries[0][0]
+
+        total_frac = sum(frac for _, frac in valid_entries)
+        if total_frac <= 0:
+            raise FluidPropertyError("Gecerli CoolProp gaz bileseni bulunamadi")
+
+        components = [
+            f"{safe_name}[{(frac / total_frac):.8f}]"
+            for safe_name, frac in valid_entries
+        ]
         return "&".join(components)
 
     @staticmethod
     def build_thermo_data(composition_fraction: dict[str, float]) -> dict[str, Any]:
         ids: list[str] = []
         mol_fractions: list[float] = []
-        mixture_mw = GasMixtureBuilder.calculate_mixture_mw(composition_fraction)
+        kept_components: list[str] = []
 
         for component, fraction in composition_fraction.items():
             if fraction <= 1e-6:
                 continue
 
-            thermo_id = GasMixtureBuilder.THERMO_ID_MAP.get(component)
+            canonical = normalize_component(component)
+            thermo_id = GasMixtureBuilder.THERMO_ID_MAP.get(canonical)
             if thermo_id is None:
                 logger.warning("Thermo ID tablosunda bulunamadi: '%s', atlaniyor.", component)
                 continue
 
             ids.append(thermo_id)
-            mol_fractions.append(fraction)
+            mol_fractions.append(float(fraction))
+            kept_components.append(canonical)
 
         if not ids:
             raise FluidPropertyError("Gecerli Thermo gaz bileseni bulunamadi")
+
+        total_frac = sum(mol_fractions)
+        if total_frac > 0 and abs(total_frac - 1.0) > 1e-12:
+            mol_fractions = [f / total_frac for f in mol_fractions]
+
+        mixture_mw = sum(
+            MOLAR_MASSES.get(comp, 0.0) * frac
+            for comp, frac in zip(kept_components, mol_fractions)
+        )
 
         return {
             "ids": ids,

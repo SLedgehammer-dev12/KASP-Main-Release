@@ -94,6 +94,103 @@ _SUBSTRING_TRANSLATIONS = {
     "Kütüphane yöneticisi kapatıldı.": "Library manager closed.",
     "✅ Termodinamik Özellik Önbelleği temizlendi.": "✅ Thermodynamic property cache cleared.",
     "Örnek projeler ilerleyen versiyonlarda eklenecektir.": "Sample projects will be added in future versions.",
+    # ── Permission / role messages (P2-13) ──
+    "Yetki Yok": "Permission Denied",
+    "Ekipman kütüphanesini yönetme yetkiniz yok.": "You are not authorized to manage the equipment library.",
+    "Kompresör ekleme yetkiniz yok.": "You are not authorized to add compressors.",
+    "Kompresör silme yetkiniz yok.": "You are not authorized to delete compressors.",
+    "Tasarım hesaplaması yapma yetkiniz yok.": "You are not authorized to run design calculations.",
+    "Yeni proje oluşturma yetkiniz yok.": "You are not authorized to create a new project.",
+    "Proje kaydetme yetkiniz yok.": "You are not authorized to save projects.",
+    "Proje açma yetkiniz yok.": "You are not authorized to open projects.",
+    "Rapor dışa aktarma yetkiniz yok.": "You are not authorized to export reports.",
+    "Sonuç dışa aktarma yetkiniz yok.": "You are not authorized to export results.",
+    # ── Update / download (P4-22) ──
+    "Indirme Tamamlandi": "Download Complete",
+    "Indirme Hatasi": "Download Error",
+    "Iptal": "Cancel",
+    "Guncelleme indirmesi iptal edildi.": "Update download cancelled.",
+    "Guncelleme indiriliyor...": "Downloading update...",
+    "Indirme": "Download",
+    # ── Password recovery (P2-14) ──
+    "🔑 KASP — Şifre Kurtarma": "🔑 KASP — Password Recovery",
+    "🛡️ Şifre Kurtarma Sihirbazı": "🛡️ Password Recovery Wizard",
+    "Kullanıcı Adı": "Username",
+    "Sorgula": "Query",
+    "Güvenlik Sorusu": "Security Question",
+    "Kurtarma Anahtarı": "Recovery Key",
+    "Şifreyi Sıfırla": "Reset Password",
+    "Lütfen bir kullanıcı adı giriniz.": "Please enter a username.",
+    "Kullanıcı bulunamadı.": "User not found.",
+    "Şifre sıfırlanamadı.": "Password could not be reset.",
+    # ── Design results / analysis ──
+    "Politropik Verim": "Polytropic Efficiency",
+    "Politropik Head": "Polytropic Head",
+    "Sıkıştırma Oranı": "Compression Ratio",
+    "Çıkış Sıcaklığı": "Outlet Temperature",
+    "Motor Gücü (Ünite)": "Motor Power (Unit)",
+    "Toplam Motor Gücü": "Total Motor Power",
+    "Isı Oranı": "Heat Rate",
+    "Ünite Yakıt Tüketimi": "Unit Fuel Consumption",
+    "Toplam Yakıt Tüketimi": "Total Fuel Consumption",
+    "Sıvı": "Liquid",
+    "İki Fazlı": "Two-Phase",
+    "Süperkritik": "Supercritical",
+    "Sağlık": "Health",
+    "Faz Durumu": "Phase",
+    "Viskozite": "Viscosity",
+    "Ses Hızı": "Speed of Sound",
+    "Yoğunluk": "Density",
+    # ── Input validation & status (Phase 2/3) ──
+    "Basınç değeri zorunludur": "Pressure is required",
+    "Basınç sonlu bir sayı olmalıdır": "Pressure must be a finite number",
+    "Mutlak basınç > 0 olmalıdır": "Absolute pressure must be > 0",
+    "Efektif basınç çok düşük": "Gauge pressure too low",
+    "Çok yüksek basınç": "Very high pressure",
+    "Geçersiz sayı formatı": "Invalid number format",
+    "Sıcaklık değeri zorunludur": "Temperature is required",
+    "Sıcaklık sonlu bir sayı olmalıdır": "Temperature must be a finite number",
+    "Mutlak sıfırın altında!": "Below absolute zero!",
+    "⚠️ Çok düşük sıcaklık": "⚠️ Very low temperature",
+    "⚠️ Çok yüksek sıcaklık": "⚠️ Very high temperature",
+    "Birim dönüşüm hatası": "Unit conversion error",
+    "Debi değeri zorunludur": "Flow rate is required",
+    "Debi sonlu bir sayı olmalıdır": "Flow rate must be a finite number",
+    "Debi pozitif olmalıdır": "Flow must be positive",
+    "⚠️ Çok yüksek debi": "⚠️ Very high flow rate",
+    "⚙️ Giriş Doğrulama Durumu": "⚙️ Input Validation Status",
+    "✓ Tümü Geçerli": "✓ All Valid",
+    "🔧 Tüm Sorunları Düzelt": "🔧 Fix All Issues",
+    "Tüm girişler geçerli": "All inputs valid",
+    "giriş düzeltilmeli": "input(s) need attention",
+    "giriş geçerli": "inputs valid",
+    "Performans değerlendirmesi yapma yetkiniz yok.": "You are not authorized to run performance evaluations.",
+    "Kullanıcı yönetimi işlemi için yetkiniz yok.": "You are not authorized to manage users.",
+    "En az 8 karakter, büyük/küçük harf ve rakam": "At least 8 chars, upper/lowercase and digit",
+}
+
+_EN_TO_TR_SUBSTRINGS = {
+    "Pressure is required": "Basınç değeri zorunludur",
+    "Pressure must be a finite number": "Basınç sonlu bir sayı olmalıdır",
+    "Absolute pressure must be > 0": "Mutlak basınç > 0 olmalıdır",
+    "Gauge pressure too low": "Efektif basınç çok düşük",
+    "Very high pressure": "Çok yüksek basınç",
+    "Invalid number format": "Geçersiz sayı formatı",
+    "Temperature is required": "Sıcaklık değeri zorunludur",
+    "Temperature must be a finite number": "Sıcaklık sonlu bir sayı olmalıdır",
+    "Below absolute zero!": "Mutlak sıfırın altında!",
+    "Very low temperature": "Çok düşük sıcaklık",
+    "Very high temperature": "Çok yüksek sıcaklık",
+    "Unit conversion error": "Birim dönüşüm hatası",
+    "Flow rate is required": "Debi değeri zorunludur",
+    "Flow rate must be a finite number": "Debi sonlu bir sayı olmalıdır",
+    "Flow must be positive": "Debi pozitif olmalıdır",
+    "Very high flow rate": "Çok yüksek debi",
+    "Input Validation Status": "Giriş Doğrulama Durumu",
+    "Fix All Issues": "Tüm Sorunları Düzelt",
+    "All inputs valid": "Tüm girişler geçerli",
+    "input(s) need attention": "giriş düzeltilmeli",
+    "inputs valid": "giriş geçerli",
 }
 
 
@@ -109,18 +206,29 @@ def set_language(lang: str) -> None:
     get_config_manager().set("app.language", lang)
 
 
-def refresh_all_windows() -> None:
+def refresh_all_windows(window: QWidget | None = None) -> None:
     from PyQt5.QtWidgets import QApplication
+    seen = set()
+    if window is not None:
+        apply_window_language(window)
+        seen.add(id(window))
     app = QApplication.instance()
     if not app:
         return
     for widget in app.topLevelWidgets():
-        apply_window_language(widget)
+        if id(widget) not in seen:
+            apply_window_language(widget)
 
 
 def tr(text: str) -> str:
-    if not text or not is_english():
+    if not text:
         return text
+    if not is_english():
+        translated_tr = text
+        for en_src, tr_dst in _EN_TO_TR_SUBSTRINGS.items():
+            if en_src in translated_tr:
+                translated_tr = translated_tr.replace(en_src, tr_dst)
+        return translated_tr
 
     translated = _EXACT_TRANSLATIONS.get(text, text)
     for source, target in _SUBSTRING_TRANSLATIONS.items():

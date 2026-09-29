@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -19,6 +20,11 @@ from PyQt5.QtCore import QObject, pyqtSignal
 from release_metadata import RELEASES_API_URL
 
 logger = logging.getLogger(__name__)
+
+
+class DownloadCancelled(Exception):
+    """İndirme kullanıcı tarafından iptal edildiğinde fırlatılır (P4-22)."""
+    pass
 
 
 def _create_ssl_context() -> ssl.SSLContext:
@@ -61,6 +67,14 @@ def _get_ssl_context() -> ssl.SSLContext:
     return _ssl_context
 
 
+def _extract_numeric_tuple(tag: str) -> tuple[int, ...]:
+    tag_str = (tag or "").strip().lstrip("v")
+    numbers = re.findall(r"\d+", tag_str)
+    if not numbers:
+        return tuple()
+    return tuple(int(value) for value in numbers)
+
+
 def parse_release_tag(tag: str):
     """PEP 440 uyumlu sürüm ayrıştırıcı. Geçersiz etiketlerde eski sayısal ayrıştırıcıya düşer."""
     tag_str = (tag or "").strip().lstrip("v")
@@ -69,10 +83,17 @@ def parse_release_tag(tag: str):
         return Version(tag_str)
     except Exception:
         # Fallback: eski sayısal tuple ayrıştırıcı
-        numbers = re.findall(r"\d+", tag_str)
-        if not numbers:
-            return tuple()
-        return tuple(int(value) for value in numbers)
+        return _extract_numeric_tuple(tag)
+
+
+def _version_sort_key(tag: str) -> tuple:
+    """Uniform sort key that never raises TypeError between PEP 440 Version and fallback tuples."""
+    parsed = parse_release_tag(tag)
+    if isinstance(parsed, tuple):
+        return (0, parsed, 0, "")
+    release_tuple = getattr(parsed, "release", None) or _extract_numeric_tuple(tag)
+    is_final = 0 if getattr(parsed, "is_prerelease", False) or getattr(parsed, "is_devrelease", False) else 1
+    return (1, tuple(release_tuple), is_final, str(parsed))
 
 
 def is_newer_release(candidate_tag: str, current_tag: str) -> bool:
@@ -82,8 +103,10 @@ def is_newer_release(candidate_tag: str, current_tag: str) -> bool:
     try:
         return cand > curr
     except TypeError:
-        # Tuple karşılaştırması (fallback)
-        return tuple(cand) > tuple(curr)
+        # Fallback: both normalized to numeric tuples so Version vs tuple never raises TypeError
+        cand_tuple = cand if isinstance(cand, tuple) else (getattr(cand, "release", None) or _extract_numeric_tuple(candidate_tag))
+        curr_tuple = curr if isinstance(curr, tuple) else (getattr(curr, "release", None) or _extract_numeric_tuple(current_tag))
+        return tuple(cand_tuple) > tuple(curr_tuple)
 
 
 def format_bytes(size: int) -> str:
@@ -181,7 +204,7 @@ class GitHubReleaseClient:
         releases = [release for release in releases if not release.draft]
         if not include_prereleases:
             releases = [release for release in releases if not release.prerelease]
-        releases.sort(key=lambda release: parse_release_tag(release.tag_name), reverse=True)
+        releases.sort(key=lambda release: _version_sort_key(release.tag_name), reverse=True)
         return releases
 
     def download_asset(
@@ -189,6 +212,7 @@ class GitHubReleaseClient:
         asset: ReleaseAsset,
         destination: str | Path,
         progress_callback: Callable[[int, int], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> Path:
         destination_path = Path(destination)
         if destination_path.exists() and destination_path.is_dir():
@@ -198,25 +222,35 @@ class GitHubReleaseClient:
         destination_path.parent.mkdir(parents=True, exist_ok=True)
 
         request = urllib.request.Request(asset.download_url, headers=self.headers)
+        hasher = hashlib.sha256()
         try:
             with urllib.request.urlopen(request, timeout=self.timeout, context=_get_ssl_context()) as response:
                 total_size = int(response.headers.get("Content-Length") or asset.size or 0)
                 downloaded = 0
                 with destination_path.open("wb") as output_file:
                     while True:
+                        if cancel_check is not None and cancel_check():
+                            raise DownloadCancelled("İndirme kullanıcı tarafından iptal edildi.")
                         chunk = response.read(1024 * 128)
                         if not chunk:
                             break
                         output_file.write(chunk)
+                        hasher.update(chunk)
                         downloaded += len(chunk)
                         if progress_callback is not None:
                             progress_callback(downloaded, total_size)
+        except DownloadCancelled:
+            # Kismi dosyayi temizle (P4-22)
+            destination_path.unlink(missing_ok=True)
+            raise
         except urllib.error.URLError as exc:
+            # Kismi dosyayi temizle (P4-22)
+            destination_path.unlink(missing_ok=True)
             raise RuntimeError(f"Guncelleme dosyasi indirilemedi: {exc}") from exc
 
-        # SHA256 doğrulama (fail-closed)
+        # SHA256 doğrulama (akışlı hash, fail-closed)
         if asset.sha256:
-            computed = hashlib.sha256(destination_path.read_bytes()).hexdigest()
+            computed = hasher.hexdigest()
             if computed.lower() != asset.sha256.lower():
                 destination_path.unlink(missing_ok=True)
                 raise RuntimeError(
@@ -237,6 +271,7 @@ class GitHubReleaseClient:
     @staticmethod
     def _parse_release(item: dict) -> ReleaseInfo:
         body = item.get("body") or ""
+        raw_assets = [a for a in item.get("assets", []) if a.get("browser_download_url")]
         
         def _extract_sha256(raw_asset):
             digest = raw_asset.get("digest", "")
@@ -244,18 +279,18 @@ class GitHubReleaseClient:
                 return digest.replace("sha256:", "")
             name = raw_asset.get("name") or ""
             if name:
-                pattern = re.escape(name) + r"[\s\S]*?([a-fA-F0-9]{64})"
-                match = re.search(pattern, body)
+                pattern = re.escape(name) + r"[^\n\r]*?(?:[\r\n]+(?![^\r\n]*\.(?:exe|dmg|pkg|msi|zip|tar\.gz|AppImage))[^\r\n]*?){0,3}?([a-fA-F0-9]{64})"
+                match = re.search(pattern, body, re.IGNORECASE)
                 if match:
                     return match.group(1)
-            # Try finding SHA256: <hash>
-            sha_match = re.search(r"sha256[:\s]+([a-fA-F0-9]{64})", body, re.IGNORECASE)
-            if sha_match:
-                return sha_match.group(1)
-            # Fallback: if there is only 1 asset and 1 hash in body
-            hashes = re.findall(r"([a-fA-F0-9]{64})", body)
-            if len(hashes) == 1:
-                return hashes[0]
+            # Single-asset fallback: if there is only 1 asset, allow general SHA256: <hash> or sole 64-hex hash
+            if len(raw_assets) == 1:
+                sha_match = re.search(r"sha256[:\s]+([a-fA-F0-9]{64})", body, re.IGNORECASE)
+                if sha_match:
+                    return sha_match.group(1)
+                hashes = re.findall(r"([a-fA-F0-9]{64})", body)
+                if len(hashes) == 1:
+                    return hashes[0]
             return None
 
         assets = tuple(
@@ -268,8 +303,7 @@ class GitHubReleaseClient:
                 content_type=asset.get("content_type") or "application/octet-stream",
                 sha256=_extract_sha256(asset),
             )
-            for asset in item.get("assets", [])
-            if asset.get("browser_download_url")
+            for asset in raw_assets
         )
         return ReleaseInfo(
             tag_name=item.get("tag_name") or "",
@@ -347,11 +381,24 @@ def build_release_notes_html(
     return "".join(parts)
 
 
+def _platform_asset_extensions() -> tuple[str, ...]:
+    """Platforma uygun varlik uzantilari, tercih sirasina gore (P4-22)."""
+    if sys.platform.startswith("win"):
+        return (".exe", ".msi", ".zip")
+    if sys.platform == "darwin":
+        return (".dmg", ".pkg", ".zip", ".tar.gz")
+    return (".tar.gz", ".zip", ".appimage")
+
+
 def pick_default_asset(release: ReleaseInfo) -> ReleaseAsset | None:
     if not release.assets:
         return None
-    exe_asset = next((asset for asset in release.assets if asset.name.lower().endswith(".exe")), None)
-    return exe_asset or release.assets[0]
+    extensions = _platform_asset_extensions()
+    for extension in extensions:
+        for asset in release.assets:
+            if asset.name.lower().endswith(extension):
+                return asset
+    return release.assets[0]
 
 
 class ReleaseCheckWorker(QObject):
@@ -375,6 +422,7 @@ class ReleaseDownloadWorker(QObject):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
+    cancelled = pyqtSignal()
 
     def __init__(
         self,
@@ -387,6 +435,10 @@ class ReleaseDownloadWorker(QObject):
         self.client = client
         self.asset = asset
         self.destination = destination
+        self._cancel_requested = False
+
+    def request_cancel(self):
+        self._cancel_requested = True
 
     def run(self) -> None:
         try:
@@ -398,8 +450,16 @@ class ReleaseDownloadWorker(QObject):
                     f"{self.asset.name} indiriliyor... {format_bytes(downloaded)} / {total_text}",
                 )
 
-            path = self.client.download_asset(self.asset, self.destination, progress_callback=report)
+            path = self.client.download_asset(
+                self.asset,
+                self.destination,
+                progress_callback=report,
+                cancel_check=lambda: self._cancel_requested,
+            )
             self.progress.emit(100, f"{self.asset.name} indirildi.")
             self.finished.emit(str(path))
+        except DownloadCancelled:
+            logger.info("Güncelleme indirmesi iptal edildi: %s", self.asset.name)
+            self.cancelled.emit()
         except Exception as exc:
             self.error.emit(str(exc))

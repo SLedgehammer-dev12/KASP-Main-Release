@@ -121,7 +121,25 @@ class AdminPanelDialog(QDialog):
         item = self._table.item(row, 1)
         return item.text() if item else None
 
+    def _check_manage_users_permission(self):
+        if not Session.authorize("manage_users"):
+            QMessageBox.warning(self, tr("Yetki Yok"), tr("Kullanıcı yönetimi yetkiniz yok."))
+            return False
+        return True
+
+    def _selected_user(self):
+        user_id = self._selected_user_id()
+        if user_id is None:
+            return None
+        for u in self._user_manager.list_users():
+            uid = u.get("id") if isinstance(u, dict) else getattr(u, "id", None)
+            if uid == user_id:
+                return u
+        return None
+
     def _add_user(self):
+        if not self._check_manage_users_permission():
+            return
         dialog = UserEditDialog(self, mode="add")
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
@@ -138,36 +156,48 @@ class AdminPanelDialog(QDialog):
                 self._refresh_table()
 
     def _edit_user(self):
+        if not self._check_manage_users_permission():
+            return
         user_id = self._selected_user_id()
         if user_id is None:
             QMessageBox.information(self, tr("Bilgi"), tr("Lütfen bir kullanıcı seçin."))
             return
-        dialog = UserEditDialog(self, mode="edit")
+        selected_user = self._selected_user()
+        dialog = UserEditDialog(self, mode="edit", user=selected_user)
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
             updates = {}
             if data.get("role"):
                 updates["role"] = data["role"]
-            if data.get("full_name"):
+            if "full_name" in data:
                 updates["full_name"] = data["full_name"]
-            if data.get("email"):
+            if "email" in data:
                 updates["email"] = data["email"]
             if updates:
                 self._user_manager.update_user(user_id, **updates)
-                self._refresh_table()
+            if data.get("password"):
+                ok, err = self._user_manager.admin_reset_password(user_id, data["password"])
+                if err:
+                    QMessageBox.warning(self, tr("Hata"), err)
+            self._refresh_table()
 
     def _toggle_active(self):
+        if not self._check_manage_users_permission():
+            return
         user_id = self._selected_user_id()
         if user_id is None:
             return
         username = self._selected_username()
-        if username == Session.current_user().username:
+        current_user = Session.current_user()
+        if current_user is not None and username == current_user.username:
             QMessageBox.warning(self, tr("Hata"), tr("Kendi hesabınızı pasif yapamazsınız."))
             return
         self._user_manager.toggle_user_active(user_id)
         self._refresh_table()
 
     def _reset_password(self):
+        if not self._check_manage_users_permission():
+            return
         user_id = self._selected_user_id()
         if user_id is None:
             return
@@ -181,11 +211,14 @@ class AdminPanelDialog(QDialog):
                 QMessageBox.information(self, tr("Başarılı"), tr("Şifre sıfırlandı."))
 
     def _delete_user(self):
+        if not self._check_manage_users_permission():
+            return
         user_id = self._selected_user_id()
         if user_id is None:
             return
         username = self._selected_username()
-        if username == Session.current_user().username:
+        current_user = Session.current_user()
+        if current_user is not None and username == current_user.username:
             QMessageBox.warning(self, tr("Hata"), tr("Kendi hesabınızı silemezsiniz."))
             return
         reply = QMessageBox.question(
@@ -199,12 +232,15 @@ class AdminPanelDialog(QDialog):
 
 
 class UserEditDialog(QDialog):
-    def __init__(self, parent=None, mode="add"):
+    def __init__(self, parent=None, mode="add", user=None):
         super().__init__(parent)
         self._mode = mode
+        self._user = user
         self.setWindowTitle(tr("Kullanıcı Ekle") if mode == "add" else tr("Kullanıcı Düzenle"))
         self.resize(360, 260)
         self._setup_ui()
+        if user is not None:
+            self._populate_from_user(user)
 
     def _setup_ui(self):
         layout = QFormLayout(self)
@@ -212,14 +248,16 @@ class UserEditDialog(QDialog):
 
         self._username_edit = QLineEdit()
         self._username_edit.setPlaceholderText("zorunlu")
+        if self._mode == "edit":
+            self._username_edit.setReadOnly(True)
         layout.addRow(tr("Kullanıcı Adı:"), self._username_edit)
 
         self._password_edit = QLineEdit()
         self._password_edit.setEchoMode(QLineEdit.Password)
         if self._mode == "add":
-            self._password_edit.setPlaceholderText(tr("en az 4 karakter"))
+            self._password_edit.setPlaceholderText(tr("En az 8 karakter, büyük/küçük harf ve rakam"))
         else:
-            self._password_edit.setPlaceholderText(tr("boş bırakılırsa değişmez"))
+            self._password_edit.setPlaceholderText(tr("Boş bırakılırsa değişmez (en az 8 karakter)"))
         layout.addRow(tr("Şifre:"), self._password_edit)
 
         self._fullname_edit = QLineEdit()
@@ -237,14 +275,31 @@ class UserEditDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
+    def _populate_from_user(self, user):
+        def _val(key, default=""):
+            if isinstance(user, dict):
+                return user.get(key, default) or default
+            return getattr(user, key, default) or default
+
+        self._username_edit.setText(str(_val("username")))
+        self._fullname_edit.setText(str(_val("full_name")))
+        self._email_edit.setText(str(_val("email")))
+        role = str(_val("role", "user"))
+        idx = self._role_combo.findText(role)
+        if idx >= 0:
+            self._role_combo.setCurrentIndex(idx)
+
     def _validate_and_accept(self):
         if self._mode == "add":
             if not self._username_edit.text().strip():
                 QMessageBox.warning(self, tr("Hata"), tr("Kullanıcı adı zorunludur."))
                 return
-            if len(self._password_edit.text()) < 4:
-                QMessageBox.warning(self, tr("Hata"), tr("Şifre en az 4 karakter olmalıdır."))
+            if len(self._password_edit.text()) < 8:
+                QMessageBox.warning(self, tr("Hata"), tr("Şifre en az 8 karakter olmalıdır."))
                 return
+        elif self._password_edit.text() and len(self._password_edit.text()) < 8:
+            QMessageBox.warning(self, tr("Hata"), tr("Şifre en az 8 karakter olmalıdır."))
+            return
         self.accept()
 
     def get_data(self):
@@ -265,7 +320,7 @@ class PasswordResetDialog(QDialog):
         layout = QFormLayout(self)
         self._pw_edit = QLineEdit()
         self._pw_edit.setEchoMode(QLineEdit.Password)
-        self._pw_edit.setPlaceholderText(tr("en az 4 karakter"))
+        self._pw_edit.setPlaceholderText(tr("En az 8 karakter, büyük/küçük harf ve rakam"))
         layout.addRow(tr("Yeni Şifre:"), self._pw_edit)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._validate_and_accept)
@@ -273,8 +328,8 @@ class PasswordResetDialog(QDialog):
         layout.addRow(buttons)
 
     def _validate_and_accept(self):
-        if len(self._pw_edit.text()) < 4:
-            QMessageBox.warning(self, tr("Hata"), tr("Şifre en az 4 karakter olmalıdır."))
+        if len(self._pw_edit.text()) < 8:
+            QMessageBox.warning(self, tr("Hata"), tr("Şifre en az 8 karakter olmalıdır."))
             return
         self.accept()
 

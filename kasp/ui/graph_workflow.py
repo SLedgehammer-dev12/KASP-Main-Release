@@ -19,6 +19,14 @@ def default_graph_filename(project_name, graph_key):
     return f"{base_name}_{graph_name}.png"
 
 
+def graph_save_default_name(project_name, graph_key, fmt):
+    """Default save filename with exactly one extension (P3-19)."""
+    import os
+
+    base = os.path.splitext(default_graph_filename(project_name, graph_key))[0]
+    return f"{base}.{fmt}"
+
+
 class GraphWorkflowController:
     """Handle graph-related save actions outside the main window class."""
 
@@ -64,7 +72,7 @@ class GraphWorkflowController:
             file_path, _ = QFileDialog.getSaveFileName(
                 self.window,
                 f"Grafiği Kaydet - {current_graph_name}",
-                default_graph_filename(self.window.project_name_edit.text(), graph_key) + f".{fmt}",
+                graph_save_default_name(self.window.project_name_edit.text(), graph_key, fmt),
                 file_filter,
             )
 

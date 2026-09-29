@@ -37,7 +37,7 @@ def get_performance_lhv_source_items(thermo_loaded):
     items = [
         "KASP Sabitleri (Hızlı/Varsayılan)",
         "Thermo Veritabanı (Gelişmiş)",
-        "ISO 6976 Standardı (Molar / Z Düzeltmeli)",
+        "ISO 6976 Standardı (Molar Değerler / Kütle Bazlı)",
     ]
     if not thermo_loaded:
         items[1] = "Thermo Veritabanı (Kütüphane Yok)"

@@ -7,8 +7,8 @@ import tempfile
 from PyQt5.QtWidgets import QApplication
 
 from kasp.security import (
-    DEFAULT_PASSWORD,
     check_lockout,
+    generate_initial_admin_password,
     generate_recovery_key,
     hash_password,
     normalize_recovery_key,
@@ -45,8 +45,8 @@ def temp_db():
 @pytest.fixture
 def user_mgr(temp_db):
     mgr = UserManager(temp_db)
-    # Varsayılan admin oluştur
-    temp_db.create_default_admin(hash_password(DEFAULT_PASSWORD))
+    # Varsayılan admin oluştur (rastgele parola, P4-6)
+    temp_db.create_default_admin(hash_password(generate_initial_admin_password()))
     return mgr
 
 
@@ -140,7 +140,13 @@ def test_recovery_key_generation_and_reset(user_mgr):
     raw_clean = key.lower().replace("-", "")
     ok, err = user_mgr.verify_recovery_key_and_reset("operator", raw_clean, "SuperSecure777")
     assert ok
-    assert err is None
+    # Tek kullanimlik: yeni anahtar mesajla bildirilir
+    assert err is not None and "Yeni kurtarma anahtarı" in err
+
+    # Kullanilan eski anahtar artik gecersiz olmali
+    ok_old, err_old = user_mgr.verify_recovery_key_and_reset("operator", raw_clean, "AnotherPass888")
+    assert not ok_old
+    assert "Geçersiz" in err_old
 
     # Yeni şifre doğrulanmalı
     auth = user_mgr.authenticate("operator", "SuperSecure777")
@@ -159,7 +165,7 @@ def test_cli_emergency_reset_admin(user_mgr):
     # CLI Acil Sıfırlama çağrısı
     ok, pw, key = user_mgr.cli_emergency_reset_admin()
     assert ok
-    assert pw == DEFAULT_PASSWORD
+    assert pw is not None and len(pw) >= 16  # Rastgele üretilen parola (P4-6)
     assert key.startswith("KASP-")
 
     # Kilit kalkmış olmalı
@@ -167,7 +173,7 @@ def test_cli_emergency_reset_admin(user_mgr):
     assert not locked_after
 
     # Admin yeni geçici şifre ile giriş yapabilmeli ve must_change_password=True olmalı
-    admin_user = user_mgr.authenticate("admin", DEFAULT_PASSWORD)
+    admin_user = user_mgr.authenticate("admin", pw)
     assert admin_user is not None
     assert admin_user.must_change_password is True
 

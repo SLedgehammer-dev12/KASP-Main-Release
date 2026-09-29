@@ -1,6 +1,9 @@
 import logging
+import threading
 import numpy as np
 import warnings
+
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", message="Ignoring fixed y limits to fulfill fixed data aspect")
 
@@ -22,10 +25,19 @@ except ImportError as import_error:
 from PyQt5.QtWidgets import QVBoxLayout, QLabel
 from PyQt5.QtCore import Qt
 
+def _resolve_theme_bg():
+    try:
+        from kasp.config_manager import get_config_manager
+        theme_name = get_config_manager().get("app.theme", "light")
+    except Exception:
+        theme_name = "light"
+    return "#0F172A" if theme_name == "dark" else "#0E1726" if theme_name == "engineering" else "#F8F9FA"
+
+
 class MplCanvas(FigureCanvas):
     """DPI-aware Matplotlib canvas with responsive resize and toolbar support."""
 
-    def __init__(self, parent=None, width=8, height=5, dpi=None):
+    def __init__(self, parent=None, width=8, height=5, dpi=None, figure=None):
         self._toolbar = None
         if dpi is None:
             try:
@@ -34,13 +46,12 @@ class MplCanvas(FigureCanvas):
             except Exception:
                 dpi = 100
         if MATPLOTLIB_LOADED:
-            try:
-                from kasp.config_manager import get_config_manager
-                theme_name = get_config_manager().get("app.theme", "light")
-            except Exception:
-                theme_name = "light"
-            theme_bg = "#0F172A" if theme_name == "dark" else "#0E1726" if theme_name == "engineering" else "#F8F9FA"
-            self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor=theme_bg)
+            if figure is not None:
+                # Worker thread'de uretilen hazir Figure'i canvas'a bagla (P3-20)
+                self.fig = figure
+            else:
+                theme_bg = _resolve_theme_bg()
+                self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor=theme_bg)
             FigureCanvas.__init__(self, self.fig)
             self.setParent(parent)
             self._default_size = (width, height)
@@ -72,6 +83,23 @@ class MplCanvas(FigureCanvas):
         self.fig.set_size_inches(w_px / dpi, h_px / dpi, forward=True)
         self.draw_idle()
 
+
+class HeadlessCanvas:
+    """Qt'ye bagimli olmayan Figure sarmalayici; worker thread'de grafik uretmek icin (P3-20)."""
+
+    def __init__(self, width=8, height=5, dpi=100):
+        self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor=_resolve_theme_bg())
+
+
+_render_ctx = threading.local()
+
+
+def _new_canvas(width, height):
+    """Uretim ortamina gore MplCanvas veya HeadlessCanvas dondurur."""
+    if getattr(_render_ctx, "headless", False):
+        return HeadlessCanvas(width=width, height=height)
+    return MplCanvas(width=width, height=height)
+
 class GraphGenerator:
     """Grafik oluşturma sınıfı"""
     
@@ -101,10 +129,22 @@ class GraphGenerator:
             grid_color = "#E5E7EB"
             face_color = "#FFFFFF"
 
-        ax.set_facecolor(face_color)
-        ax.tick_params(colors=text_color)
+        custom_colors = {"b", "r", "g", "blue", "red", "green"}
+        # Only set facecolor on the primary axis so twin axes stay transparent
+        if not ax.get_Shared_x_axes().get_siblings(ax) if hasattr(ax, "get_Shared_x_axes") else True:
+            ax.set_facecolor(face_color)
+        else:
+            ax.set_facecolor(face_color)
+
+        y_lbl_color = ax.yaxis.label.get_color()
         ax.xaxis.label.set_color(text_color)
-        ax.yaxis.label.set_color(text_color)
+        if y_lbl_color not in custom_colors:
+            ax.yaxis.label.set_color(text_color)
+            ax.tick_params(colors=text_color)
+        else:
+            ax.tick_params(axis="x", colors=text_color)
+            ax.tick_params(axis="y", colors=y_lbl_color)
+
         if hasattr(ax, 'title'):
             ax.title.set_color(text_color)
         
@@ -127,8 +167,12 @@ class GraphGenerator:
                 text.set_color(text_color)
 
         if ax2:
-            ax2.tick_params(colors=text_color)
-            ax2.yaxis.label.set_color(text_color)
+            y2_color = ax2.yaxis.label.get_color()
+            if y2_color not in custom_colors:
+                ax2.tick_params(colors=text_color)
+                ax2.yaxis.label.set_color(text_color)
+            else:
+                ax2.tick_params(axis="y", colors=y2_color)
             for spine in ax2.spines.values():
                 spine.set_color(grid_color)
             
@@ -139,7 +183,6 @@ class GraphGenerator:
                 frame2.set_edgecolor(grid_color)
                 for text in legend2.get_texts():
                     text.set_color(text_color)
-        self.logger = logging.getLogger(self.__class__.__name__)
     
     def create_cache_performance_chart(self, cache_stats):
         """Önbellek performans grafiği"""
@@ -147,7 +190,7 @@ class GraphGenerator:
             return None
             
         try:
-            canvas = MplCanvas(width=8, height=6)
+            canvas = _new_canvas(8, 6)
             fig = canvas.fig
             
             # Çoklu grafik
@@ -155,22 +198,28 @@ class GraphGenerator:
             ax2 = fig.add_subplot(122)
             
             # Önbellek isabet oranı
+            hits = float(cache_stats.get('hits', 0) or 0)
+            misses = float(cache_stats.get('misses', 0) or 0)
             labels = ['İsabet', 'Kaçırma']
-            sizes = [cache_stats['hits'], cache_stats['misses']]
             colors = ['#2ecc71', '#e74c3c']
             
-            ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+            if hits + misses > 0:
+                ax1.pie([hits, misses], labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+            else:
+                ax1.pie([1], labels=['Veri Yok (0%)'], colors=['#95a5a6'], startangle=90)
             ax1.set_title('Önbellek İsabet Oranı', fontweight='bold')
             
             # Önbellek kullanımı
-            cache_usage = cache_stats['size'] / cache_stats['max_size'] * 100
+            max_size = float(cache_stats.get('max_size', 1) or 1)
+            size = float(cache_stats.get('size', 0) or 0)
+            cache_usage = (size / max_size * 100.0) if max_size > 0 else 0.0
             ax2.bar(['Kullanım'], [cache_usage], color='#3498db', alpha=0.7)
             ax2.set_ylabel('Kullanım (%)', fontweight='bold')
             ax2.set_title('Önbellek Kullanımı', fontweight='bold')
             ax2.set_ylim(0, 100)
             
             # Değer etiketi
-            ax2.text(0, cache_usage + 2, f'{cache_usage:.1f}%', 
+            ax2.text(0, min(95.0, cache_usage + 2), f'{cache_usage:.1f}%', 
                     ha='center', va='bottom', fontweight='bold')
             
             fig.suptitle('Önbellek Performans İstatistikleri', fontsize=14, fontweight='bold')
@@ -188,7 +237,7 @@ class GraphGenerator:
             return None
             
         try:
-            canvas = MplCanvas(width=8, height=6)
+            canvas = _new_canvas(8, 6)
             fig = canvas.fig
             ax = fig.add_subplot(111)
             
@@ -228,12 +277,13 @@ class GraphGenerator:
             
             # Gerçek proses çizgisi (Metot geçmişi varsa doğrudan kullan, yoksa politropik yol)
             stage0 = results.get("stages", [{}])[0] if results.get("stages") else {}
-            history = results.get("history") or stage0.get("history") or {}
+            history = results.get("history") or stage0.get("method_history") or {}
             p_hist = history.get("pressure")
             t_hist = history.get("temperature")
 
             t_actual_values = []
             s_actual_values = []
+            trajectory_is_estimate = False
 
             if p_hist and t_hist and len(p_hist) == len(t_hist) and len(p_hist) >= 2:
                 for p_val, t_val in zip(p_hist, t_hist):
@@ -245,6 +295,7 @@ class GraphGenerator:
                         pass
 
             if len(t_actual_values) < 2:
+                trajectory_is_estimate = True
                 pressures = np.geomspace(p_in_pa, p_out_pa, 20)
                 poly_eff_frac = inputs.get('poly_eff', 85.0) / 100.0
                 k_val = props_in.k if props_in.k > 1.0 else 1.4
@@ -260,13 +311,15 @@ class GraphGenerator:
 
             # Eğer hesaplama başarısız olduysa lineer geri dönüş (fallback)
             if len(t_actual_values) < 2:
+                trajectory_is_estimate = True
                 t_actual_values = np.linspace(t_in_k - 273.15, t_out_actual_k - 273.15, 20)
                 s_actual_values = np.linspace(s_in, s_out_actual, 20)
 
             
             # Grafik çizimi
             ax.plot(s_isen_line, t_isen_values, 'r--', linewidth=2, label='İzentropik Proses (Basit)', alpha=0.7)
-            ax.plot(s_actual_values, t_actual_values, 'b-', linewidth=2, label='Gerçek Proses', alpha=0.8)
+            actual_label = 'Gerçek Proses (yaklaşık)' if trajectory_is_estimate else 'Gerçek Proses'
+            ax.plot(s_actual_values, t_actual_values, 'b-', linewidth=2, label=actual_label, alpha=0.8)
             
             # Noktalar
             ax.plot(s_in, t_in_k - 273.15, 'go', markersize=8, label='Giriş')
@@ -303,7 +356,7 @@ class GraphGenerator:
             return None
         
         try:
-            canvas = MplCanvas(width=8, height=6)
+            canvas = _new_canvas(8, 6)
             fig = canvas.fig
             ax = fig.add_subplot(111)
             
@@ -324,7 +377,7 @@ class GraphGenerator:
             
             # Politropik proses eğrisi (Metot geçmişi varsa doğrudan kullan)
             stage0 = results.get("stages", [{}])[0] if results.get("stages") else {}
-            history = results.get("history") or stage0.get("history") or {}
+            history = results.get("history") or stage0.get("method_history") or {}
             p_hist = history.get("pressure")
             t_hist = history.get("temperature")
 
@@ -352,7 +405,7 @@ class GraphGenerator:
                         v = v_in * (p_in_pa / p) ** (1/n)
                         volumes.append(v)
                     except Exception as e:
-                        logger.debug("Polytropic volume calc failed at P=%.1f: %s", p, e)
+                        self.logger.debug("Polytropic volume calc failed at P=%.1f: %s", p, e)
                         volumes.append(np.nan)
             
             # İzentropik proses eğrisi
@@ -363,7 +416,7 @@ class GraphGenerator:
                     v = v_in * (p_in_pa / p) ** (1/props_in.k)
                     volumes_isen.append(v)
                 except Exception as e:
-                    logger.debug("Isentropic volume calc failed at P=%.1f: %s", p, e)
+                    self.logger.debug("Isentropic volume calc failed at P=%.1f: %s", p, e)
                     volumes_isen.append(np.nan)
             
             # Grafik çizimi
@@ -408,7 +461,7 @@ class GraphGenerator:
             return None
             
         try:
-            canvas = MplCanvas(width=10, height=6)
+            canvas = _new_canvas(10, 6)
             fig = canvas.fig
             
             # Verileri hazırla
@@ -468,7 +521,7 @@ class GraphGenerator:
             return None
             
         try:
-            canvas = MplCanvas(width=8, height=6)
+            canvas = _new_canvas(8, 6)
             fig = canvas.fig
             ax = fig.add_subplot(111)
             
@@ -527,7 +580,7 @@ class GraphGenerator:
             return None
             
         try:
-            canvas = MplCanvas(width=8, height=6)
+            canvas = _new_canvas(8, 6)
             fig = canvas.fig
             ax = fig.add_subplot(111)
             
@@ -585,7 +638,7 @@ class GraphGenerator:
         if not MATPLOTLIB_LOADED:
             return None
         try:
-            canvas = MplCanvas(width=8, height=6)
+            canvas = _new_canvas(8, 6)
             ax = canvas.fig.add_subplot(111)
 
             gas_obj = self.engine._create_gas_object(composition, eos_method)
@@ -612,7 +665,7 @@ class GraphGenerator:
 
             # Gerçek proses çizgisi (Metot geçmişi varsa doğrudan kullan)
             stage0 = results.get("stages", [{}])[0] if results.get("stages") else {}
-            history = results.get("history") or stage0.get("history") or {}
+            history = results.get("history") or stage0.get("method_history") or {}
             p_hist = history.get("pressure")
             t_hist = history.get("temperature")
 
@@ -679,7 +732,7 @@ class GraphGenerator:
             return None
         try:
             from matplotlib.sankey import Sankey
-            canvas = MplCanvas(width=10, height=4)
+            canvas = _new_canvas(10, 4)
             ax = canvas.fig.add_subplot(111)
             ax.axis("off")
 
@@ -687,27 +740,29 @@ class GraphGenerator:
                          float(results.get("fuel_unit_kgh", 0)) * float(results.get("lhv", 0)) / 3600))
             motor_kw = float(results.get("power_motor_per_unit_kw",
                          float(results.get("power_unit_kw", 0)) / 1.04))
-            shaft_kw = float(results.get("power_shaft_per_unit_kw",
-                         motor_kw * float(results.get("mech_eff", results.get("mech_eff", 98.0)) / 100.0
-                         if float(results.get("mech_eff", 98.0)) < 1.0 else 0.98)))
+            mech_eff_raw = float(results.get("mech_eff", 98.0))
+            mech_eff_frac = (mech_eff_raw / 100.0) if mech_eff_raw > 1.0 else mech_eff_raw
+            shaft_kw = float(results.get("power_shaft_per_unit_kw", motor_kw * mech_eff_frac))
             gas_kw = float(results.get("power_gas_per_unit_kw", shaft_kw * 0.92))
-            if fuel_kw <= 0:
+            fuel_is_estimated = fuel_kw <= 0
+            if fuel_is_estimated:
                 fuel_kw = motor_kw / 0.35
 
-            fuel_loss = fuel_kw - motor_kw
-            mech_loss = motor_kw - shaft_kw
-            poly_loss = shaft_kw - gas_kw
+            fuel_loss = max(0.0, fuel_kw - motor_kw)
+            drive_loss = max(0.0, motor_kw - shaft_kw)
+            mech_loss = max(0.0, shaft_kw - gas_kw)
+            fuel_label = "Tahmini Yakıt Girişi (η=35%)" if fuel_is_estimated else "Yakıt Girişi"
 
             sankey = Sankey(ax=ax, scale=0.6 / max(fuel_kw, 1), format="%.0f", unit=" kW")
             s0 = sankey.add(flows=[fuel_kw, -fuel_loss, -motor_kw],
-                            labels=["Yakıt Girişi", "Isıl Kayıp", "Motor Gücü"],
+                            labels=[fuel_label, "Isıl Kayıp", "Motor Gücü"],
                             orientations=[0, -1, 0], facecolor="#e74c3c")
-            s1 = sankey.add(flows=[motor_kw, -mech_loss, -shaft_kw],
-                            labels=["", "Mekanik Kayıp", "Şaft Gücü"],
+            s1 = sankey.add(flows=[motor_kw, -drive_loss, -shaft_kw],
+                            labels=["", "İletim/Sürücü Kaybı", "Şaft Gücü"],
                             orientations=[0, -1, 0], facecolor="#f39c12",
                             prior=0, connect=(2, 0))
-            s2 = sankey.add(flows=[shaft_kw, -poly_loss, -gas_kw],
-                            labels=["", "Termo. Kayıp", "Gaz Gücü"],
+            s2 = sankey.add(flows=[shaft_kw, -mech_loss, -gas_kw],
+                            labels=["", "Mekanik/Yatak Kaybı", "Gaz Gücü"],
                             orientations=[0, -1, 0], facecolor="#2ecc71",
                             prior=1, connect=(2, 0))
             sankey.finish()
@@ -723,7 +778,7 @@ class GraphGenerator:
         if not MATPLOTLIB_LOADED:
             return None
         try:
-            canvas = MplCanvas(width=8, height=5)
+            canvas = _new_canvas(8, 5)
             ax1 = canvas.fig.add_subplot(111)
             ax2 = ax1.twinx()
 
@@ -749,6 +804,8 @@ class GraphGenerator:
                     z_vals.append(s.Z)
                     pr_vals.append(p / p_in_pa)
                 except Exception:
+                    k_vals.append(np.nan)
+                    z_vals.append(np.nan)
                     pr_vals.append(p / p_in_pa)
 
             l1, = ax1.plot(pr_vals, k_vals, "b-", linewidth=2, label="k (Cp/Cv)")
@@ -776,7 +833,7 @@ class GraphGenerator:
             stages = results.get("stages", [])
             if not stages:
                 return None
-            canvas = MplCanvas(width=10, height=6)
+            canvas = _new_canvas(10, 6)
             n = len(stages)
             idx = np.arange(n)
 
@@ -834,7 +891,8 @@ class GraphGenerator:
         if not MATPLOTLIB_LOADED or not selected_units:
             return None
         try:
-            canvas = MplCanvas(width=8, height=6)
+            from kasp.core.settings import EngineSettings
+            canvas = _new_canvas(8, 6)
             ax = canvas.fig.add_subplot(111, polar=True)
 
             categories = ["Güç Uygunluğu", "Isıl Verim", "Surge Marjı", "Stonewall", "Tip Skoru"]
@@ -847,13 +905,50 @@ class GraphGenerator:
 
             colors_line = ["#2ecc71", "#3498db", "#e74c3c", "#f39c12", "#9b59b6"]
             for i, unit in enumerate(selected_units[:5]):
-                power = min(100, max(0, 100 - abs(unit.power_margin_percent - 10) * 2))
-                hr = min(100, max(0, (14000 - unit.site_heat_rate) / 55))
-                surge = min(100, max(0, unit.surge_margin_percent * 5))
-                stonewall = min(100, max(0, unit.stonewall_margin_percent * 5))
-                type_map = {"Aero-Derivative": 100, "Industrial/Aero": 90, "Industrial": 80,
-                            "Heavy-Duty": 70, "Centrifugal": 60}
-                type_score = type_map.get(unit.type_str, 65)
+                pm = float(getattr(unit, "power_margin_percent", 0.0) or 0.0)
+                if pm < 0:
+                    power = max(0.0, 50.0 + pm * 5.0)
+                elif pm <= EngineSettings.OPTIMAL_OVERSIZE_MIN:
+                    power = 60.0 + pm * 4.0
+                elif pm <= EngineSettings.OPTIMAL_OVERSIZE_MAX:
+                    power = 100.0 - (pm - EngineSettings.OPTIMAL_OVERSIZE_MIN) * 1.33
+                elif pm <= 35:
+                    power = 80.0 - (pm - EngineSettings.OPTIMAL_OVERSIZE_MAX) * 2.0
+                elif pm <= EngineSettings.MAX_ALLOWED_OVERSIZE_PCT:
+                    power = max(0.0, 50.0 - (pm - 35) * 1.5)
+                else:
+                    power = max(0.0, 25.0 - (pm - 50) * 0.5)
+
+                site_hr = float(getattr(unit, "site_heat_rate", 0.0) or 0.0)
+                hr = min(
+                    100.0,
+                    max(
+                        0.0,
+                        (EngineSettings.HR_REF_WORST - site_hr)
+                        / (EngineSettings.HR_REF_WORST - EngineSettings.HR_REF_BEST)
+                        * 100.0,
+                    ),
+                )
+
+                sm_raw = getattr(unit, "surge_margin_percent", None)
+                if sm_raw is None:
+                    surge = 60.0
+                else:
+                    sm = max(0.0, float(sm_raw))
+                    if sm >= 20.0:
+                        surge = 100.0
+                    elif sm >= 10.0:
+                        surge = 80.0 + (sm - 10.0) * 2.0
+                    elif sm > 0:
+                        surge = sm * 8.0
+                    else:
+                        surge = 0.0
+
+                stm_raw = getattr(unit, "stonewall_margin_percent", None)
+                stm = float(stm_raw) if stm_raw is not None else 10.0
+                stonewall = min(100.0, max(0.0, stm * 5.0))
+
+                type_score = float(EngineSettings.TURBINE_TYPE_SCORES.get(getattr(unit, "type_str", ""), 65))
                 values = [power, hr, surge, stonewall, type_score]
                 values += values[:1]
                 color = colors_line[i % len(colors_line)]
@@ -871,15 +966,16 @@ class GraphGenerator:
 
     def create_convergence_dashboard(self, consistency_history):
         """3-panel yakınsama dashboard."""
-        if not MATPLOTLIB_LOADED or not consistency_history or len(consistency_history) < 2:
+        if not MATPLOTLIB_LOADED or not consistency_history or len(consistency_history) < 1:
             return None
         try:
-            canvas = MplCanvas(width=12, height=5)
+            canvas = _new_canvas(12, 5)
             iters = [h.get("iteration", i + 1) for i, h in enumerate(consistency_history)]
             eta_used = [h.get("eta_used", 0) for h in consistency_history]
             eta_calc = [h.get("eta_calculated", 0) for h in consistency_history]
             t_out = [h.get("t_out", 0) for h in consistency_history]
             residuals = [h.get("residual", 0) for h in consistency_history]
+            residuals_plot = [max(float(r or 0.0), 1e-12) for r in residuals]
 
             ax1 = canvas.fig.add_subplot(131)
             ax1.plot(iters, eta_used, "b--o", label="η_kullanılan", markersize=4)
@@ -898,7 +994,7 @@ class GraphGenerator:
             ax2.grid(True, alpha=0.3)
 
             ax3 = canvas.fig.add_subplot(133)
-            ax3.semilogy(iters, residuals, "m-s", markersize=4)
+            ax3.semilogy(iters, residuals_plot, "m-s", markersize=4)
             ax3.set_xlabel("İterasyon")
             ax3.set_ylabel("Kalıntı |η_c − η_u| (log)")
             ax3.set_title("Kalıntı (Residual)")
@@ -920,8 +1016,13 @@ class GraphManager:
         self.current_graphs = {}
         self.logger = logging.getLogger(self.__class__.__name__)
     
-    def generate_all_graphs(self, inputs, results, selected_units=None, composition=None, eos_method=None):
-        """Tüm grafikleri oluştur (V4.7 — 8 grafik seti)"""
+    def generate_all_graphs(self, inputs, results, selected_units=None, composition=None, eos_method=None, headless=False):
+        """Tüm grafikleri oluştur (V4.7 — 8 grafik seti)
+
+        headless=True ise Qt'ye bagimli olmayan HeadlessCanvas (Figure) uretir;
+        boylece agir grafik uretimi worker thread'de yapilip UI thread'inde
+        MplCanvas'a sarilabilir (P3-20).
+        """
         graphs = {}
         comp = composition or inputs.get("gas_comp", {})
         eos = eos_method or inputs.get("eos_method", "coolprop")
@@ -929,7 +1030,9 @@ class GraphManager:
         eos = results.get("_effective_eos", eos)
 
         self._graph_error = None
-        eos_chain_active = False
+        if not headless and self.current_graphs:
+            self.clear_graphs()
+        _render_ctx.headless = headless
 
         try:
             if not MATPLOTLIB_LOADED:
@@ -1006,8 +1109,25 @@ class GraphManager:
             self._graph_error = str(e)
             import sys
             print(f"GRAPH ERROR: {e}", file=sys.stderr)
-        
+        finally:
+            _render_ctx.headless = False
+
         return graphs
+
+    def wrap_headless_graphs(self, headless_graphs, parent=None):
+        """Worker thread'de uretilen HeadlessCanvas/Figure'lari UI thread'inde MplCanvas'a sarar."""
+        wrapped = {}
+        if not MATPLOTLIB_LOADED:
+            return wrapped
+        for name, canvas in (headless_graphs or {}).items():
+            fig = getattr(canvas, "fig", None)
+            if fig is None:
+                continue
+            try:
+                wrapped[name] = MplCanvas(parent=None, figure=fig)
+            except Exception as exc:  # pragma: no cover - UI bagimli
+                self.logger.warning("Grafik %s canvas'a sarilamadi: %s", name, exc)
+        return wrapped
     
     def save_graphs_to_file(self, base_filename):
         """Grafikleri dosyaya kaydet"""
@@ -1020,7 +1140,7 @@ class GraphManager:
                 if graph and hasattr(graph, 'fig'):
                     filename = f"{base_filename}_{name}.png"
                     graph.fig.savefig(filename, dpi=300, bbox_inches='tight', 
-                                    facecolor='white', edgecolor='none')
+                                    facecolor=graph.fig.get_facecolor(), edgecolor='none')
                     self.logger.info(f"Grafik kaydedildi: {filename}")
             
             return True
@@ -1032,7 +1152,16 @@ class GraphManager:
         """Grafikleri temizle"""
         if MATPLOTLIB_LOADED:
             for graph in self.current_graphs.values():
-                if graph and hasattr(graph, 'fig'):
-                    plt.close(graph.fig)
+                if graph:
+                    if hasattr(graph, 'deleteLater'):
+                        try:
+                            graph.deleteLater()
+                        except Exception:
+                            pass
+                    if hasattr(graph, 'fig'):
+                        try:
+                            plt.close(graph.fig)
+                        except Exception:
+                            pass
         self.current_graphs = {}
         self.logger.info("Grafikler temizlendi")

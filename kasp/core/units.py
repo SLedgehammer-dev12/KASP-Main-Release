@@ -68,9 +68,14 @@ class UnitSystem:
     @staticmethod
     def _coerce_numeric(value, quantity_name, unit=None):
         try:
-            return float(value)
+            numeric = float(value)
         except (TypeError, ValueError) as error:
             raise UnitConversionError(f"Gecersiz {quantity_name} degeri: {value}", value, unit) from error
+        if not math.isfinite(numeric):
+            raise UnitConversionError(
+                f"Gecersiz {quantity_name} degeri (NaN/sonsuz): {value}", value, unit
+            )
+        return numeric
 
     @classmethod
     def convert_pressure(cls, value, from_unit, to_unit="Pa", ambient_pressure_pa=None, altitude_m=None):
@@ -166,16 +171,29 @@ class UnitSystem:
         raise UnitConversionError(f"Bilinmeyen hedef sicaklik birimi: {to_unit}")
 
     @classmethod
-    def validate_pressure_value(cls, value, unit):
+    def validate_pressure_value(cls, value, unit, ambient_pressure_pa=None, altitude_m=None):
         unit = cls._canonical_pressure_unit(unit)
         numeric_value = cls._coerce_numeric(value, "basinc", unit)
 
         if unit in {"bar(g)", "psig"}:
+            pa_value = cls.convert_pressure(
+                numeric_value,
+                unit,
+                "Pa",
+                ambient_pressure_pa=ambient_pressure_pa,
+                altitude_m=altitude_m,
+            )
+            if pa_value <= 0:
+                raise UnitConversionError(
+                    f"Mutlak vakum altinda basinc degeri ({numeric_value} {unit} -> {pa_value:.1f} Pa) gecersiz",
+                    numeric_value,
+                    unit,
+                )
             return True
 
-        if numeric_value < 0:
+        if numeric_value <= 0:
             raise UnitConversionError(
-                f"Negatif basinc degeri ({numeric_value} {unit}) gecersiz",
+                f"Pozitif olmayan mutlak basinc degeri ({numeric_value} {unit}) gecersiz",
                 numeric_value,
                 unit,
             )

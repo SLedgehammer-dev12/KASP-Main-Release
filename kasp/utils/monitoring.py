@@ -18,12 +18,18 @@ class PerformanceMonitor:
         self._lock = threading.Lock()
         self.start_time = datetime.datetime.now()
     
+    MAX_HISTORY_ENTRIES = 1000
+
     def log_performance(self, method_name, duration, iterations=None):
         """Performans metriklerini kaydet"""
         with self._lock:
             self.metrics['calculation_time'].append(duration)
+            if len(self.metrics['calculation_time']) > self.MAX_HISTORY_ENTRIES:
+                self.metrics['calculation_time'] = self.metrics['calculation_time'][-self.MAX_HISTORY_ENTRIES:]
             if iterations is not None:
                 self.metrics['convergence_iterations'].append(iterations)
+                if len(self.metrics['convergence_iterations']) > self.MAX_HISTORY_ENTRIES:
+                    self.metrics['convergence_iterations'] = self.metrics['convergence_iterations'][-self.MAX_HISTORY_ENTRIES:]
             
             if method_name not in self.metrics['eos_method_usage']:
                 self.metrics['eos_method_usage'][method_name] = 0

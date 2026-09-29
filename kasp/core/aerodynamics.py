@@ -12,6 +12,84 @@ import time
 
 _local_storage = threading.local()
 
+# Run-bazli iptal sinyalleri: her hesaplama kosusu kendi iptal jetonunu tasir.
+# Boylece bir isin iptali, ayni anda calisan diger isleri etkilemez (P4-13).
+# Argumansiz cagrilar eski global davranisi korur (geriye uyumluluk).
+_cancel_event = threading.Event()
+_run_lock = threading.Lock()
+_run_events: dict[str, threading.Event] = {}
+_thread_run = threading.local()
+
+
+def begin_calculation_run(run_id: str | None = None) -> str:
+    """Yeni bir hesaplama kosusu baslatir ve run-ID dondurur.
+
+    Cagiran thread'in run-ID'sine baglanir; `is_calculation_cancel_requested`
+    bu thread'de artik yalnizca bu kosunun jetonunu kontrol eder.
+    """
+    import uuid
+
+    rid = run_id or f"run-{uuid.uuid4().hex}"
+    event = threading.Event()
+    with _run_lock:
+        _run_events[rid] = event
+    _thread_run.run_id = rid
+    _thread_run.event = event
+    return rid
+
+
+def end_calculation_run(run_id: str | None = None) -> None:
+    """Hesaplama kosusunu kapatir ve jetonunu kayit defterinden siler."""
+    rid = run_id or getattr(_thread_run, "run_id", None)
+    if rid is None:
+        return
+    with _run_lock:
+        _run_events.pop(rid, None)
+    if getattr(_thread_run, "run_id", None) == rid:
+        _thread_run.run_id = None
+        _thread_run.event = None
+
+
+def request_calculation_cancel(run_id: str | None = None) -> None:
+    """Iptal ister. run_id verilirse yalnizca o kosu iptal edilir.
+
+    run_id verilmezse (eski cagiricilar) global bayrak + tum aktif kosular
+    isaretlenir; davranis onceki surumle aynidir.
+    """
+    if run_id is not None:
+        with _run_lock:
+            event = _run_events.get(run_id)
+        if event is not None:
+            event.set()
+        return
+    _cancel_event.set()
+    with _run_lock:
+        events = list(_run_events.values())
+    for event in events:
+        event.set()
+
+
+def clear_calculation_cancel(run_id: str | None = None) -> None:
+    """Iptal bayragini temizler. run_id verilirse yalnizca o kosu temizlenir."""
+    if run_id is not None:
+        with _run_lock:
+            event = _run_events.get(run_id)
+        if event is not None:
+            event.clear()
+        return
+    _cancel_event.clear()
+    event = getattr(_thread_run, "event", None)
+    if event is not None:
+        event.clear()
+
+
+def is_calculation_cancel_requested() -> bool:
+    """Cagiran thread'in kosusu (veya global bayrak) iptal istendi mi?"""
+    event = getattr(_thread_run, "event", None)
+    if event is not None and event.is_set():
+        return True
+    return _cancel_event.is_set()
+
 def reset_fallback_comparisons():
     _local_storage.comparisons = []
     _local_storage.current_stage = "Performans"
@@ -54,12 +132,23 @@ class CompressorAerodynamics:
 
         try:
             if eos == 'coolprop':
+                import CoolProp.CoolProp as CP
                 from CoolProp import AbstractState
                 AS = AbstractState("HEOS", gas_obj)
                 AS.update(CP.PSmass_INPUTS, p_out, state_in.S)
                 return AS.T()
         except Exception as e2:
-            logger.debug(f"AbstractState isentropic flash failed ({e2}). Using k-based fallback.")
+            logger.debug(f"AbstractState isentropic flash failed ({e2}). Proceeding to Brent solver.")
+
+        if thermo_solver is not None and gas_obj is not None:
+            try:
+                t_brent, _iters, residual = CompressorAerodynamics.calculate_isentropic_temp_brent(
+                    state_in, p_out, thermo_solver, gas_obj, eos
+                )
+                if math.isfinite(t_brent) and residual < 10.0 and t_brent > 0:
+                    return t_brent
+            except Exception as e3:
+                logger.debug(f"Brent isentropic solver failed ({e3}). Using k-based fallback.")
 
         k = state_in.k
         if k <= 1.0:
@@ -108,8 +197,9 @@ class CompressorAerodynamics:
             
             # Schultz polytropic head correction factor (f_t)
             if abs(sigma) < 1e-5:
-                # Isothermal limit
-                f_t = f_s * (k_exp / (k_exp * ln_PR)) if abs(ln_PR) > 1e-10 else f_s
+                # Isothermal limit: lim_{sigma->0} (PR^sigma - 1)/sigma = ln(PR)
+                denom_iso = math.pow(pressure_ratio, k_exp) - 1.0
+                f_t = f_s * (k_exp * ln_PR) / denom_iso if abs(denom_iso) > 1e-12 else f_s
             else:
                 numerator = k_exp * (math.pow(pressure_ratio, sigma) - 1.0)
                 denominator = sigma * (math.pow(pressure_ratio, k_exp) - 1.0)
@@ -472,13 +562,21 @@ class CompressorAerodynamics:
                     return 1e6
 
         # Başlangıç braketi bulma (T2 >= T1 için kompresörde a = t_in)
+        k_est = state_in.k if (state_in.k and state_in.k > 1.0) else 1.3
+        n_isen = (k_est - 1.0) / k_est
+        pr = max(1.0001, p_out / max(1.0, state_in.P))
+        t_est = t_in * (pr ** n_isen)
         a = t_in
-        b = min(2500.0, t_in * 2.0)
+        b = min(2500.0, max(t_in + 25.0, t_est * 1.25))
         fa = f(a)
         fb = f(b)
 
         for _ in range(5):
-            if fa * fb < 0:
+            if fb >= 1e5 and b > t_in + 1.0:
+                b = t_in + 0.5 * (b - t_in)
+                fb = f(b)
+                continue
+            if fa * fb < 0 and abs(fa) < 1e5 and abs(fb) < 1e5:
                 break
             if fa > 0:
                 a = max(100.0, a * 0.5)
@@ -487,20 +585,21 @@ class CompressorAerodynamics:
                 b = min(3000.0, b * 1.5)
                 fb = f(b)
 
-        if fa * fb >= 0:
+        if fa * fb >= 0 or abs(fa) >= 1e5 or abs(fb) >= 1e5:
             # Braket başarısız — bisection stratejisi ile en iyi tahmini bul
             left, right = min(a, b), max(a, b)
             best_t, best_res = (a, abs(fa)) if abs(fa) < abs(fb) else (b, abs(fb))
             for _ in range(8):
                 mid = (left + right) / 2.0
-                fmid = abs(f(mid))
+                val_mid = f(mid)
+                fmid = abs(val_mid)
                 if fmid < best_res:
                     best_t, best_res = mid, fmid
-                if f(mid) > 0:
+                if val_mid > 0:
                     right = mid
                 else:
                     left = mid
-            return best_t, 1, best_res
+            return best_t, 1, max(abs(best_res), 10.0)
 
         # Brent Algoritması
         max_iter = 20
@@ -648,35 +747,21 @@ class CompressorAerodynamics:
         if hasattr(thermo_solver, "_run_tracking") and hasattr(thermo_solver._run_tracking, "context") and thermo_solver._run_tracking.context:
             solver_method = thermo_solver._run_tracking.context.get("solver_method", "auto")
 
-        if solver_method == "aj_nr":
-            t_aj, _, _ = CompressorAerodynamics.calculate_isentropic_temp_aj_nr(
-                state_in, p_out, thermo_solver, gas_obj, eos
-            )
-            return t_aj
-        elif solver_method == "fd_nr":
-            t_fd, _, _ = CompressorAerodynamics.calculate_isentropic_temp_fd_nr(
-                state_in, p_out, thermo_solver, gas_obj, eos
-            )
-            return t_fd
-        elif solver_method == "brent":
-            t_brent, _, _ = CompressorAerodynamics.calculate_isentropic_temp_brent(
-                state_in, p_out, thermo_solver, gas_obj, eos
-            )
-            return t_brent
-        elif solver_method == "benchmark":
+        if solver_method == "benchmark":
             return CompressorAerodynamics.run_isentropic_fallback_comparison(
                 state_in, p_out, thermo_solver, gas_obj, eos
             )
-        else:
-            # "auto" mod: Akilli sequential fallback + benchmark verisi topla
-            from kasp.core.fallback import SolverChain
-            tracker = getattr(thermo_solver, "_fallback_tracker", None)
-            if tracker is not None:
-                chain = SolverChain(tracker)
-                result = chain.find_isentropic_temp(
-                    state_in, p_out, thermo_solver, gas_obj, eos,
-                    solver_method="auto",
-                )
+
+        # Tum secimler SolverChain uzerinden gider; boylece artık dogrulanir (P0-3)
+        from kasp.core.fallback import SolverChain
+        tracker = getattr(thermo_solver, "_fallback_tracker", None)
+        if tracker is not None:
+            chain = SolverChain(tracker)
+            result = chain.find_isentropic_temp(
+                state_in, p_out, thermo_solver, gas_obj, eos,
+                solver_method=solver_method,
+            )
+            if solver_method == "auto":
                 # Benchmark verisini de arka planda topla (diagnostik icin)
                 try:
                     CompressorAerodynamics.run_isentropic_fallback_comparison(
@@ -684,9 +769,9 @@ class CompressorAerodynamics:
                     )
                 except Exception:
                     pass
-                return result
-            # FallbackTracker yoksa eski benchmark davranisi
-            return CompressorAerodynamics.run_isentropic_fallback_comparison(
-                state_in, p_out, thermo_solver, gas_obj, eos
-            )
+            return result
+        # FallbackTracker yoksa eski benchmark davranisi
+        return CompressorAerodynamics.run_isentropic_fallback_comparison(
+            state_in, p_out, thermo_solver, gas_obj, eos
+        )
 

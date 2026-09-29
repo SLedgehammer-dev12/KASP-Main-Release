@@ -39,12 +39,26 @@ def calculate_textbook_compressor_power():
     # Gas Power (kW) = mass_flow * H_p / poly_eff
     gas_power = mass_flow_kgs * H_p / poly_eff
     
+    assert 13.8 <= mass_flow_kgs <= 13.9
+    assert 0.45 <= R_specific <= 0.47
+    assert 0.90 <= Z_avg <= 0.93
+    assert 160.0 <= H_p <= 185.0
+    assert 2600.0 <= gas_power <= 3000.0
+
     print(f"--- TEXTBOOK CALCULATION ---")
     print(f"Mass Flow: {mass_flow_kgs:.2f} kg/s")
     print(f"R_specific: {R_specific:.4f} kJ/kg.K")
     print(f"Z_avg: {Z_avg:.2f}")
     print(f"Polytropic Head: {H_p:.2f} kJ/kg")
     print(f"Gas Power: {gas_power:.2f} kW")
-    
+    return {
+        "mass_flow_kgs": mass_flow_kgs,
+        "R_specific": R_specific,
+        "Z_avg": Z_avg,
+        "head_kj_kg": H_p,
+        "gas_power_kw": gas_power,
+    }
+
 if __name__ == '__main__':
     calculate_textbook_compressor_power()
+

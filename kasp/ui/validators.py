@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QLineEdit, QToolTip
 from PyQt5.QtCore import pyqtSignal, Qt, QPoint
 from PyQt5.QtGui import QPalette, QColor
 import logging
+import math
 
 try:
     from kasp.core.units import UnitSystem
@@ -139,6 +140,13 @@ class ValidatedLineEdit(QLineEdit):
         self.setToolTip("")
 
 
+try:
+    from kasp.i18n import tr
+except ImportError:
+    def tr(text):
+        return text
+
+
 # Validation Functions
 
 def validate_pressure(value, context):
@@ -153,16 +161,19 @@ def validate_pressure(value, context):
         (is_valid, error_message)
     """
     if not value:
-        return False, "Pressure is required"
+        return False, tr("Basınç değeri zorunludur")
     
     try:
         val = float(value)
         unit = context.get('unit', 'bar(a)')
-        
+
+        if not math.isfinite(val):
+            return False, tr("Basınç sonlu bir sayı olmalıdır")
+
         # Check for negative absolute pressure
         if unit in ['bar(a)', 'psia', 'kPa', 'MPa', 'Pa']:
             if val <= 0:
-                return False, "Absolute pressure must be > 0"
+                return False, tr("Mutlak basınç > 0 olmalıdır")
         
         # Check gauge pressure - convert -1.0 bar(g) to the selected unit
         if unit in ['bar(g)', 'psig']:
@@ -175,21 +186,21 @@ def validate_pressure(value, context):
                 else:
                     limit = limit_bar_g
                 if val < limit:
-                    return False, f"Gauge pressure too low (min {limit:.1f} {unit})"
+                    return False, tr(f"Efektif basınç çok düşük (min {limit:.1f} {unit})")
             except Exception:
                 # Fallback to hardcoded values if conversion fails
                 limit = -1.0 if unit == 'bar(g)' else -14.7
                 if val < limit:
-                    return False, f"Gauge pressure too low (min {limit:.1f} {unit})"
+                    return False, tr(f"Efektif basınç çok düşük (min {limit:.1f} {unit})")
         
         # Reasonable range check
         if val > 1000:
-            return True, f"⚠️ Very high pressure ({val:.1f} {unit})"
+            return True, tr(f"⚠️ Çok yüksek basınç ({val:.1f} {unit})")
         
         return True, ""
         
     except ValueError:
-        return False, "Invalid number format"
+        return False, tr("Geçersiz sayı formatı")
 
 
 def validate_temperature(value, context):
@@ -204,32 +215,35 @@ def validate_temperature(value, context):
         (is_valid, error_message)
     """
     if not value:
-        return False, "Temperature is required"
+        return False, tr("Sıcaklık değeri zorunludur")
     
     try:
         val = float(value)
         unit = context.get('unit', '°C')
-        
+
+        if not math.isfinite(val):
+            return False, tr("Sıcaklık sonlu bir sayı olmalıdır")
+
         # Convert to Kelvin for absolute zero check
         try:
             k_val = UnitSystem.convert_temperature(val, unit, 'K')
             
             if k_val < 0:
-                return False, "Below absolute zero!"
+                return False, tr("Mutlak sıfırın altında!")
             
             if k_val < 100:
-                return True, "⚠️ Very low temperature"
+                return True, tr("⚠️ Çok düşük sıcaklık")
             
             if k_val > 800:
-                return True, "⚠️ Very high temperature"
+                return True, tr("⚠️ Çok yüksek sıcaklık")
             
             return True, ""
             
         except UnitConversionError as e:
-            return False, f"Unit conversion error: {e}"
+            return False, tr(f"Birim dönüşüm hatası: {e}")
         
     except ValueError:
-        return False, "Invalid number format"
+        return False, tr("Geçersiz sayı formatı")
 
 
 def validate_flow(value, context):
@@ -244,21 +258,24 @@ def validate_flow(value, context):
         (is_valid, error_message)
     """
     if not value:
-        return False, "Flow rate is required"
+        return False, tr("Debi değeri zorunludur")
     
     try:
         val = float(value)
-        
+
+        if not math.isfinite(val):
+            return False, tr("Debi sonlu bir sayı olmalıdır")
+
         if val <= 0:
-            return False, "Flow must be positive"
+            return False, tr("Debi pozitif olmalıdır")
         
         if val > 100000000:
-            return True, "⚠️ Very high flow rate"
+            return True, tr("⚠️ Çok yüksek debi")
         
         return True, ""
         
     except ValueError:
-        return False, "Invalid number format"
+        return False, tr("Geçersiz sayı formatı")
 
 
 class ValidationManager:

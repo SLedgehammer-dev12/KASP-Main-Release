@@ -40,14 +40,16 @@ def ambient_pressure_from_altitude_kpa(altitude_m):
 def normalize_correction_inputs(values):
     values = values or {}
     altitude_m = coerce_float(values.get("altitude_m", values.get("altitude", 0.0)), 0.0)
-    ambient_pressure = coerce_float(values.get("ambient_pressure_kpa", values.get("ambient_pressure")), 0.0)
-    if ambient_pressure <= 0:
+    raw_ambient_pressure = coerce_float(values.get("ambient_pressure_kpa", values.get("ambient_pressure")), 0.0)
+    ambient_pressure = raw_ambient_pressure
+    if ambient_pressure <= 0 or (altitude_m != 0 and abs(ambient_pressure - ISO_PRESSURE_KPA) < 1e-6):
         ambient_pressure = ambient_pressure_from_altitude_kpa(altitude_m)
 
     return {
         "standard": values.get("standard", STANDARD_ASME_PTC22),
         "ambient_temp_c": coerce_float(values.get("ambient_temp_c", values.get("ambient_temp")), ISO_TEMPERATURE_C),
         "ambient_pressure_kpa": ambient_pressure,
+        "raw_ambient_pressure_kpa": raw_ambient_pressure,
         "relative_humidity_pct": coerce_float(
             values.get("relative_humidity_pct", values.get("humidity")), ISO_RELATIVE_HUMIDITY_PCT
         ),
@@ -64,6 +66,10 @@ def calculate_site_correction_factors(values):
     standard = inputs["standard"] if inputs["standard"] in SUPPORTED_PERFORMANCE_STANDARDS else STANDARD_ASME_PTC22
     ambient_temp_k = inputs["ambient_temp_c"] + 273.15
     ambient_pressure = max(inputs["ambient_pressure_kpa"], 1e-9)
+    raw_ambient_pressure = inputs.get("raw_ambient_pressure_kpa", 0.0)
+    has_explicit_nonstandard_pressure = (
+        raw_ambient_pressure > 0 and abs(raw_ambient_pressure - ISO_PRESSURE_KPA) >= 1e-6
+    )
 
     temperature_factor = ISO_TEMPERATURE_K / max(ambient_temp_k, 1e-9)
     pressure_factor = ambient_pressure / ISO_PRESSURE_KPA
@@ -90,7 +96,7 @@ def calculate_site_correction_factors(values):
     else:
         applied_temperature_factor = temperature_factor
         applied_pressure_factor = pressure_factor
-        applied_altitude_factor = altitude_factor
+        applied_altitude_factor = 1.0 if has_explicit_nonstandard_pressure else altitude_factor
         applied_inlet_factor = inlet_factor
         applied_exhaust_factor = exhaust_factor
         applied_humidity_factor = humidity_factor

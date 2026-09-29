@@ -78,6 +78,10 @@ def test_window_opens_cleanly(app):
     """Smoke test: window opens and closes without crash."""
     window = KaspMainWindow()
     try:
-        assert window.isVisible() or True  # may not be visible in CI
+        window.show()
+        assert window.width() >= 900
+        assert window.height() >= 550
+        assert window.centralWidget() is not None
     finally:
         window.close()
+

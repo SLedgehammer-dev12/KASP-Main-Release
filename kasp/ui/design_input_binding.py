@@ -115,13 +115,37 @@ class DesignInputBinder:
         inputs["max_consistency_iter"] = window.max_consistency_iter.value()
         inputs["consistency_tolerance"] = window.consistency_tolerance.value()
 
-        gas_comp = window._get_gas_composition()
+        try:
+            try:
+                gas_comp = window._get_gas_composition(strict=True)
+            except TypeError:
+                gas_comp = window._get_gas_composition()
+        except ValueError as comp_err:
+            errors.append(str(comp_err))
+            gas_comp = {}
         total_percentage = sum(gas_comp.values())
         if not gas_comp:
             errors.append("Gaz kompozisyonu tanımlanmalıdır.")
         inputs["gas_comp"] = gas_comp
 
-        inputs["ambient_temp"] = float(window.t_in_edit.text())
+        # Saha kosullari ayri bir sozlesmedir (P1-6). Ozel ortam alani varsa onu kullan;
+        # yoksa standart ISO ortam sicakligi (15.0 °C) varsay.
+        from kasp.core.units import UnitSystem
+        from kasp.core.exceptions import UnitConversionError
+
+        ambient_temp_edit = getattr(window, "ambient_temp_edit", None)
+        if ambient_temp_edit is not None:
+            ambient_unit = getattr(window, "ambient_temp_unit_combo", None)
+            ambient_unit = ambient_unit.currentText() if ambient_unit is not None else "°C"
+            try:
+                inputs["ambient_temp"] = UnitSystem.convert_temperature(
+                    float(ambient_temp_edit.text()), ambient_unit, "°C"
+                )
+            except (ValueError, UnitConversionError):
+                errors.append("Ortam sıcaklığı geçersiz.")
+                inputs["ambient_temp"] = 15.0
+        else:
+            inputs["ambient_temp"] = 15.0
         inputs["ambient_pressure"] = 101.325
         inputs["altitude"] = 0
         inputs["humidity"] = 60
@@ -206,7 +230,13 @@ class DesignInputBinder:
         window = self.window
         window.composition_table.setRowCount(0)
         if not gas_comp:
-            return
+            gas_comp = {
+                "METHANE": 85.0,
+                "ETHANE": 7.0,
+                "PROPANE": 4.0,
+                "NITROGEN": 2.0,
+                "CARBONDIOXIDE": 2.0,
+            }
 
         from PyQt5.QtCore import Qt
         from PyQt5.QtGui import QFont

@@ -10,6 +10,12 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 import logging
 
+try:
+    from kasp.i18n import tr
+except ImportError:
+    def tr(text):
+        return text
+
 
 class ValidationStatusWidget(QWidget):
     """
@@ -28,8 +34,21 @@ class ValidationStatusWidget(QWidget):
         super().__init__(parent)
         self.logger = logging.getLogger(self.__class__.__name__)
         self.field_labels = {}  # {field_name: QLabel}
+        self._fix_all_handler_connected = False
         self._init_ui()
     
+    def set_fix_all_handler(self, handler):
+        """Explicitly wire a handler for the 'Fix All Issues' button."""
+        if handler is not None:
+            self.fix_all_clicked.connect(handler)
+            self._fix_all_handler_connected = True
+
+    def _has_fix_all_handler(self) -> bool:
+        try:
+            return self._fix_all_handler_connected or self.receivers(self.fix_all_clicked) > 0
+        except Exception:
+            return bool(self._fix_all_handler_connected)
+
     def _init_ui(self):
         """Initialize UI components."""
         main_layout = QVBoxLayout()
@@ -38,7 +57,7 @@ class ValidationStatusWidget(QWidget):
         
         # Header
         header_layout = QHBoxLayout()
-        header_label = QLabel("⚙️ Input Validation Status")
+        header_label = QLabel(tr("⚙️ Giriş Doğrulama Durumu"))
         header_font = QFont()
         header_font.setBold(True)
         header_font.setPointSize(10)
@@ -47,7 +66,7 @@ class ValidationStatusWidget(QWidget):
         header_layout.addStretch()
         
         # Overall status indicator
-        self.overall_status_label = QLabel("✓ All Valid")
+        self.overall_status_label = QLabel(tr("✓ Tümü Geçerli"))
         self.overall_status_label.setProperty("statusType", "valid")
         header_layout.addWidget(self.overall_status_label)
         
@@ -77,7 +96,7 @@ class ValidationStatusWidget(QWidget):
         
         # Action buttons (initially hidden)
         self.action_layout = QHBoxLayout()
-        self.fix_all_btn = QPushButton("🔧 Fix All Issues")
+        self.fix_all_btn = QPushButton(tr("🔧 Tüm Sorunları Düzelt"))
         self.fix_all_btn.setVisible(False)
         self.fix_all_btn.clicked.connect(self.fix_all_clicked.emit)
         self.action_layout.addStretch()
@@ -98,15 +117,17 @@ class ValidationStatusWidget(QWidget):
         
         # Update overall status
         if summary['all_valid']:
-            self.overall_status_label.setText(f"✓ All Valid ({summary['valid_count']}/{summary['total_fields']})")
+            self.overall_status_label.setText(
+                tr(f"✓ Tümü Geçerli ({summary['valid_count']}/{summary['total_fields']})")
+            )
             self.overall_status_label.setProperty("statusType", "valid")
             self.fix_all_btn.setVisible(False)
         else:
             self.overall_status_label.setText(
-                f"⚠️ {summary['invalid_count']} Issue(s) ({summary['valid_count']}/{summary['total_fields']} valid)"
+                tr(f"⚠️ {summary['invalid_count']} giriş düzeltilmeli ({summary['valid_count']}/{summary['total_fields']} giriş geçerli)")
             )
             self.overall_status_label.setProperty("statusType", "invalid")
-            self.fix_all_btn.setVisible(True)
+            self.fix_all_btn.setVisible(self._has_fix_all_handler())
         self.overall_status_label.style().unpolish(self.overall_status_label)
         self.overall_status_label.style().polish(self.overall_status_label)
         
@@ -173,7 +194,7 @@ class ValidationStatusWidget(QWidget):
             label.setParent(None)
             label.deleteLater()
         self.field_labels.clear()
-        self.overall_status_label.setText("Ready")
+        self.overall_status_label.setText(tr("Hazır"))
         self.overall_status_label.setProperty("statusType", "neutral")
         self.overall_status_label.style().unpolish(self.overall_status_label)
         self.overall_status_label.style().polish(self.overall_status_label)
@@ -195,7 +216,7 @@ class MinimalValidationIndicator(QWidget):
         layout.setContentsMargins(5, 2, 5, 2)
         
         self.icon_label = QLabel("✓")
-        self.text_label = QLabel("All inputs valid")
+        self.text_label = QLabel(tr("Tüm girişler geçerli"))
         
         layout.addWidget(self.icon_label)
         layout.addWidget(self.text_label)
@@ -214,12 +235,12 @@ class MinimalValidationIndicator(QWidget):
         """
         if all_valid:
             self.icon_label.setText("✓")
-            self.text_label.setText(f"All {total_count} inputs valid")
+            self.text_label.setText(tr(f"Tüm {total_count} giriş geçerli"))
             self.setProperty("statusType", "valid")
         else:
             invalid_count = total_count - valid_count
             self.icon_label.setText("⚠️")
-            self.text_label.setText(f"{invalid_count} input(s) need attention")
+            self.text_label.setText(tr(f"{invalid_count} giriş düzeltilmeli"))
             self.setProperty("statusType", "invalid")
         self.style().unpolish(self)
         self.style().polish(self)

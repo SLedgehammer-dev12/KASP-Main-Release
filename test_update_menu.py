@@ -26,4 +26,8 @@ def test_update_menu_action_exists(app):
     finally:
         window.close()
 
-    assert any("Guncellemeleri Kontrol Et" in text for text in action_texts)
+    assert any(
+        ("Guncellemeleri Kontrol Et" in text) or ("Güncellemeleri Kontrol Et" in text)
+        for text in action_texts
+    )
+

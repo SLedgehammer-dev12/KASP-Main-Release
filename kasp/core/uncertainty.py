@@ -318,19 +318,21 @@ class UncertaintyAnalyzer:
     
     def analyze_uncertainty(
         self,
-        measurement_values: Dict[str, float],
-        instrument_config: Dict[str, str],
+        measurement_values: Dict[str, Any],
+        instrument_config: Dict[str, Any],
         calculation_function: Callable,
-        result_key: str = 'polytropic_efficiency'
+        result_key: str = 'polytropic_efficiency',
+        full_scales: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """
         Perform complete uncertainty analysis for a calculation.
         
         Args:
-            measurement_values: Dict of {parameter: measured_value}
-            instrument_config: Dict of {parameter: instrument_type}
+            measurement_values: Dict of {parameter: measured_value} (or {parameter: {'value': v, 'full_scale': fs}})
+            instrument_config: Dict of {parameter: instrument_type} (or {parameter: {'instrument': t, 'full_scale': fs}})
             calculation_function: Function to analyze
             result_key: Key for extracting result from calculation output
+            full_scales: Optional dict of {parameter: full_scale_value}
         
         Returns:
             Dict with complete uncertainty analysis:
@@ -340,19 +342,53 @@ class UncertaintyAnalyzer:
             - 'contributions': Individual contributions
             - 'breakdown_percent': Percentage breakdown
         """
+        numeric_measurements: Dict[str, float] = {}
+        extracted_full_scales: Dict[str, float] = dict(full_scales or {})
+        for k, v in measurement_values.items():
+            if isinstance(v, dict):
+                numeric_measurements[k] = float(v.get('value', 0.0))
+                if v.get('full_scale') is not None:
+                    extracted_full_scales[k] = float(v['full_scale'])
+            else:
+                try:
+                    numeric_measurements[k] = float(v)
+                except (TypeError, ValueError):
+                    continue
+
         # Get instrument uncertainties
         measurement_uncertainties = {}
-        for param, instrument_type in instrument_config.items():
-            if param not in measurement_values:
+        full_scale_assumptions = []
+        for param, instrument_spec in instrument_config.items():
+            if param not in numeric_measurements:
                 continue
             
+            fs = extracted_full_scales.get(param)
+            if fs is None and f"{param}_full_scale" in numeric_measurements:
+                fs = numeric_measurements[f"{param}_full_scale"]
+
+            if isinstance(instrument_spec, dict):
+                instrument_type = instrument_spec.get('instrument') or instrument_spec.get('type') or ''
+                if fs is None and instrument_spec.get('full_scale') is not None:
+                    fs = float(instrument_spec['full_scale'])
+            else:
+                instrument_type = instrument_spec
+
             try:
                 accuracy = self.db.get_instrument_accuracy(instrument_type)
-                measured_value = measurement_values[param]
+                measured_value = numeric_measurements[param]
                 
                 # Calculate absolute uncertainty
                 instrument_info = self.db.get_instrument_info(instrument_type)
-                if instrument_info['unit'] == '%FS' or instrument_info['unit'] == '%':
+                unit = instrument_info['unit']
+                if unit == '%FS':
+                    if fs is not None and float(fs) > 0:
+                        uncertainty = float(fs) * accuracy
+                    else:
+                        # Tam olcek (full-scale) bilgisi saglanmadigindan okuma bazli
+                        # varsayim yapilir ve bu durum uygunlugu sinirlar (P3-21).
+                        uncertainty = measured_value * accuracy
+                        full_scale_assumptions.append(param)
+                elif unit == '%':
                     uncertainty = measured_value * accuracy
                 else:  # Absolute units (e.g., °C)
                     uncertainty = accuracy
@@ -365,6 +401,7 @@ class UncertaintyAnalyzer:
         
         # Calculate sensitivity coefficients
         sensitivities = {}
+        sensitivity_failures = []
         for param in measurement_uncertainties.keys():
             try:
                 def wrapped_function(inputs):
@@ -376,12 +413,13 @@ class UncertaintyAnalyzer:
                 sensitivity = self.calculate_sensitivity_coefficient(
                     wrapped_function,
                     param,
-                    measurement_values
+                    numeric_measurements
                 )
                 sensitivities[param] = sensitivity
                 
             except Exception as e:
                 self.logger.error(f"Error calculating sensitivity for '{param}': {e}")
+                sensitivity_failures.append(param)
                 continue
         
         # Calculate combined uncertainty
@@ -408,7 +446,12 @@ class UncertaintyAnalyzer:
             'sensitivities': sensitivities,
             'contributions': contributions,
             'breakdown_percent': breakdown_percent,
-            'measurement_uncertainties': measurement_uncertainties
+            'measurement_uncertainties': measurement_uncertainties,
+            # Uygunluk iddiasi icin seffaflik alanlari (P3-21)
+            'sensitivity_failures': sensitivity_failures,
+            'full_scale_assumptions': full_scale_assumptions,
+            'model_uncertainty_included': False,
+            'fully_compliant': (not sensitivity_failures) and (not full_scale_assumptions),
         }
         
         self.logger.info(

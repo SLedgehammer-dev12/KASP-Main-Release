@@ -65,7 +65,18 @@ class DocumentWorkflowController:
 
         return QFileDialog, QMessageBox
 
+    def _authorize(self, action, message):
+        """Islem girisine rol bazli yetki kontrolu uygular (P2-13)."""
+        from kasp.security import Session
+        if Session.authorize(action):
+            return True
+        _, QMessageBox = self._qt_widgets()
+        QMessageBox.warning(self.window, "Yetki Yok", message)
+        return False
+
     def new_project(self):
+        if not self._authorize("write", "Yeni proje oluşturma yetkiniz yok."):
+            return
         _, QMessageBox = self._qt_widgets()
         reply = QMessageBox.question(
             self.window,
@@ -85,9 +96,21 @@ class DocumentWorkflowController:
         self.window.last_selected_units = []
         self.window.last_perf_inputs = None
         self.window.last_perf_results = None
+        if hasattr(self.window, "clear_results_ui"):
+            try:
+                self.window.clear_results_ui()
+            except Exception:
+                pass
+        if hasattr(self.window, "performance_workflow") and hasattr(self.window.performance_workflow, "results_presenter"):
+            try:
+                self.window.performance_workflow.results_presenter.clear()
+            except Exception:
+                pass
         self.logger.info("Yeni proje oluşturuldu")
 
     def save_project(self):
+        if not self._authorize("write", "Proje kaydetme yetkiniz yok."):
+            return
         QFileDialog, QMessageBox = self._qt_widgets()
         try:
             file_path, _ = QFileDialog.getSaveFileName(
@@ -129,6 +152,8 @@ class DocumentWorkflowController:
             QMessageBox.critical(self.window, "Hata", f"❌ Kaydetme hatası:\n{e}")
 
     def load_project(self):
+        if not self._authorize("read", "Proje açma yetkiniz yok."):
+            return
         QFileDialog, QMessageBox = self._qt_widgets()
         try:
             file_path, _ = QFileDialog.getOpenFileName(
@@ -143,10 +168,11 @@ class DocumentWorkflowController:
 
             success, inputs, results = self.project_manager.load_project(file_path)
             if not success:
+                err_msg = getattr(self.project_manager, "last_error", None) or inputs or "Bilinmeyen proje yükleme hatası."
                 QMessageBox.critical(
                     self.window,
                     "Hata",
-                    f"❌ Proje yüklenemedi:\n{inputs}",
+                    f"❌ Proje yüklenemedi:\n{err_msg}",
                 )
                 return
 
@@ -159,6 +185,11 @@ class DocumentWorkflowController:
 
             if results:
                 self.window._update_results_ui(results, [])
+            elif hasattr(self.window, "clear_results_ui"):
+                try:
+                    self.window.clear_results_ui()
+                except Exception:
+                    pass
 
             QMessageBox.information(
                 self.window,
@@ -171,6 +202,8 @@ class DocumentWorkflowController:
             QMessageBox.critical(self.window, "Hata", f"❌ Yükleme hatası:\n{e}")
 
     def handle_design_report(self):
+        if not self._authorize("export", "Rapor dışa aktarma yetkiniz yok."):
+            return
         QFileDialog, QMessageBox = self._qt_widgets()
         if not self.window.last_design_results_raw or not self.window.last_design_inputs or not self.reportlab_loaded:
             if not self.reportlab_loaded:
@@ -215,6 +248,8 @@ class DocumentWorkflowController:
             QMessageBox.critical(self.window, "Hata", f"Rapor oluşturulurken hata oluştu: {e}")
 
     def export_results(self):
+        if not self._authorize("export", "Sonuç dışa aktarma yetkiniz yok."):
+            return
         QFileDialog, QMessageBox = self._qt_widgets()
         results = self.window.last_design_results_raw
         if results is None or (isinstance(results, dict) and not results):
@@ -253,6 +288,8 @@ class DocumentWorkflowController:
             )
 
     def handle_performance_report(self):
+        if not self._authorize("export", "Rapor dışa aktarma yetkiniz yok."):
+            return
         QFileDialog, QMessageBox = self._qt_widgets()
         if not self.reportlab_loaded:
             QMessageBox.critical(

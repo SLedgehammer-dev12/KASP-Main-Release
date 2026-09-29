@@ -2,6 +2,10 @@ class ThermodynamicError(Exception):
     """Termodinamik hesaplama hataları için temel sınıf"""
     pass
 
+class CalculationCancelled(Exception):
+    """Kullanıcı hesaplamayı iptal ettiğinde fırlatılır (P3-20)."""
+    pass
+
 class ConvergenceError(ThermodynamicError):
     """Yakınsama hataları"""
     def __init__(self, message, iterations=None, last_error=None):

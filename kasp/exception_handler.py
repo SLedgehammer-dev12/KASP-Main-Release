@@ -4,6 +4,7 @@ Catches all unhandled exceptions and logs them properly
 """
 
 import sys
+import threading
 import traceback
 import logging
 import os
@@ -47,6 +48,10 @@ class GlobalExceptionHandler(QObject):
         
         # Emit signal to show dialog (thread-safe)
         self.exception_caught.emit(str(exc_value), error_msg)
+
+    def handle_thread_exception(self, args):
+        """Handle uncaught exceptions in background threads"""
+        self.handle_exception(args.exc_type, args.exc_value, args.exc_traceback)
     
     def _show_exception_dialog(self, message: str, details: str):
         """Show exception dialog to user with recovery options"""
@@ -63,7 +68,7 @@ class GlobalExceptionHandler(QObject):
             msg_box.setDetailedText(details)
             
             # Recovery options
-            save_exit_btn = msg_box.addButton("Kaydet ve Çık", QMessageBox.AcceptRole)
+            save_exit_btn = msg_box.addButton("Uygulamadan Çık", QMessageBox.AcceptRole)
             restart_btn = msg_box.addButton("Yeniden Başlat", QMessageBox.ActionRole)
             continue_btn = msg_box.addButton("Devam Et (Riskli)", QMessageBox.RejectRole)
             msg_box.setDefaultButton(save_exit_btn)
@@ -100,5 +105,7 @@ def install_exception_handler():
     if _exception_handler is None:
         _exception_handler = GlobalExceptionHandler()
         sys.excepthook = _exception_handler.handle_exception
+        if hasattr(threading, "excepthook"):
+            threading.excepthook = _exception_handler.handle_thread_exception
         logger.info("Global exception handler installed")
     return _exception_handler

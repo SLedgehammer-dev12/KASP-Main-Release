@@ -176,3 +176,5 @@ STD_PRESS_PA          = 101325.0    # Pa  (1 atm)
 NORMAL_TEMP_K         = 273.15      # K   (0 °C)
 STANDARD_TEMP_K       = 288.15      # K   (15 °C)
 GRAVITATIONAL_ACC     = 9.80665     # m/s²
+API_617_DRIVER_MARGIN_PCT = 4.0     # API 617 minimum driver margin (%)
+

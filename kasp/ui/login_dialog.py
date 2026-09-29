@@ -26,9 +26,10 @@ from kasp.i18n import tr
 class LoginDialog(QDialog):
     _LOCKOUT_TIMER_INTERVAL = 1000
 
-    def __init__(self, user_manager, parent=None):
+    def __init__(self, user_manager, initial_password: str | None = None, parent=None):
         super().__init__(parent)
         self._user_manager = user_manager
+        self._initial_password = initial_password
         self._remaining_lockout = get_lockout_remaining()
         self._lockout_timer = None
         self._was_locked = False
@@ -55,6 +56,21 @@ class LoginDialog(QDialog):
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
+
+        # İlk kurulumda rastgele parola goster (P4-6)
+        self._initial_pw_label = QLabel("")
+        self._initial_pw_label.setAlignment(Qt.AlignCenter)
+        self._initial_pw_label.setWordWrap(True)
+        self._initial_pw_label.setStyleSheet("QLabel { color: #1F2937; font-size: 12px; background: #FEF3C7; border: 1px solid #F59E0B; border-radius: 4px; padding: 8px; }")
+        self._initial_pw_label.setVisible(False)
+        layout.addWidget(self._initial_pw_label)
+
+        if self._initial_password:
+            self._initial_pw_label.setText(
+                tr("İlk kurulum: Yönetici (admin) için tek seferlik parola: <b>{}</b>.<br>"
+                   "Giriş yapın ve hemen yeni parola belirleyin.").format(self._initial_password)
+            )
+            self._initial_pw_label.setVisible(True)
 
         self._status_label = QLabel("")
         self._status_label.setAlignment(Qt.AlignCenter)
@@ -120,12 +136,12 @@ class LoginDialog(QDialog):
         )
 
     def _try_login(self):
-        locked, msg = check_lockout()
+        username = self._username_edit.text().strip()
+        locked, msg = check_lockout(username)
         if locked:
             self._update_lockout_state()
             return
 
-        username = self._username_edit.text().strip()
         password = self._password_edit.text()
 
         if not username:
@@ -135,18 +151,18 @@ class LoginDialog(QDialog):
 
         user = self._user_manager.authenticate(username, password)
         if user is not None:
-            record_attempt(success=True)
+            record_attempt(success=True, username=username)
             self._authenticated_user = user
             self.accept()
         else:
-            just_locked, lock_msg = record_attempt(success=False)
+            just_locked, lock_msg = record_attempt(success=False, username=username)
             self._password_edit.clear()
             self._password_edit.setFocus()
             if just_locked:
                 self._was_locked = True
                 self._update_lockout_state()
             else:
-                remaining = get_lockout_remaining()
+                remaining = get_lockout_remaining(username)
                 self._status_label.setText(
                     tr(f"Hatalı kullanıcı adı veya şifre. (Kalan deneme: {remaining})")
                 )
@@ -156,7 +172,8 @@ class LoginDialog(QDialog):
         return getattr(self, "_authenticated_user", None)
 
     def _update_lockout_state(self, is_initial=False):
-        locked, msg = check_lockout()
+        username = self._username_edit.text().strip() or None
+        locked, msg = check_lockout(username)
 
         if self._lockout_timer:
             self._lockout_timer.stop()
@@ -180,21 +197,22 @@ class LoginDialog(QDialog):
 
             if self._was_locked:
                 self._was_locked = False
-                remaining = get_lockout_remaining()
+                remaining = get_lockout_remaining(username)
                 self._status_label.setText(
                     tr(f"Kilit açıldı. Lütfen şifrenizi girin. (Kalan deneme: {remaining})")
                 )
                 self._status_label.setStyleSheet("color: #15803D; font-weight: bold;")
             elif not is_initial:
-                remaining = get_lockout_remaining()
+                remaining = get_lockout_remaining(username)
                 self._status_label.setText(tr(f"Kalan deneme: {remaining}"))
                 self._status_label.setStyleSheet("color: #b25300;")
             else:
                 self._status_label.setText("")
 
     def _on_lockout_tick(self):
-        self._remaining_lockout = get_lockout_remaining()
-        locked, msg = check_lockout()
+        username = self._username_edit.text().strip() or None
+        self._remaining_lockout = get_lockout_remaining(username)
+        locked, msg = check_lockout(username)
         if not locked:
             self._update_lockout_state()
         else:

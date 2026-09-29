@@ -43,7 +43,7 @@ class TurbineSelector:
                 continue
                 
             # 1. Saha koşullarına göre ISO -> Gerçek performans düzeltmesi
-            corr_power, corr_hr = TurbineSelector._correct_performance(
+            corr_power, corr_hr, corr_source = TurbineSelector._correct_performance(
                 iso_power, iso_heat_rate, ambient_temp, ambient_pressure, altitude, turbine
             )
             
@@ -56,7 +56,7 @@ class TurbineSelector:
                 continue
                 
             # 3. Aerodinamik Güvenlik Marjları (Surge / Stonewall)
-            aero_margins = TurbineSelector._calculate_aero_margins(turbine, site_conditions.get('flow', 0))
+            aero_margins = TurbineSelector._calculate_aero_margins(turbine, site_conditions.get('flow'))
             sm_pct = aero_margins['surge_margin_pct']
             sw_pct = aero_margins['stonewall_margin_pct']
             
@@ -69,9 +69,12 @@ class TurbineSelector:
                 stonewall_margin_pct=sw_pct
             )
             
-            # 5. Emniyet (API 617 Mins)
-            meets_api617 = (sm_pct >= EngineSettings.API617_MIN_SURGE_MARGIN and 
-                            sw_pct >= EngineSettings.API617_MIN_STONEWALL_MARGIN)
+            # 5. Emniyet (API 617 Mins) — marj hesaplanamadiysa "bilinmiyor" (None) doner, sifir varsayilmaz
+            if sm_pct is None or sw_pct is None:
+                meets_api617 = None
+            else:
+                meets_api617 = (sm_pct >= EngineSettings.API617_MIN_SURGE_MARGIN and 
+                                sw_pct >= EngineSettings.API617_MIN_STONEWALL_MARGIN)
                             
             # 6. Recommendation Objesi Oluştur
             rec = TurbineRecommendation(
@@ -88,7 +91,8 @@ class TurbineSelector:
                 meets_api617_surge=meets_api617,
                 selection_score=score,
                 efficiency_rating=TurbineSelector._get_efficiency_rating(corr_hr),
-                recommendation_level=TurbineSelector._get_recommendation_label(score)
+                recommendation_level=TurbineSelector._get_recommendation_label(score),
+                correction_source=corr_source,
             )
             selected_recommendations.append(rec)
             
@@ -101,39 +105,119 @@ class TurbineSelector:
         return selected_recommendations[:limit]
 
     @staticmethod
+    def _interpolate_curve(points, values, x):
+        """Basit dogrusal interpolasyon; aralik disinda uc degerleri sabit tutulur."""
+        if not points or not values or len(points) != len(values):
+            return None
+        try:
+            x = float(x)
+        except (TypeError, ValueError):
+            return None
+        if x <= points[0]:
+            return values[0]
+        if x >= points[-1]:
+            return values[-1]
+        for i in range(1, len(points)):
+            if x <= points[i]:
+                x0, x1 = points[i - 1], points[i]
+                y0, y1 = values[i - 1], values[i]
+                if x1 == x0:
+                    return y1
+                return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+        return values[-1]
+
+    @staticmethod
     def _correct_performance(iso_power: float, iso_hr: float, t_amb: float, 
                              p_amb: float, alt: float, turbine_data: Dict[str, Any]):
-        """Saha düzeltmelerini uygulayan ISO fonksiyonu."""
+        """Saha düzeltmelerini uygular. OEM egrileri varsa onlari, yoksa genel ISO formülünü kullanir.
+
+        Returns:
+            (corr_power, corr_hr, source) — source: 'oem_curve' veya 'generic_formula'
+        """
         T_ref_k = 15.0 + 273.15
         T_amb_k = t_amb + 273.15
-        
-        temp_ratio = T_ref_k / T_amb_k
-        pressure_ratio = p_amb / 101.325
-        altitude_corr = math.exp(-alt / 8500.0)
-        
-        total_corr = temp_ratio * pressure_ratio * altitude_corr
-        
-        # Basitleştirilmiş fallback düzeltmesi (Eğer interpolation curve gelmezse)
-        corr_power = iso_power * total_corr
-        corr_hr = iso_hr / max(1e-5, total_corr)
-        
-        return corr_power, corr_hr
+        corr_data = (turbine_data or {}).get("performance_correction_data") or {}
+        temp_curve = corr_data.get("temperature_correction") or {}
+        power_pf = TurbineSelector._interpolate_curve(
+            temp_curve.get("points"), temp_curve.get("power_factor"), t_amb
+        )
+        hr_pf = TurbineSelector._interpolate_curve(
+            temp_curve.get("points"), temp_curve.get("hr_factor"), t_amb
+        )
+        alt_curve = corr_data.get("altitude_correction") or {}
+        alt_pf = TurbineSelector._interpolate_curve(
+            alt_curve.get("points"), alt_curve.get("power_factor"), alt
+        )
+        alt_hrf = TurbineSelector._interpolate_curve(
+            alt_curve.get("points"), alt_curve.get("hr_factor"), alt
+        )
+
+        if power_pf is not None and hr_pf is not None:
+            # OEM egrileri mevcut: sicaklik + rakım egriden
+            alt_factor = alt_pf if alt_pf is not None else 1.0
+            hr_alt_factor = alt_hrf if alt_hrf is not None else 1.0
+            power_factor = power_pf * alt_factor
+            hr_factor = hr_pf * hr_alt_factor
+            source = "oem_curve"
+        else:
+            # Egri yok: genel ISO tahmini. Ortam basinci acikca verilmisse rakım
+            # etkisi zaten icindedir; ayrica carpmak cift sayma yapar (P1-7).
+            if alt and abs(p_amb - 101.325) < 1e-6:
+                pressure_ratio = (1.0 - 2.25577e-5 * max(0.0, min(float(alt), 11000.0))) ** 5.25588
+            else:
+                pressure_ratio = p_amb / 101.325
+            power_factor = (T_ref_k / T_amb_k) * pressure_ratio
+            hr_factor = T_amb_k / max(1e-9, T_ref_k)
+            source = "generic_formula"
+
+        corr_power = iso_power * power_factor
+        corr_hr = iso_hr * hr_factor
+        return corr_power, corr_hr, source
+
+    @staticmethod
+    def _is_placeholder_bounds(min_val, max_val) -> bool:
+        try:
+            mn = float(min_val or 0.0)
+            mx = float(max_val or 0.0)
+        except (TypeError, ValueError):
+            return True
+        if mx <= 0:
+            return True
+        return mn == 0.0 and mx in (500.0, 1000.0, 9999.0)
 
     @staticmethod
     def _calculate_aero_margins(turbine: Dict, op_flow: float) -> Dict[str, float]:
-        """API 617 Surge ve Choke oranlarını hesaplar."""
+        """API 617 Surge ve Choke oranlarını hesaplar.
+
+        Debi veya surge verisi yoksa (veya placeholder 0/1000/9999 ise) marj hesaplanamaz;
+        sifir varsaymak yerine None dondurulur (P1-7).
+        """
         surge_flow = turbine.get('surge_flow', 0)
         stonewall_flow = turbine.get('stonewall_flow', 0)
-        
-        if op_flow <= 0 or surge_flow <= 0:
-            return {'surge_margin_pct': 0.0, 'stonewall_margin_pct': 0.0}
+        min_flow = turbine.get('min_flow_kgs', 0)
+        max_flow = turbine.get('max_flow_kgs', 0)
+
+        if TurbineSelector._is_placeholder_bounds(surge_flow, stonewall_flow):
+            surge_flow = 0
+            stonewall_flow = 0
+        if TurbineSelector._is_placeholder_bounds(min_flow, max_flow):
+            min_flow = 0
+            max_flow = 0
+
+        if not op_flow or op_flow <= 0 or not surge_flow or surge_flow <= 0:
+            return {'surge_margin_pct': None, 'stonewall_margin_pct': None, 'available': False}
             
         surge_margin = ((op_flow - surge_flow) / surge_flow) * 100.0
-        stonewall_margin = ((stonewall_flow - op_flow) / op_flow * 100.0) if stonewall_flow > 0 else 0.0
+        stonewall_margin = (
+            ((stonewall_flow - op_flow) / op_flow * 100.0)
+            if (stonewall_flow and stonewall_flow > 0 and stonewall_flow not in (500, 1000, 9999))
+            else None
+        )
         
         return {
             'surge_margin_pct': surge_margin, 
-            'stonewall_margin_pct': stonewall_margin
+            'stonewall_margin_pct': stonewall_margin,
+            'available': stonewall_margin is not None,
         }
 
     @staticmethod
@@ -161,21 +245,27 @@ class TurbineSelector:
         # 2. ISI ORANI SKORU
         eff_score = max(0.0, (EngineSettings.HR_REF_WORST - corrected_heat_rate) / 
                         (EngineSettings.HR_REF_WORST - EngineSettings.HR_REF_BEST) * 100.0)
+        # Referans araligin disinda 100'u asmasin (P1-8)
+        eff_score = min(100.0, eff_score)
                         
-        # 3. SURGE SKORU
-        sm = max(0.0, surge_margin_pct)
-        if sm >= 20.0:
-            surge_score = 100.0
-        elif sm >= 10.0:
-            surge_score = 80.0 + (sm - 10.0) * 2.0
-        elif sm > 0:
-            surge_score = sm * 8.0
+        # 3. SURGE SKORU (marj hesaplanamadiysa notr skor)
+        if surge_margin_pct is None:
+            surge_score = 60.0
         else:
-            surge_score = 0.0
+            sm = max(0.0, surge_margin_pct)
+            if sm >= 20.0:
+                surge_score = 100.0
+            elif sm >= 10.0:
+                surge_score = 80.0 + (sm - 10.0) * 2.0
+            elif sm > 0:
+                surge_score = sm * 8.0
+            else:
+                surge_score = 0.0
             
         sw = stonewall_margin_pct
-        stonewall_penalty = (5.0 - sw) * 4.0 if sw < 5.0 else 0.0
-        surge_score = max(0.0, surge_score - stonewall_penalty)
+        if sw is not None and sw < 5.0:
+            stonewall_penalty = (5.0 - sw) * 4.0
+            surge_score = max(0.0, surge_score - stonewall_penalty)
 
         # 4. TİP SKORU
         type_score = EngineSettings.TURBINE_TYPE_SCORES.get(turbine_type, 65)
@@ -187,7 +277,8 @@ class TurbineSelector:
             surge_score * EngineSettings.SCORE_WEIGHT_SURGE +
             type_score  * EngineSettings.SCORE_WEIGHT_TYPE
         )
-        return round(total_score, 1)
+        # Sozlesme: skor 0-100 araliginda normalize (P1-8)
+        return round(max(0.0, min(100.0, total_score)), 1)
 
     @staticmethod
     def _get_efficiency_rating(heat_rate: float) -> str:

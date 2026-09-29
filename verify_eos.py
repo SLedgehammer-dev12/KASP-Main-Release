@@ -64,6 +64,12 @@ def run_tests():
                     print(f"  Poly Eff Target   : {results.get('poly_eff_target', 0):.2f}%")
                     print(f"  Poly Eff Calc     : {results.get('poly_eff_converged', 0):.2f}%")
                 
+                assert head > 0, f"Expected positive head for {eos} ({mode}), got {head}"
+                assert p_gas > 0, f"Expected positive gas power for {eos} ({mode}), got {p_gas}"
+                assert p_shaft >= p_gas, f"Expected shaft power >= gas power for {eos} ({mode})"
+                assert p_unit >= p_shaft, f"Expected unit power >= shaft power for {eos} ({mode})"
+                assert t_out > base_inputs['t_in'], f"Expected outlet temperature > inlet for {eos} ({mode})"
+
                 results_summary[f"{eos}_{mode}"] = {
                     'head': head,
                     't_out': t_out,
@@ -73,6 +79,10 @@ def run_tests():
                 print(f"  FAILED: {e}")
                 import traceback
                 traceback.print_exc()
+                raise
+
+    return results_summary
 
 if __name__ == '__main__':
     run_tests()
+

@@ -82,7 +82,11 @@ class DesignCalculationController:
         self.active_inputs = None
 
     def run(self):
+        from kasp.security import Session
         QMessageBox = self._message_box_factory()
+        if not Session.authorize("write"):
+            QMessageBox.warning(self.window, "Yetki Yok", "Tasarım hesaplaması yapma yetkiniz yok.")
+            return
         current_thread = self.window.worker_thread
         if current_thread is not None and current_thread.isRunning():
             QMessageBox.warning(
@@ -159,6 +163,11 @@ class DesignCalculationController:
     def calculation_error(self, error_message):
         QMessageBox = self._message_box_factory()
         self._set_idle_ui_state()
+        if hasattr(self.window, "clear_results_ui"):
+            try:
+                self.window.clear_results_ui()
+            except Exception:
+                pass
         QMessageBox.critical(self.window, "Hesaplama Hatası", f"❌ Hesaplama başarısız oldu:\n{error_message}")
         self.logger.error("Hesaplama hatası: %s", error_message)
 

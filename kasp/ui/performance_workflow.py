@@ -124,6 +124,9 @@ def build_performance_report_payload(
 
     perf_results = {
         "actual_poly_eff": actual_poly_eff,
+        "actual_isentropic_eff": performance_eff_to_decimal(
+            raw_results.get("actual_isentropic_eff", raw_results.get("isen_eff", 0.0))
+        ),
         "design_poly_eff": design_poly_eff,
         "expected_poly_eff": design_poly_eff,
         "deviation_poly_eff": performance_pct_deviation(actual_poly_eff, design_poly_eff),
@@ -159,19 +162,19 @@ def build_performance_report_payload(
     return report_inputs, perf_results
 
 
-def get_driver_input_mode_state(use_turbine_efficiency):
+def get_driver_input_mode_state(use_turbine_efficiency, current_turb_eff="", current_fuel_cons=""):
     if use_turbine_efficiency:
         return {
             "turb_eff_enabled": True,
             "fuel_cons_enabled": False,
-            "turb_eff_text": "35.0",
-            "fuel_cons_text": "",
+            "turb_eff_text": (current_turb_eff or "").strip() or "35.0",
+            "fuel_cons_text": (current_fuel_cons or "").strip(),
         }
     return {
         "turb_eff_enabled": False,
         "fuel_cons_enabled": True,
-        "turb_eff_text": "",
-        "fuel_cons_text": "500.0",
+        "turb_eff_text": (current_turb_eff or "").strip(),
+        "fuel_cons_text": (current_fuel_cons or "").strip() or "500.0",
     }
 
 
@@ -195,7 +198,15 @@ class PerformanceInputBinder:
             self._message_box_factory().critical(self.window, "Hata", eos_error)
             return None, None
 
-        gas_comp = self.window._get_gas_composition()
+        try:
+            try:
+                gas_comp = self.window._get_gas_composition(strict=True)
+            except TypeError:
+                # Geriye donuk uyumluluk: strict parametresini bilmeyen cagrilar
+                gas_comp = self.window._get_gas_composition()
+        except ValueError as comp_err:
+            self._message_box_factory().critical(self.window, "Hata", str(comp_err))
+            return None, None
         total_percentage = sum(gas_comp.values())
         if abs(total_percentage - 100.0) > 0.01:
             QMessageBox = self._message_box_factory()
@@ -238,10 +249,16 @@ class PerformanceInputBinder:
             / 1000.0
         )
 
+        # bar(g)/psig donusumlerinde gercek ortam basinci kullanilir (P1-6)
+        ambient_pressure_pa = ambient_pressure_kpa * 1000.0
         inputs = {
-            "p1_pa": self.engine.convert_pressure_to_pa(float(self.window.perf_p1_edit.text()), p1_unit),
+            "p1_pa": self.engine.convert_pressure_to_pa(
+                float(self.window.perf_p1_edit.text()), p1_unit, ambient_pressure_pa=ambient_pressure_pa
+            ),
             "t1_k": self.engine.convert_temperature_to_k(float(self.window.perf_t1_edit.text()), t1_unit),
-            "p2_pa": self.engine.convert_pressure_to_pa(float(self.window.perf_p2_edit.text()), p2_unit),
+            "p2_pa": self.engine.convert_pressure_to_pa(
+                float(self.window.perf_p2_edit.text()), p2_unit, ambient_pressure_pa=ambient_pressure_pa
+            ),
             "t2_k": self.engine.convert_temperature_to_k(float(self.window.perf_t2_edit.text()), t2_unit),
             "flow_kgs": self.engine.convert_flow_to_kgs(
                 float(self.window.perf_flow_edit.text()),
@@ -287,6 +304,20 @@ class PerformanceResultsPresenter:
     def __init__(self, window):
         self.window = window
 
+    def clear(self):
+        for attr in (
+            "perf_res_poly_eff",
+            "perf_res_isen_eff",
+            "perf_res_head",
+            "perf_res_power_gas",
+            "perf_res_power_shaft",
+            "perf_res_corrected",
+            "perf_res_fuel_or_eff",
+        ):
+            lbl = getattr(self.window, attr, None)
+            if lbl is not None and hasattr(lbl, "setText"):
+                lbl.setText("—")
+
     def apply(self, results):
         self.window.perf_res_poly_eff.setText(f"%{results['poly_eff']:.2f}")
         self.window.perf_res_isen_eff.setText(f"%{results['isen_eff']:.2f}")
@@ -320,7 +351,13 @@ class PerformanceEvaluationController:
         self.results_presenter = PerformanceResultsPresenter(window)
 
     def toggle_driver_inputs(self):
-        state = get_driver_input_mode_state(self.window.radio_turb_eff.isChecked())
+        current_turb = self.window.perf_turb_eff_edit.text() if hasattr(self.window, "perf_turb_eff_edit") else ""
+        current_fuel = self.window.perf_fuel_cons_edit.text() if hasattr(self.window, "perf_fuel_cons_edit") else ""
+        state = get_driver_input_mode_state(
+            self.window.radio_turb_eff.isChecked(),
+            current_turb_eff=current_turb,
+            current_fuel_cons=current_fuel,
+        )
         self.window.perf_turb_eff_edit.setEnabled(state["turb_eff_enabled"])
         self.window.perf_fuel_cons_edit.setEnabled(state["fuel_cons_enabled"])
         self.window.perf_turb_eff_edit.setText(state["turb_eff_text"])
@@ -357,7 +394,32 @@ class PerformanceEvaluationController:
             evaluate_status_fn=self.engine._evaluate_performance_status,
         )
 
+    def _set_perf_btn_enabled(self, enabled):
+        btn = getattr(self.window, "verify_perf_btn", None)
+        if btn is not None and hasattr(btn, "setEnabled"):
+            btn.setEnabled(enabled)
+
     def run_evaluation(self):
+        from kasp.security import Session
+
+        QMessageBox = self._qt_message_box()
+        if not Session.authorize("write"):
+            QMessageBox.warning(
+                self.window,
+                "Yetki Yok",
+                "Performans değerlendirmesi yapma yetkiniz yok.",
+            )
+            return
+
+        perf_thread = getattr(self, "_perf_thread", None)
+        if perf_thread is not None and hasattr(perf_thread, "isRunning") and perf_thread.isRunning():
+            QMessageBox.warning(
+                self.window,
+                "Uyarı",
+                "Zaten bir performans değerlendirmesi çalışıyor. Lütfen bekleyin.",
+            )
+            return
+
         try:
             inputs, flow_unit = self.input_binder.collect()
             if inputs is None:
@@ -365,8 +427,42 @@ class PerformanceEvaluationController:
 
             standard = inputs["site_correction_inputs"].get("standard", "ASME PTC 10")
             self.window.append_log(f"[INFO] Performans degerlendirmesi baslatildi ({standard}).")
-            results = self.engine.evaluate_performance(inputs)
+            # Hesabi UI thread'i disinda calistir (P3-20)
+            self._start_performance_worker(inputs, flow_unit)
 
+        except Exception as exc:
+            self.logger.error("Performans degerlendirme UI hatasi: %s", exc)
+            QMessageBox.critical(
+                self.window,
+                "Hata",
+                f"Degerlendirme sirasinda hata olustu:\n{exc}",
+            )
+
+    def _start_performance_worker(self, inputs, flow_unit):
+        from PyQt5.QtCore import QThread
+        from kasp.utils.workers import PerformanceWorker
+
+        thread = QThread(self.window)
+        worker = PerformanceWorker(self.engine, inputs, self.window)
+        worker.moveToThread(thread)
+        # Referanslari koru (GC onleme)
+        self._perf_thread = thread
+        self._perf_worker = worker
+        self._set_perf_btn_enabled(False)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda results: self._on_perf_results(results, inputs, flow_unit))
+        worker.error.connect(self._on_perf_error)
+        worker.cancelled.connect(self._on_perf_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.start()
+
+    def _on_perf_results(self, results, inputs, flow_unit):
+        self._set_perf_btn_enabled(True)
+        try:
             report_inputs = build_performance_report_inputs(
                 self._collect_report_context(flow_unit),
                 inputs,
@@ -376,14 +472,23 @@ class PerformanceEvaluationController:
             self.window.last_perf_inputs, self.window.last_perf_results = self.build_report_payload(
                 report_inputs, results
             )
-
             self.results_presenter.apply(results)
             self.window.append_log("[SUCCESS] Performans degerlendirmesi basariyla tamamlandi.")
-
         except Exception as exc:
-            self.logger.error("Performans degerlendirme UI hatasi: %s", exc)
-            self._qt_message_box().critical(
-                self.window,
-                "Hata",
-                f"Degerlendirme sirasinda hata olustu:\n{exc}",
-            )
+            self._on_perf_error(str(exc))
+
+    def _on_perf_error(self, message):
+        self._set_perf_btn_enabled(True)
+        self.window.last_perf_inputs = None
+        self.window.last_perf_results = None
+        self.results_presenter.clear()
+        self.logger.error("Performans degerlendirme hatasi: %s", message)
+        self._qt_message_box().critical(
+            self.window,
+            "Hata",
+            f"Degerlendirme sirasinda hata olustu:\n{message}",
+        )
+
+    def _on_perf_cancelled(self):
+        self._set_perf_btn_enabled(True)
+        self.window.append_log("[INFO] Performans degerlendirmesi kullanici tarafindan durduruldu.")

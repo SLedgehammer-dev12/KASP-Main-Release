@@ -93,7 +93,7 @@ def test_lockout_expiration_and_infinite_loop_prevention(monkeypatch):
     record_attempt(False)
     record_attempt(False)
 
-    state = _load_lockout_state()
+    state = _load_lockout_state()["users"]["_global"]
     lockout_until = state["lockout_until"]
     assert lockout_until == base_time + 60.0
 
@@ -107,7 +107,7 @@ def test_lockout_expiration_and_infinite_loop_prevention(monkeypatch):
     assert msg == ""
 
     # Verify state file has cleared lockout_until
-    state_after = _load_lockout_state()
+    state_after = _load_lockout_state()["users"]["_global"]
     assert state_after["lockout_until"] == 0
 
     # Second, third, and fourth checks: MUST STILL BE UNLOCKED (No infinite lockout!)
@@ -141,7 +141,7 @@ def test_subsequent_attempts_after_unlock(monkeypatch):
     assert locked5
     assert "5 dakika kilitlendi" in msg5
 
-    state = _load_lockout_state()
+    state = _load_lockout_state()["users"]["_global"]
     assert state["lockout_until"] == (base_time + 61.0) + (5 * 60.0)
 
 
@@ -206,7 +206,7 @@ def test_successful_login_clears_lockout_state():
     record_attempt(False)
     record_attempt(True)
 
-    state = _load_lockout_state()
+    state = _load_lockout_state()["users"]["_global"]
     assert state["failures"] == 0
     assert state["lockout_until"] == 0
     assert state["last_failure"] == 0

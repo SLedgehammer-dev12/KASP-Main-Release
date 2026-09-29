@@ -9,7 +9,7 @@ from kasp.i18n import ALL_LOGS_LABEL, APP_VERSION, tr, is_english
 
 def filter_logs_by_level(logs, selected_level):
     """Return logs visible for the requested filter level — level-aware matching."""
-    if selected_level in {"TÃœM LOGLAR", "TÜM LOGLAR", ALL_LOGS_LABEL}:
+    if selected_level in {"T\u00c3\u0153M LOGLAR", "TÜM LOGLAR", ALL_LOGS_LABEL}:
         return list(logs)
     level_markers = ["DEBUG", "ITERATION", "INFO", "WARNING", "ERROR", "CRITICAL"]
     level_idx = level_markers.index(selected_level) if selected_level in level_markers else -1
@@ -108,6 +108,14 @@ class WindowActionController:
         return self._library_manager_cls or self._default_library_manager_cls()
 
     def open_library_manager(self):
+        from kasp.security import Session
+        if not Session.authorize("write"):
+            QMessageBox = self._qt_message_box()
+            QMessageBox.warning(
+                self.window, tr("Yetki Yok"),
+                tr("Ekipman kütüphanesini yönetme yetkiniz yok."),
+            )
+            return
         manager = self._get_library_manager_cls()(self.window)
         manager.exec_()
         if self.window.last_selected_units:
@@ -140,7 +148,7 @@ class WindowActionController:
     def append_log(self, message):
         self.window.all_logs.append(message)
         current_level = self.window.log_level_combo.currentText()
-        if current_level in {"TÃœM LOGLAR", "TÜM LOGLAR", ALL_LOGS_LABEL}:
+        if current_level in {"T\u00c3\u0153M LOGLAR", "TÜM LOGLAR", ALL_LOGS_LABEL}:
             self.window.log_text.append(message)
         else:
             visible = filter_logs_by_level([message], current_level)

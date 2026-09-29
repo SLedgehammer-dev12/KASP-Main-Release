@@ -38,9 +38,8 @@ class DatabaseOptimizer:
     def create_indexes(conn: sqlite3.Connection):
         """Create performance indexes on frequently queried columns"""
         indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_timestamp ON calculations(timestamp)",
-            "CREATE INDEX IF NOT EXISTS idx_user ON calculations(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_status ON calculations(status)",
+            "CREATE INDEX IF NOT EXISTS idx_calc_date ON CalculationHistory(calculation_date)",
+            "CREATE INDEX IF NOT EXISTS idx_calc_project ON CalculationHistory(project_name)",
         ]
         
         try:

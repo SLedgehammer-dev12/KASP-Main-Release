@@ -27,7 +27,7 @@ thermo_datas = collect_data_files("thermo")
 chemicals_datas = collect_data_files("chemicals")
 scipy_datas = collect_data_files("scipy")
 
-all_datas = [("kasp", "kasp"), ("kasp_database.db", "."), ("kasp_config.json", "."), ("resources", "resources")]
+all_datas = [("kasp", "kasp"), ("kasp_config.json", "."), ("resources", "resources")]
 all_datas.extend(thermo_datas)
 all_datas.extend(chemicals_datas)
 all_datas.extend(scipy_datas)

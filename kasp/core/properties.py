@@ -50,7 +50,8 @@ class ThermodynamicSolver:
         self._max_cache_size = self._coerce_cache_size(max_cache_size)
         self._cache_hits = 0
         self._cache_misses = 0
-        self._cache_lock = threading.Lock()
+        self._cache_lock = threading.RLock()
+        self._as_lock = threading.RLock()
         
         # Cache for thermo packages to avoid expensive instantiation
         self._package_cache = {}
@@ -168,12 +169,35 @@ class ThermodynamicSolver:
         mu=1.1e-5,
         speed_of_sound=None,
     ):
-        if speed_of_sound is None:
+        if speed_of_sound is None or not math.isfinite(speed_of_sound) or speed_of_sound <= 0:
             speed_of_sound = ThermodynamicSolver._speed_of_sound(k, P_pa, density, Z)
+        speed_of_sound_val = (
+            float(speed_of_sound or 0.0)
+            if math.isfinite(float(speed_of_sound or 0.0))
+            else 0.0
+        )
         normalized_phase = ThermodynamicSolver._classify_phase(Z, density, phase)
+        health_reasons = []
         # Standart J/(kg*K) birim sözleşmesi güvencesi
-        norm_cp = float(Cp) if Cp is not None and math.isfinite(Cp) else 1000.0
-        norm_cv = float(Cv) if Cv is not None and math.isfinite(Cv) else (norm_cp / (k if k > 1.0 else 1.4))
+        if Cp is not None and math.isfinite(Cp) and Cp > 0:
+            norm_cp = float(Cp)
+        else:
+            norm_cp = 1000.0
+            health_reasons.append("Cp geçersiz veya <=0 olduğu için 1000.0 J/(kg·K) varsayıldı.")
+        if Cv is not None and math.isfinite(Cv) and Cv > 0:
+            norm_cv = float(Cv)
+        else:
+            norm_cv = norm_cp / (k if k > 1.0 else 1.4)
+            health_reasons.append("Cv geçersiz veya <=0 olduğu için Cp/k ile türetildi.")
+        raw = {
+            "fallback": bool(fallback),
+            "raw_phase": phase,
+            "mu": mu,
+            "speed_of_sound": speed_of_sound_val,
+        }
+        if health_reasons:
+            raw["health_reasons"] = health_reasons
+            raw["thermo_health"] = "WARNING"
         return ThermodynamicState(
             P=float(P_pa),
             T=float(T_k),
@@ -186,26 +210,52 @@ class ThermodynamicSolver:
             Cv=norm_cv,
             density=float(density),
             phase=normalized_phase,
-            raw_props={
-                "fallback": bool(fallback),
-                "raw_phase": phase,
-                "mu": mu,
-                "speed_of_sound": speed_of_sound,
-            },
+            speed_of_sound=float(raw.get("speed_of_sound") or 0.0),
+            raw_props=raw,
         )
 
     def begin_run_tracking(self, solver_method="auto"):
+        # Ic ice run'lar (or. belirsizlik pertürbasyonlari) icin yigin tabanli izleme (P4-25)
+        stack = getattr(self._run_tracking, "context_stack", None)
+        if stack is None:
+            stack = []
+            self._run_tracking.context_stack = stack
+        current_ctx = getattr(self._run_tracking, "context", None)
+        if current_ctx is not None:
+            current_ctx["_saved_tracker_state"] = {
+                "broken_eos": dict(self._fallback_tracker._broken_eos),
+                "broken_solvers": set(self._fallback_tracker._broken_solvers),
+                "nonconverged_solvers": dict(self._fallback_tracker._nonconverged_solvers),
+                "eos_chain_log": list(self._fallback_tracker.eos_chain_log),
+                "solver_chain_log": list(self._fallback_tracker.solver_chain_log),
+            }
+        stack.append(current_ctx)
         self._run_tracking.context = {
             "calls": 0,
             "fallback_calls": 0,
             "fallback_events": OrderedDict(),
             "solver_method": solver_method,
         }
-        self._fallback_tracker.reset()
+        if current_ctx is None:
+            self._fallback_tracker.reset()
 
     def end_run_tracking(self):
         context = getattr(self._run_tracking, "context", None)
-        self._run_tracking.context = None
+        nonconverged = self._fallback_tracker.solver_nonconverged_info()
+        # Onceki (dis) run baglamini geri yukle
+        stack = getattr(self._run_tracking, "context_stack", None)
+        if stack:
+            prev_ctx = stack.pop()
+            if prev_ctx is not None and "_saved_tracker_state" in prev_ctx:
+                saved = prev_ctx.pop("_saved_tracker_state")
+                self._fallback_tracker._broken_eos = saved["broken_eos"]
+                self._fallback_tracker._broken_solvers = saved["broken_solvers"]
+                self._fallback_tracker._nonconverged_solvers = saved["nonconverged_solvers"]
+                self._fallback_tracker.eos_chain_log = saved["eos_chain_log"]
+                self._fallback_tracker.solver_chain_log = saved["solver_chain_log"]
+            self._run_tracking.context = prev_ctx
+        else:
+            self._run_tracking.context = None
 
         if not context:
             return {
@@ -213,6 +263,7 @@ class ThermodynamicSolver:
                 "fallback_call_count": 0,
                 "fallback_state_count": 0,
                 "fallback_states": [],
+                "solver_nonconverged": nonconverged,
             }
 
         return {
@@ -220,6 +271,7 @@ class ThermodynamicSolver:
             "fallback_call_count": context["fallback_calls"],
             "fallback_state_count": len(context["fallback_events"]),
             "fallback_states": list(context["fallback_events"].values()),
+            "solver_nonconverged": nonconverged,
         }
 
     def _record_run_tracking(self, P_pa: float, T_k: float, eos_method: str, state: ThermodynamicState):
@@ -269,20 +321,40 @@ class ThermodynamicSolver:
         
         eos_chain: Opsiyonel EosChain objesi. Verilirse akilli EOS fallback zinciri kullanilir.
         """
-        cache_key = self._build_cache_key(P_pa, T_k, gas_obj, eos_method)
-
-        cached_state = self._get_cached_state(cache_key, P_pa, T_k, eos_method)
-        if cached_state is not None:
-            return cached_state
-                
-        self._record_cache_miss()
-        
-        # Aktif EosChain varsa (parametre veya global) akilli fallback kullan
         chain = eos_chain or self._active_eos_chain
+        effective_eos = eos_method
+        effective_gas_obj = gas_obj
+        if chain is not None:
+            if chain._locked_eos is not None:
+                effective_eos = chain._locked_eos
+                effective_gas_obj = chain._build_gas_obj(effective_eos)
+            elif chain._tracker.is_eos_broken(eos_method):
+                effective_eos = None
+
+        cache_key = (
+            self._build_cache_key(P_pa, T_k, effective_gas_obj, effective_eos)
+            if effective_eos is not None
+            else None
+        )
+
+        if cache_key is not None:
+            cached_state = self._get_cached_state(cache_key, P_pa, T_k, effective_eos)
+            if cached_state is not None:
+                if chain is not None and chain._locked_eos is None:
+                    chain._locked_eos = effective_eos
+                return cached_state
+
+        self._record_cache_miss()
+
+        # Aktif EosChain varsa (parametre veya global) akilli fallback kullan
         if chain is not None:
             state = chain.get_properties(P_pa, T_k, eos_method)
+            if cache_key is None and chain._locked_eos is not None:
+                cache_key = self._build_cache_key(
+                    P_pa, T_k, chain._build_gas_obj(chain._locked_eos), chain._locked_eos
+                )
         else:
-            # Geriye donuk uyumlu: direkt dispatch + PR fallback + ideal gaz son care
+            # Geriye donuk uyumlu: direkt dispatch + PR/SRK fallback + ideal gaz son care
             try:
                 state = self._dispatch(P_pa, T_k, gas_obj, eos_method)
             except Exception as e:
@@ -295,48 +367,130 @@ class ThermodynamicSolver:
                     state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
                 else:
                     logger.info(
-                        "⚠️ %s EOS hatasi: %s. PR fallback deneniyor.",
+                        "⚠️ %s EOS hatasi: %s. Alternatif EOS fallback deneniyor.",
                         eos_method.upper(),
                         e,
                     )
-                    try:
-                        state = self._solve_thermo_eos(P_pa, T_k, gas_obj, 'pr')
-                        state.raw_props['fallback'] = True
-                        state.raw_props['fallback_layer'] = 'eos'
-                        state.raw_props['fallback_from'] = eos_method
-                        state.raw_props['fallback_to'] = 'pr'
-                        state.raw_props['fallback_type'] = 'pr_fallback'
-                        state.raw_props['fallback_reason'] = str(e)
-                    except Exception as fallback_err:
-                        logger.warning(
-                            "⚠️ PR fallback da başarısız: %s. Ideal gaz'a geçiliyor.",
-                            fallback_err,
-                        )
-                        state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
+                    state = self._solve_fallback(P_pa, T_k, gas_obj, eos_method)
+                    state.raw_props.setdefault('fallback_reason', str(e))
             
         # Z-Factor Uyarısı ve Teşhis Entegrasyonu
-        thermo_health = "HEALTHY"
-        health_reasons = []
+        thermo_health = state.raw_props.get('thermo_health', "HEALTHY")
+        health_reasons = list(state.raw_props.get('health_reasons', []) or [])
         if state.Z < 0.5:
-            thermo_health = "WARNING"
+            if thermo_health == "HEALTHY":
+                thermo_health = "WARNING"
             health_reasons.append(f"Düşük sıkıştırılabilirlik faktörü Z={state.Z:.4f} (yoğuşma riski)")
             logger.warning(f"⚠️ Olağandışı düşük Z faktörü: {state.Z:.4f} (P={P_pa/1e5:.1f} bar, T={T_k-273.15:.1f}°C)")
         elif state.Z > 1.5:
-            thermo_health = "WARNING"
+            if thermo_health == "HEALTHY":
+                thermo_health = "WARNING"
             health_reasons.append(f"Beklenmedik yüksek sıkıştırılabilirlik faktörü Z={state.Z:.4f}")
             logger.warning(f"⚠️ Olağandışı yüksek Z faktörü: {state.Z:.4f} (P={P_pa/1e5:.1f} bar, T={T_k-273.15:.1f}°C)")
         
         if state.phase in ('liquid', 'two-phase', 'supercritical'):
             thermo_health = "CRITICAL"
             health_reasons.append("Akışkan sıvı, iki faz veya yoğun süperkritik bölgeye girdi (faz ayrışması riski)")
-            
+
+        # Fallback/ideal yaklasimla uretilen durumlar saglikta isaretlenir (P0-5)
+        if state.raw_props.get('fallback', False):
+            if thermo_health == "HEALTHY":
+                thermo_health = "WARNING"
+            layer = state.raw_props.get('fallback_layer', 'fallback')
+            fb_msg = f"Sonuç fallback/ideal yaklaşım ile üretildi ({layer}); gerçek EOS kullanılmadı."
+            if fb_msg not in health_reasons:
+                health_reasons.append(fb_msg)
+
         state.raw_props['thermo_health'] = thermo_health
         state.raw_props['health_reasons'] = health_reasons
-             
-        self._store_cached_state(cache_key, state)
+
+        # Fallback durumlari onbellege yazilmaz: aksi halde sonraki run'da istenen EOS
+        # fallback sonucunu yanlislikla geri alabilir (P0-5).
+        if not state.raw_props.get('fallback', False):
+            self._store_cached_state(cache_key, state)
         self._record_run_tracking(P_pa, T_k, eos_method, state)
             
         return state
+
+    @staticmethod
+    def _parse_composition_from_gas_obj(gas_obj) -> dict[str, float]:
+        """Extract canonical KASP component -> mole fraction mapping from str or dict."""
+        from kasp.core.mixture import GasMixtureBuilder
+        from kasp.core.constants import SUPPORTED_GASES
+
+        comp_map = getattr(GasMixtureBuilder, "COMPONENT_MAP", SUPPORTED_GASES)
+        rev_supported = {v.lower(): k for k, v in comp_map.items()}
+        rev_thermo = {v.lower(): k for k, v in GasMixtureBuilder.THERMO_ID_MAP.items()}
+        rev_neqsim = {v.lower(): k for k, v in GasMixtureBuilder.NEQSIM_COMPONENT_MAP.items()}
+
+        def _resolve_canonical(raw_name: str) -> str:
+            low = str(raw_name).strip().lower()
+            if low in rev_supported:
+                return rev_supported[low]
+            if low in rev_thermo:
+                return rev_thermo[low]
+            if low in rev_neqsim:
+                return rev_neqsim[low]
+            return normalize_component(str(raw_name))
+
+        fractions: dict[str, float] = {}
+        if isinstance(gas_obj, str):
+            raw_str = gas_obj.strip()
+            if "::" in raw_str:
+                raw_str = raw_str.split("::", 1)[1]
+            for part in raw_str.split("&"):
+                part = part.strip()
+                if not part:
+                    continue
+                if "[" in part and part.endswith("]"):
+                    name, frac_str = part[:-1].split("[", 1)
+                    frac = float(frac_str)
+                else:
+                    name = part
+                    frac = 1.0
+                if frac > 0:
+                    canon = _resolve_canonical(name)
+                    fractions[canon] = fractions.get(canon, 0.0) + frac
+        elif isinstance(gas_obj, dict):
+            ids = gas_obj.get("ids", gas_obj.get("IDs"))
+            zs = gas_obj.get("mol_fractions", gas_obj.get("zs"))
+            if ids is not None and zs is not None and len(ids) == len(zs):
+                for cid, frac in zip(ids, zs):
+                    f_val = float(frac)
+                    if f_val > 0:
+                        canon = _resolve_canonical(str(cid))
+                        fractions[canon] = fractions.get(canon, 0.0) + f_val
+            else:
+                for k, v in gas_obj.items():
+                    if k in ("MW", "ids", "IDs", "mol_fractions", "zs"):
+                        continue
+                    try:
+                        f_val = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if f_val > 0:
+                        canon = _resolve_canonical(str(k))
+                        fractions[canon] = fractions.get(canon, 0.0) + f_val
+
+        total = sum(fractions.values())
+        if total > 0:
+            fractions = {k: v / total for k, v in fractions.items()}
+        return fractions
+
+    def _coerce_thermo_gas_data(self, gas_obj) -> dict | None:
+        if isinstance(gas_obj, dict):
+            ids = gas_obj.get("ids", gas_obj.get("IDs"))
+            zs = gas_obj.get("mol_fractions", gas_obj.get("zs"))
+            if ids and zs and len(ids) == len(zs):
+                return gas_obj
+        try:
+            from kasp.core.mixture import GasMixtureBuilder
+            fractions = self._parse_composition_from_gas_obj(gas_obj)
+            if fractions:
+                return GasMixtureBuilder.build_thermo_data(fractions)
+        except Exception as exc:
+            logger.debug("Failed to coerce gas_obj to thermo data: %s", exc)
+        return None
 
     def infer_mw_g_mol(self, gas_obj) -> float | None:
         if isinstance(gas_obj, dict):
@@ -344,26 +498,21 @@ class ThermodynamicSolver:
             if mw is not None:
                 try:
                     return float(mw)
-                except (TypeError, ValueError):
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logger.debug("Invalid MW value in gas_obj: %s", exc)
 
-            ids = gas_obj.get("ids", gas_obj.get("IDs", []))
-            zs = gas_obj.get("mol_fractions", gas_obj.get("zs", []))
-            if ids and zs and len(ids) == len(zs):
-                try:
-                    from kasp.core.mixture import GasMixtureBuilder
-
-                    reverse_map = {
-                        thermo_id.lower(): component
-                        for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
-                    }
-                    return sum(
-                        float(fraction)
-                        * MOLAR_MASSES[reverse_map.get(str(component_id).lower(), normalize_component(str(component_id)))]
-                        for component_id, fraction in zip(ids, zs)
-                    )
-                except Exception:
-                    return None
+        try:
+            fractions = self._parse_composition_from_gas_obj(gas_obj)
+            if fractions:
+                mw_calc = sum(
+                    frac * MOLAR_MASSES[comp]
+                    for comp, frac in fractions.items()
+                    if comp in MOLAR_MASSES
+                )
+                if mw_calc > 0:
+                    return mw_calc
+        except Exception as exc:
+            logger.debug("Failed to infer MW from gas_obj: %s", exc)
 
         return None
 
@@ -377,34 +526,37 @@ class ThermodynamicSolver:
 
     def _get_thermo_package(self, ids):
         pkg_key = tuple(ids)
-        if pkg_key not in self._package_cache:
-            constants, properties = ChemicalConstantsPackage.from_IDs(ids)
-            self._package_cache[pkg_key] = (constants, properties)
-        return self._package_cache[pkg_key]
+        with self._as_lock:
+            if pkg_key not in self._package_cache:
+                constants, properties = ChemicalConstantsPackage.from_IDs(ids)
+                self._package_cache[pkg_key] = (constants, properties)
+            return self._package_cache[pkg_key]
 
     def _get_coolprop_abstract_state(self, mixture_string: str):
         """CoolProp AbstractState cache — karışım başına bir kez oluşturulur."""
-        if mixture_string not in self._package_cache:
-            try:
-                from CoolProp import AbstractState
-                AS = AbstractState("HEOS", mixture_string)
+        with self._as_lock:
+            if mixture_string not in self._package_cache:
                 try:
-                    AS.build_phase_envelope("")
-                except Exception as e:
-                    logger.debug("Phase envelope build failed for %s: %s", mixture_string, e)
-                self._package_cache[mixture_string] = AS
-            except ImportError:
-                self._package_cache[mixture_string] = None
-        return self._package_cache.get(mixture_string)
+                    from CoolProp import AbstractState
+                    AS = AbstractState("HEOS", mixture_string)
+                    try:
+                        AS.build_phase_envelope("")
+                    except Exception as e:
+                        logger.debug("Phase envelope build failed for %s: %s", mixture_string, e)
+                    self._package_cache[mixture_string] = AS
+                except ImportError:
+                    self._package_cache[mixture_string] = None
+            return self._package_cache.get(mixture_string)
 
     def _get_coolprop_phase(self, mixture_string: str, P_pa: float, T_k: float) -> str | None:
         """AbstractState.phase() ile güvenilir faz tespiti, karışımlarda faz zarfını yönetir."""
         try:
-            AS = self._get_coolprop_abstract_state(mixture_string)
-            if AS is None:
-                return None
-            AS.update(CP.PT_INPUTS, P_pa, T_k)
-            iphase = AS.phase()
+            with self._as_lock:
+                AS = self._get_coolprop_abstract_state(mixture_string)
+                if AS is None:
+                    return None
+                AS.update(CP.PT_INPUTS, P_pa, T_k)
+                iphase = AS.phase()
             from CoolProp import iphase_gas, iphase_liquid, iphase_supercritical
             from CoolProp import iphase_supercritical_gas, iphase_supercritical_liquid
             from CoolProp import iphase_twophase, iphase_not_imposed
@@ -417,13 +569,16 @@ class ThermodynamicSolver:
                 iphase_twophase: "twophase",
             }
             return phase_map.get(iphase)
-        except Exception:
+        except Exception as exc:
+            logger.debug("CoolProp phase detection failed: %s", exc)
             return None
 
     def _solve_coolprop(self, P_pa: float, T_k: float, mixture_string: str) -> ThermodynamicState:
         """CoolProp HEOS motorunu kullanarak özellikleri çözer."""
         if not COOLPROP_LOADED:
             raise ImportError("CoolProp kütüphanesi aktif değil.")
+        if P_pa <= 0 or T_k <= 0:
+            raise ValueError(f"Geçersiz basınç veya sıcaklık: P={P_pa}, T={T_k}")
             
         H = CP.PropsSI('Hmass', 'P', P_pa, 'T', T_k, mixture_string)
         S = CP.PropsSI('Smass', 'P', P_pa, 'T', T_k, mixture_string)
@@ -432,7 +587,7 @@ class ThermodynamicSolver:
         a = CP.PropsSI('A', 'P', P_pa, 'T', T_k, mixture_string)
         Cp = CP.PropsSI('Cpmass', 'P', P_pa, 'T', T_k, mixture_string)
         Cv = CP.PropsSI('Cvmass', 'P', P_pa, 'T', T_k, mixture_string)
-        k = Cp / Cv if Cv != 0 else 1.667
+        k = Cp / Cv if Cv > 0 else 1.4
         MW_kg_mol = CP.PropsSI('M', mixture_string) 
         
         # Faz tespiti: AbstractState ile (karışım faz zarfını otomatik yönetir)
@@ -465,7 +620,13 @@ class ThermodynamicSolver:
         """Thermo PR/SRK modülünü kullanarak özellikleri çözer."""
         if not THERMO_LOADED:
              raise ImportError("Thermo kütüphanesi aktif değil.")
+        if P_pa <= 0 or T_k <= 0:
+             raise ValueError(f"Geçersiz basınç veya sıcaklık: P={P_pa}, T={T_k}")
              
+        if not isinstance(gas_data, dict) or ("ids" not in gas_data and "IDs" not in gas_data):
+            coerced = self._coerce_thermo_gas_data(gas_data)
+            if coerced is not None:
+                gas_data = coerced
         ids, zs = self._extract_thermo_components(gas_data)
         constants, properties = self._get_thermo_package(ids)
         
@@ -481,10 +642,25 @@ class ThermodynamicSolver:
         
         # Z Factor Fallback and V_m
         phase_str = 'gas'
+        internal_fallback = False
         Z_g_raw = getattr(eos, 'Z_g', None)
         Z_l_raw = getattr(eos, 'Z_l', None)
         
-        if Z_g_raw is not None and Z_g_raw > 0:
+        if Z_g_raw is not None and Z_g_raw > 0 and Z_l_raw is not None and Z_l_raw > 0:
+            eos_phase = getattr(eos, 'phase', 'g')
+            g_dep_g = getattr(eos, 'G_dep_g', None)
+            g_dep_l = getattr(eos, 'G_dep_l', None)
+            if eos_phase == 'l' or (
+                g_dep_l is not None and g_dep_g is not None and g_dep_l < g_dep_g
+            ):
+                Z = Z_l_raw
+                V_m = eos.V_l
+                phase_str = 'liquid'
+            else:
+                Z = Z_g_raw
+                V_m = eos.V_g
+                phase_str = 'gas'
+        elif Z_g_raw is not None and Z_g_raw > 0:
             Z = Z_g_raw
             V_m = eos.V_g  
         elif Z_l_raw is not None and Z_l_raw > 0:
@@ -492,9 +668,11 @@ class ThermodynamicSolver:
             V_m = eos.V_l
             phase_str = 'liquid'
         else:
+            # PR/SRK kokleri bulunamadi: ideal hacim yaklasimi (izlenebilirlik icin isaretlenir)
             Z = 1.0
             V_m = 8.314462 * T_k / P_pa
             phase_str = 'ideal'
+            internal_fallback = True
             
         D = molar_mass / V_m  # kg/m³
         
@@ -503,41 +681,58 @@ class ThermodynamicSolver:
             zs[i] * properties.HeatCapacityGases[i](T_k) for i in range(len(zs))
         )
         Cv_ig_molar = Cp_ig_molar - 8.314462
+
+        def _read_dep(prefix: str) -> float:
+            if phase_str == 'liquid':
+                val = getattr(eos, f"{prefix}_l", None)
+                if val is None:
+                    val = getattr(eos, f"{prefix}_g", None)
+            else:
+                val = getattr(eos, f"{prefix}_g", None)
+                if val is None:
+                    val = getattr(eos, f"{prefix}_l", None)
+            return float(val) if val is not None and math.isfinite(val) else 0.0
+
+        cp_dep = _read_dep("Cp_dep")
+        cv_dep = _read_dep("Cv_dep")
+        h_dep = _read_dep("H_dep")
+        s_dep = _read_dep("S_dep")
         
-        Cp_real = (Cp_ig_molar + eos.Cp_dep_g) / molar_mass
-        Cv_real = (Cv_ig_molar + eos.Cv_dep_g) / molar_mass
+        Cp_real = (Cp_ig_molar + cp_dep) / molar_mass
+        Cv_real = (Cv_ig_molar + cv_dep) / molar_mass
         k = Cp_real / Cv_real if Cv_real > 0 else 1.4
         
         # Enthalpy & Entropy (cached integrals for performance)
         T_ref = 298.15
-        T_rounded = round(T_k, 1)
+        T_rounded = round(float(T_k), 5)
         H_ig_molar = 0.0
         S_ig_molar = 0.0
         log_p_ref = math.log(P_pa / 101325.0)
-        for i in range(len(zs)):
-            h_key = (ids[i], T_ref, T_rounded)
-            s_key = (ids[i], T_ref, T_rounded, 'S')
-            if h_key not in self._h_int_cache:
-                self._h_int_cache[h_key] = properties.HeatCapacityGases[i].T_dependent_property_integral(T_ref, T_k)
-            if s_key not in self._h_int_cache:
-                self._h_int_cache[s_key] = properties.HeatCapacityGases[i].T_dependent_property_integral_over_T(T_ref, T_k)
-            H_ig_molar += zs[i] * self._h_int_cache[h_key]
-            S_ig_molar += zs[i] * self._h_int_cache[s_key]
+        with self._cache_lock:
+            for i in range(len(zs)):
+                h_key = (ids[i], T_ref, T_rounded)
+                s_key = (ids[i], T_ref, T_rounded, 'S')
+                if h_key not in self._h_int_cache:
+                    self._h_int_cache[h_key] = properties.HeatCapacityGases[i].T_dependent_property_integral(T_ref, T_k)
+                if s_key not in self._h_int_cache:
+                    self._h_int_cache[s_key] = properties.HeatCapacityGases[i].T_dependent_property_integral_over_T(T_ref, T_k)
+                H_ig_molar += zs[i] * self._h_int_cache[h_key]
+                S_ig_molar += zs[i] * self._h_int_cache[s_key]
         S_ig_molar -= 8.314462 * log_p_ref
         
-        H = (H_ig_molar + eos.H_dep_g) / molar_mass
-        S = (S_ig_molar + eos.S_dep_g) / molar_mass
+        H = (H_ig_molar + h_dep) / molar_mass
+        S = (S_ig_molar + s_dep) / molar_mass
 
         speed_of_sound = None
         try:
             if phase_str == 'liquid':
-                speed_of_sound = eos.speed_of_sound_l
+                speed_of_sound = getattr(eos, 'speed_of_sound_l', None)
             else:
-                speed_of_sound = eos.speed_of_sound_g
+                speed_of_sound = getattr(eos, 'speed_of_sound_g', None)
         except Exception as e:
             logger.debug("Speed of sound not available: %s", e)
 
-        return self._build_state(
+        state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
             H=H,
@@ -549,9 +744,19 @@ class ThermodynamicSolver:
             Cv=Cv_real,
             density=D,
             phase=phase_str,
-            fallback=False,
+            fallback=internal_fallback,
             speed_of_sound=speed_of_sound,
         )
+        if internal_fallback:
+            self._tag_internal_fallback(state, "eos_roots_unavailable")
+        return state
+
+    @staticmethod
+    def _tag_internal_fallback(state, reason):
+        state.raw_props["fallback"] = True
+        state.raw_props["fallback_layer"] = "internal"
+        state.raw_props["fallback_reason"] = reason
+        return state
 
     def _solve_aga8(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
         """pyaga8 (GERG-2008) standardını kullanarak özellikleri çözer."""
@@ -645,12 +850,13 @@ class ThermodynamicSolver:
 
     def _get_thermopack_eos(self, tp_components_tuple, eos_model='PR'):
         cache_key = (tp_components_tuple, eos_model)
-        if cache_key not in self._package_cache:
-            from thermopack.cubic import cubic
-            components_str = ','.join(tp_components_tuple)
-            eos = cubic(components_str, eos_model)
-            self._package_cache[cache_key] = eos
-        return self._package_cache[cache_key]
+        with self._as_lock:
+            if cache_key not in self._package_cache:
+                from thermopack.cubic import cubic
+                components_str = ','.join(tp_components_tuple)
+                eos = cubic(components_str, eos_model)
+                self._package_cache[cache_key] = eos
+            return self._package_cache[cache_key]
 
     def _solve_thermopack(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
         """thermopack (SINTEF) motorunu kullanarak özellikleri çözer."""
@@ -695,6 +901,7 @@ class ThermodynamicSolver:
         eos = self._get_thermopack_eos(tuple(tp_ids), 'PR')
         
         # Calculate specific volume and phase
+        internal_fallback = False
         try:
             v, = eos.specific_volume(T_k, P_pa, zs, eos.VAPPH)
             phase_str = 'gas'
@@ -705,6 +912,7 @@ class ThermodynamicSolver:
             except Exception:
                 v = 8.314462 * T_k / P_pa
                 phase_str = 'ideal'
+                internal_fallback = True
                 
         # Calculate MW and density
         MW_g_mol = sum(zs[i] * MOLAR_MASSES[reverse_map.get(str(ids[i]).lower(), str(ids[i]).upper())] for i in range(len(zs)))
@@ -714,11 +922,12 @@ class ThermodynamicSolver:
         Z = P_pa * v / (8.314462 * T_k)
         
         # Enthalpy and entropy
-        h_molar, cp_molar = eos.enthalpy(T_k, P_pa, zs, eos.VAPPH if phase_str == 'gas' else eos.LIQPH, dhdt=True)
+        thermo_phase_arg = eos.VAPPH if phase_str in ('gas', 'ideal') else eos.LIQPH
+        h_molar, cp_molar = eos.enthalpy(T_k, P_pa, zs, thermo_phase_arg, dhdt=True)
         H = h_molar / molar_mass
         Cp = cp_molar / molar_mass
         
-        s_molar, = eos.entropy(T_k, P_pa, zs, eos.VAPPH if phase_str == 'gas' else eos.LIQPH)
+        s_molar, = eos.entropy(T_k, P_pa, zs, thermo_phase_arg)
         S = s_molar / molar_mass
         
         # Internal energy for Cv
@@ -733,7 +942,7 @@ class ThermodynamicSolver:
         except Exception:
             speed_of_sound = self._speed_of_sound(k, P_pa, density)
             
-        return self._build_state(
+        state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
             H=H,
@@ -745,9 +954,12 @@ class ThermodynamicSolver:
             Cv=Cv,
             density=density,
             phase=phase_str,
-            fallback=False,
+            fallback=internal_fallback,
             speed_of_sound=speed_of_sound
         )
+        if internal_fallback:
+            self._tag_internal_fallback(state, "thermopack_ideal_volume")
+        return state
 
     def _solve_ccp(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
         """ccp (Petrobras) motorunu kullanarak özellikleri çözer."""
@@ -843,20 +1055,35 @@ class ThermodynamicSolver:
 
     def _solve_fallback(self, P_pa: float, T_k: float, gas_obj, eos: str) -> ThermodynamicState:
         """Kütüphane başarısız olduğunda PR/SRK denenir, sonra ideal gaz yaklaşımı."""
-        # Önce PR ve SRK ile tekrar dene (fallback zincirinde)
-        for fallback_eos in ('pr', 'srk'):
-            try:
-                state = self._solve_thermo_eos(P_pa, T_k, gas_obj, fallback_eos)
-                state.raw_props['fallback'] = True
-                state.raw_props['fallback_layer'] = 'eos'
-                state.raw_props['fallback_from'] = eos
-                state.raw_props['fallback_to'] = fallback_eos
-                state.raw_props['fallback_type'] = 'pr_srk_fallback'
-                return state
-            except Exception:
-                pass
+        orig_p_pa = float(P_pa) if P_pa is not None else 0.0
+        orig_t_k = float(T_k) if T_k is not None else 0.0
+        unphysical_pt = (
+            orig_p_pa <= 0
+            or orig_t_k <= 0
+            or not math.isfinite(orig_p_pa)
+            or not math.isfinite(orig_t_k)
+        )
+
+        # Önce PR ve SRK ile tekrar dene (fallback zincirinde, aynı eos hariç)
+        if not unphysical_pt:
+            thermo_gas_data = self._coerce_thermo_gas_data(gas_obj)
+            if thermo_gas_data is not None:
+                for fallback_eos in (m for m in ('pr', 'srk') if m != eos):
+                    try:
+                        state = self._solve_thermo_eos(P_pa, T_k, thermo_gas_data, fallback_eos)
+                        state.raw_props['fallback'] = True
+                        state.raw_props['fallback_layer'] = 'eos'
+                        state.raw_props['fallback_from'] = eos
+                        state.raw_props['fallback_to'] = fallback_eos
+                        state.raw_props['fallback_type'] = f'{fallback_eos}_fallback'
+                        return state
+                    except Exception as e:
+                        logger.debug("Fallback EOS %s failed: %s", fallback_eos, e)
 
         # PR/SRK da başarısız -> ideal gaz (son çare)
+        P_pa = max(orig_p_pa if math.isfinite(orig_p_pa) else 1.0, 1.0)
+        T_k = max(orig_t_k if math.isfinite(orig_t_k) else 1.0, 1.0)
+
         mw_g_mol = self.infer_mw_g_mol(gas_obj)
         M_kg_mol = (mw_g_mol / 1000.0) if mw_g_mol else 0.02896
         
@@ -864,24 +1091,13 @@ class ThermodynamicSolver:
         
         # 1. Gaz kompozisyonunu ve Thermo/CoolProp yapısını çözümle
         ids, zs = [], []
-        if isinstance(gas_obj, dict):
+        coerced = self._coerce_thermo_gas_data(gas_obj)
+        if coerced is not None:
+            ids = coerced.get("ids", coerced.get("IDs", []))
+            zs = coerced.get("mol_fractions", coerced.get("zs", []))
+        elif isinstance(gas_obj, dict):
             ids = gas_obj.get("ids", gas_obj.get("IDs", []))
             zs = gas_obj.get("mol_fractions", gas_obj.get("zs", []))
-        elif isinstance(gas_obj, str):
-            try:
-                from kasp.core.mixture import GasMixtureBuilder
-                from kasp.core.constants import SUPPORTED_GASES
-                rev_supported = {v.lower(): k for k, v in SUPPORTED_GASES.items()}
-                for part in gas_obj.split('&'):
-                    if '[' in part and part.endswith(']'):
-                        name, frac_str = part[:-1].split('[')
-                        canonical = rev_supported.get(name.lower(), name.upper())
-                        thermo_id = GasMixtureBuilder.THERMO_ID_MAP.get(canonical)
-                        if thermo_id:
-                            ids.append(thermo_id)
-                            zs.append(float(frac_str))
-            except Exception as e:
-                logger.debug("Gas object parsing failed: %s", e)
 
         # 2. Dinamik Ideal Cp Hesaplama
         Cp_ideal = 1000.0 # Güvenli taban
@@ -926,8 +1142,8 @@ class ThermodynamicSolver:
                 logger.debug("Standard Cp calculation failed: %s", e)
 
         # C) Eğer her şey başarısız olursa eski doğrusal formül
-        if Cp_ideal == 1000.0:
-            Cp_ideal = 1000 + 0.1 * (T_k - 273.15)
+        if Cp_ideal == 1000.0 or Cp_ideal <= 0:
+            Cp_ideal = max(200.0, 1000 + 0.1 * (T_k - 273.15))
         
         Cv_ideal = Cp_ideal - R_specific
         k_ideal = Cp_ideal / Cv_ideal if Cv_ideal > 0 else 1.4
@@ -938,7 +1154,7 @@ class ThermodynamicSolver:
         H_ideal = Cp_ideal * (T_k - 298.15)
         S_ideal = Cp_ideal * math.log(T_k / 273.15) - R_specific * math.log(P_pa / STD_PRESS_PA) if T_k > 0 else 0
         
-        return self._build_state(
+        state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
             H=H_ideal,
@@ -947,12 +1163,18 @@ class ThermodynamicSolver:
             k=max(1.2, min(1.67, k_ideal)),
             MW=M_kg_mol * 1000,
             Cp=Cp_ideal,
-            Cv=Cv_ideal,
+            Cv=Cv_ideal if Cv_ideal > 0 else Cp_ideal / 1.4,
             density=max(0.1, rho_ideal),
             phase='ideal_fallback',
             fallback=True,
             speed_of_sound=self._speed_of_sound(k_ideal, P_pa, max(rho_ideal, 0.1)),
         )
+        if unphysical_pt:
+            state.raw_props["thermo_health"] = "CRITICAL"
+            state.raw_props.setdefault("health_reasons", []).append(
+                f"unphysical_pt(P_pa={orig_p_pa}, T_k={orig_t_k})"
+            )
+        return state
         
     def get_cache_stats(self):
         with self._cache_lock:
@@ -1074,18 +1296,19 @@ class ThermodynamicSolver:
         comparray = Array[Double](dwsim_fracs)
         
         cache_key = tuple(dwsim_names)
-        if cache_key not in self._package_cache:
-            water_fraction = 0.0
-            if 'Water' in dwsim_names:
-                idx = dwsim_names.index('Water')
-                water_fraction = dwsim_fracs[idx]
-            if water_fraction > 0.05:
-                pp = self._dwsim_PropertyPackages.SteamTablesPropertyPackage(True)
+        with self._as_lock:
+            if cache_key not in self._package_cache:
+                water_fraction = 0.0
+                if 'Water' in dwsim_names:
+                    idx = dwsim_names.index('Water')
+                    water_fraction = dwsim_fracs[idx]
+                if water_fraction > 0.05:
+                    pp = self._dwsim_PropertyPackages.SteamTablesPropertyPackage(True)
+                else:
+                    pp = self._dwsim_PropertyPackages.PRPropertyPackage(True)
+                self._package_cache[cache_key] = pp
             else:
-                pp = self._dwsim_PropertyPackages.PRPropertyPackage(True)
-            self._package_cache[cache_key] = pp
-        else:
-            pp = self._package_cache[cache_key]
+                pp = self._package_cache[cache_key]
             
         ms = self._dwsim_Calculator.CreateMaterialStream(carray, comparray)
         ms.SetPropertyPackage(pp)
@@ -1231,7 +1454,8 @@ class ThermodynamicSolver:
             # PhaseInterface opsiyonel, JPackage ile doğrula
             try:
                 self._neqsim_PhaseInterface = jpype.JClass("neqsim.thermo.phase.PhaseInterface")
-            except Exception:
+            except Exception as e:
+                logger.debug("NeqSim PhaseInterface yüklenemedi: %s", e)
                 self._neqsim_PhaseInterface = None
 
             self._neqsim_loaded = True
@@ -1283,8 +1507,8 @@ class ThermodynamicSolver:
             system.addComponent(comp_name, float(mol_frac))
         try:
             system.setMixingRule(2)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("NeqSim setMixingRule failed: %s", e)
         system.init(0)
         system.init(1)
 
@@ -1299,7 +1523,8 @@ class ThermodynamicSolver:
                     break
             if phase is None:
                 phase = system.getPhase(0)
-        except Exception:
+        except Exception as e:
+            logger.debug("NeqSim phase selection fallback: %s", e)
             phase = system.getPhase(0)
 
         molar_mass = float(phase.getMolarMass())  # kg/mol
@@ -1320,11 +1545,13 @@ class ThermodynamicSolver:
         k = Cp / Cv if Cv > 0 else 1.4
         try:
             speed_of_sound = float(phase.getSpeedOfSound())
-        except Exception:
+        except Exception as e:
+            logger.debug("NeqSim speedOfSound fallback: %s", e)
             speed_of_sound = self._speed_of_sound(k, P_pa, max(density, 0.1))
         try:
             mu_val = float(phase.getViscosity())
-        except Exception:
+        except Exception as e:
+            logger.debug("NeqSim viscosity fallback: %s", e)
             mu_val = 1.1e-5
 
         phase_str = 'gas'
@@ -1332,10 +1559,10 @@ class ThermodynamicSolver:
             pt = phase.getPhaseTypeName().lower()
             if "oil" in pt or "liquid" in pt:
                 phase_str = 'liquid'
-            elif "gas" in pt or "vapor" in pt:
+            elif "gas" in pt or "vapor" in pt or "vapour" in pt:
                 phase_str = 'gas'
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("NeqSim phase type name check failed: %s", e)
 
         return self._build_state(
             P_pa=P_pa,

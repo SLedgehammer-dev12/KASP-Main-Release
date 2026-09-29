@@ -97,12 +97,44 @@ def get_eos_display_items(coolprop_loaded, thermo_loaded):
 
 def get_default_gas_rows():
     return [
-        ("Methane (CH₄)", 98.00),
-        ("Ethane (C₂H₆)", 1.50),
-        ("Propane (C₃H₈)", 0.00),
-        ("n-Butane (n-C₄H₁₀)", 0.00),
-        ("Nitrogen (N₂)", 0.50),
+        ("Methane (CH₄)", 85.00),
+        ("Ethane (C₂H₆)", 7.00),
+        ("Propane (C₃H₈)", 4.00),
+        ("Nitrogen (N₂)", 2.00),
+        ("Carbon Dioxide (CO₂)", 2.00),
     ]
+
+
+PRESET_CONFIGS = [
+    ("⚡ Doğal Gaz", "Doğal Gaz (50→75 bar)", {
+        "p_in": "49.65", "p_in_u": "bar(g)",
+        "t_in": "19.0", "t_in_u": "°C",
+        "p_out": "75.0", "p_out_u": "bar(a)",
+        "flow": "1985000", "flow_u": "Sm³/h",
+        "gas": "Özel Karışım",
+    }),
+    ("❄️ LNG", "LNG Besleme (30→80 bar)", {
+        "p_in": "30.0", "p_in_u": "bar(g)",
+        "t_in": "-20.0", "t_in_u": "°C",
+        "p_out": "80.0", "p_out_u": "bar(a)",
+        "flow": "1200000", "flow_u": "Sm³/h",
+        "gas": "Methane (CH₄)",
+    }),
+    ("🌿 CO₂", "CO₂ Enjeksiyonu (15→65 bar)", {
+        "p_in": "15.0", "p_in_u": "bar(g)",
+        "t_in": "30.0", "t_in_u": "°C",
+        "p_out": "65.0", "p_out_u": "bar(a)",
+        "flow": "500000", "flow_u": "Sm³/h",
+        "gas": "Carbon Dioxide (CO₂)",
+    }),
+    ("⚡ H₂", "H₂ Karışımı (20→50 bar)", {
+        "p_in": "20.0", "p_in_u": "bar(g)",
+        "t_in": "20.0", "t_in_u": "°C",
+        "p_out": "50.0", "p_out_u": "bar(a)",
+        "flow": "800000", "flow_u": "Sm³/h",
+        "gas": "Hydrogen (H₂)",
+    }),
+]
 
 
 def update_process_live_metrics(window):
@@ -156,38 +188,7 @@ def build_presets_bar(window, left_layout):
     title_label.setFont(title_font)
     presets_layout.addWidget(title_label)
 
-    presets = [
-        ("⚡ Doğal Gaz", "Doğal Gaz (50→75 bar)", {
-            "p_in": "49.65", "p_in_u": "bar(g)",
-            "t_in": "19.0", "t_in_u": "°C",
-            "p_out": "75.0", "p_out_u": "bar(a)",
-            "flow": "1985000", "flow_u": "Sm³/h",
-            "gas": "Özel Karışım",
-        }),
-        ("❄️ LNG", "LNG Besleme (30→80 bar)", {
-            "p_in": "30.0", "p_in_u": "bar(g)",
-            "t_in": "-20.0", "t_in_u": "°C",
-            "p_out": "80.0", "p_out_u": "bar(a)",
-            "flow": "1200000", "flow_u": "Sm³/h",
-            "gas": "Methane (CH₄)",
-        }),
-        ("🌿 CO₂", "CO₂ Enjeksiyonu (15→65 bar)", {
-            "p_in": "15.0", "p_in_u": "bar(g)",
-            "t_in": "30.0", "t_in_u": "°C",
-            "p_out": "65.0", "p_out_u": "bar(a)",
-            "flow": "500000", "flow_u": "Sm³/h",
-            "gas": "Carbon Dioxide (CO₂)",
-        }),
-        ("⚡ H₂", "H₂ Karışımı (20→50 bar)", {
-            "p_in": "20.0", "p_in_u": "bar(g)",
-            "t_in": "20.0", "t_in_u": "°C",
-            "p_out": "50.0", "p_out_u": "bar(a)",
-            "flow": "800000", "flow_u": "Sm³/h",
-            "gas": "Hydrogen (H₂)",
-        }),
-    ]
-
-    for chip_text, full_desc, data in presets:
+    for chip_text, full_desc, data in PRESET_CONFIGS:
         btn = QPushButton(chip_text)
         btn.setProperty("class", "preset_btn")
         btn.setToolTip(f"{full_desc} için proses parametrelerini ve gazı anında doldurur")
@@ -211,6 +212,10 @@ def build_presets_bar(window, left_layout):
                 window.flow_unit_combo.setCurrentText(d["flow_u"])
             if hasattr(window, "gas_combo") and window.gas_combo:
                 window.gas_combo.setCurrentText(d["gas"])
+            if d["gas"] == "Özel Karışım" and hasattr(window, "load_standard_gas_composition"):
+                window.load_standard_gas_composition("Doğal Gaz")
+                if hasattr(window, "gas_composition_workflow") and hasattr(window.gas_composition_workflow, "update_selected_gas_badge"):
+                    window.gas_composition_workflow.update_selected_gas_badge("Özel Karışım")
             update_process_live_metrics(window)
 
         btn.clicked.connect(_apply_preset)
@@ -634,7 +639,7 @@ def build_calculation_group(window, left_layout, *, coolprop_loaded, thermo_load
     window.lhv_source_combo.addItems([
         "KASP Sabitleri (Hızlı/Varsayılan)",
         "Thermo Veritabanı (Gelişmiş)",
-        "ISO 6976 Standardı (Molar / Z Düzeltmeli)",
+        "ISO 6976 Standardı (Molar Değerler / Kütle Bazlı)",
     ])
     if not thermo_loaded:
         from PyQt5.QtCore import Qt
@@ -802,6 +807,8 @@ def build_execution_group(window, left_layout):
     window.calculate_btn = QPushButton("🚀 Hesaplama Başlat")
     window.calculate_btn.setObjectName("calculate_btn")
     window.calculate_btn.setMinimumHeight(scaled_px(36))
+    window.calculate_btn.setShortcut("F5")
+    window.calculate_btn.setToolTip("Hesaplamayı başlat (F5 / Ctrl+R)")
 
     window.stop_btn = QPushButton("⏹️ Durdur")
     window.stop_btn.setObjectName("stop_btn")

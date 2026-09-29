@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from kasp.core.constants import API_617_DRIVER_MARGIN_PCT
 
-ENGINE_VERSION = "1.2.0 (V4.5 — 4-Method Engine)"
+
+ENGINE_VERSION = "1.3.0 (V4.5 — 6-Method Engine)"
 
 
 def compute_stage_pressure_ratio(total_pressure_ratio, intercooler_dp, num_stages):
@@ -112,6 +114,9 @@ def build_stage_result(
     compressor_selectable=True,
     selection_warnings=None,
     analysis_scope="IN_SCOPE",
+    energy_balance_ok=True,
+    delta_h_source="enthalpy",
+    invalid_stage_power=False,
 ):
     return {
         "stage": stage,
@@ -125,6 +130,9 @@ def build_stage_result(
         "poly_eff": poly_eff_design,
         "power_gas_kw": power_gas_kw,
         "delta_h_kj_kg": delta_h_kj_kg,
+        "delta_h_source": delta_h_source,
+        "energy_balance_ok": bool(energy_balance_ok),
+        "invalid_stage_power": bool(invalid_stage_power),
         "power_consistency_check_kw": power_consistency_check_kw,
         "z_avg": z_avg,
         "method_history": method_history,
@@ -139,9 +147,12 @@ def build_stage_result(
 def calculate_total_actual_poly_efficiency(staged_results, total_poly_head_kj_kg, poly_eff_tgt):
     total_actual_delta_h_kj_kg = sum(stage["delta_h_kj_kg"] for stage in staged_results)
     if total_actual_delta_h_kj_kg > 0:
-        return total_poly_head_kj_kg / total_actual_delta_h_kj_kg
+        return max(0.0, min(1.0, total_poly_head_kj_kg / total_actual_delta_h_kj_kg))
     last_stage = staged_results[-1] if staged_results else {}
-    return last_stage.get("poly_eff_diagnostic", poly_eff_tgt)
+    raw_eff = float(last_stage.get("poly_eff_diagnostic", poly_eff_tgt))
+    if raw_eff > 1.0:
+        raw_eff = raw_eff / 100.0
+    return max(0.0, min(1.0, raw_eff))
 
 
 def summarize_method_convergence(staged_results):
@@ -208,7 +219,21 @@ def build_design_results_payload(
     # Ağır C6+ / düşük verim seçilebilirlik kontrolü
     not_selectable_stages = [s for s in staged_results if not s.get("compressor_selectable", True)]
     overall_selectable = len(not_selectable_stages) == 0
-    overall_scope = "NOT_SELECTABLE" if not overall_selectable else "IN_SCOPE"
+    # Enerji dengesi bozuk kademeler sonucu gecersiz sayar (INVALID, NOT_SELECTABLE'dan ustun)
+    invalid_stages = [s for s in staged_results if not s.get("energy_balance_ok", True)]
+    energy_balance_ok = len(invalid_stages) == 0
+    if invalid_stages:
+        overall_scope = "INVALID"
+        overall_selectable = False
+    elif not_selectable_stages:
+        overall_scope = "NOT_SELECTABLE"
+    else:
+        overall_scope = "IN_SCOPE"
+    for st in invalid_stages:
+        warnings.append(
+            f"Kademe {st.get('stage')}: Non-fiziksel enerji dengesi (delta_h<=0); "
+            f"delta_h '{st.get('delta_h_source', 'bilinmiyor')}' ile ikame edildi. Sonuc gecersiz sayilmalidir."
+        )
     if not_selectable_stages:
         for st in not_selectable_stages:
             sw = "; ".join(st.get("selection_warnings", []))
@@ -224,13 +249,14 @@ def build_design_results_payload(
         "power_shaft_per_unit_kw": total_shaft_kw,
         "power_motor_per_unit_kw": motor_kw,
         "power_unit_kw": unit_kw,
-        "api_617_margin_percent": 4.0,
+        "api_617_margin_percent": API_617_DRIVER_MARGIN_PCT,
         "mech_loss_per_unit_kw": mech_loss_kw,
         "fuel_unit_kgh": fuel_kgh,
         "mass_flow_per_unit_kgs": mass_flow_per_unit,
         "inlet_vol_flow_acmh_per_unit": inlet_acmh,
         "power_gas_total_kw": total_stage_gas_power_kw * num_units,
         "power_shaft_total_kw": total_shaft_kw * num_units,
+        "power_motor_total_kw": motor_kw * num_units,
         "power_unit_total_kw": unit_kw * num_units,
         "mech_loss_total_kw": mech_loss_kw * num_units,
         "fuel_total_kgh": fuel_kgh * num_units,
@@ -249,6 +275,7 @@ def build_design_results_payload(
         "warnings": warnings,
         "compressor_selectable": overall_selectable,
         "analysis_scope": overall_scope,
+        "energy_balance_ok": energy_balance_ok,
         "not_selectable_stages": [s.get("stage") for s in not_selectable_stages],
         "fallback_used": False,
         "fallback_call_count": 0,
@@ -269,6 +296,21 @@ def build_uncertainty_measurements(inputs):
 
 
 def build_uncertainty_payload(uncertainty_result, actual_poly_efficiency):
+    compliant = bool(uncertainty_result.get("fully_compliant", False))
+    reasons = []
+    failures = uncertainty_result.get("sensitivity_failures") or []
+    if failures:
+        reasons.append(
+            "Duyarlilik hesaplanamayan olcumler: " + ", ".join(str(p) for p in failures)
+        )
+    fs = uncertainty_result.get("full_scale_assumptions") or []
+    if fs:
+        reasons.append(
+            "Tam olcek (FS) bilinmeden okuma bazli varsayilan basinc olcumleri: "
+            + ", ".join(str(p) for p in fs)
+        )
+    if not uncertainty_result.get("model_uncertainty_included", False):
+        reasons.append("Model belirsizligi bu analize dahil edilmemistir.")
     return {
         "polytropic_efficiency": {
             "value": actual_poly_efficiency,
@@ -277,7 +319,8 @@ def build_uncertainty_payload(uncertainty_result, actual_poly_efficiency):
             "confidence_level": "95%",
             "breakdown": uncertainty_result["breakdown_percent"],
         },
-        "asme_ptc10_compliant": True,
+        "asme_ptc10_compliant": compliant,
+        "compliance_reasons": reasons,
     }
 
 
@@ -299,12 +342,20 @@ def apply_fallback_tracking(results, fallback_tracking, staged_results, inlet_pr
     )
 
     if results["fallback_used"]:
-        warning_text = "Termodinamik kutuphane en az bir noktada fallback (ideal gaz) ile sonuc uretti."
+        warning_text = "Termodinamik kutuphane en az bir noktada fallback/ideal yaklasim ile sonuc uretti; gercek EOS kullanilmamis olabilir."
         if results["fallback_stage_numbers"]:
             stage_text = ", ".join(str(stage) for stage in results["fallback_stage_numbers"])
             warning_text += f" Etkilenen kademeler: {stage_text}."
         if results["fallback_state_count"]:
             warning_text += f" Benzersiz fallback durum sayisi: {results['fallback_state_count']}."
         results.setdefault("warnings", []).append(warning_text)
+
+    nonconverged = fallback_tracking.get("solver_nonconverged") or {}
+    if nonconverged:
+        results["solver_nonconverged"] = dict(nonconverged)
+        details = ", ".join(f"{k} (artık={v:.2f} J/kg·K)" for k, v in nonconverged.items())
+        results.setdefault("warnings", []).append(
+            f"İzentropik kök çözücü tolerans içinde yakınsamadı: {details}."
+        )
 
     return results

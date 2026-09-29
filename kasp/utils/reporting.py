@@ -19,15 +19,25 @@ except ImportError:
     REPORTLAB_LOADED = False
 
 
+logger = logging.getLogger(__name__)
+
+
 def _get_font_path(filename):
     if getattr(sys, "frozen", False):
         return os.path.join(sys._MEIPASS, "resources", "fonts", filename)
     return os.path.join(os.path.dirname(__file__), "..", "..", "resources", "fonts", filename)
 
 
+DEJAVU_SANS_REGISTERED = False
+_FONT_REGULAR = "Helvetica"
+_FONT_BOLD = "Helvetica-Bold"
+
+
 def _register_dejavu_fonts():
-    global DEJAVU_SANS_REGISTERED
+    global DEJAVU_SANS_REGISTERED, _FONT_REGULAR, _FONT_BOLD
     DEJAVU_SANS_REGISTERED = False
+    _FONT_REGULAR = "Helvetica"
+    _FONT_BOLD = "Helvetica-Bold"
     if not REPORTLAB_LOADED:
         return
     regular_ok = False
@@ -45,17 +55,17 @@ def _register_dejavu_fonts():
         logger.warning(f"DejaVuSans font registration failed: {e}")
 
     DEJAVU_SANS_REGISTERED = regular_ok
-    if not regular_ok:
+    if regular_ok:
+        _FONT_REGULAR = "DejaVuSans"
+        _FONT_BOLD = "DejaVuSans-Bold" if bold_ok else "DejaVuSans"
+    else:
         logger.info("DejaVuSans font not available — PDF reports will use Helvetica")
-
-
-DEJAVU_SANS_REGISTERED = False
 
 
 def _set_pdf_fonts(styles):
     if DEJAVU_SANS_REGISTERED:
         for style_name in styles.byName:
-            styles[style_name].fontName = "DejaVuSans"
+            styles[style_name].fontName = _FONT_REGULAR
 
 
 def _is_english():
@@ -126,7 +136,7 @@ class ReportGenerator:
             title = Paragraph(
                 _L(f"KASP v{APP_VERSION} - Kompresör Tasarım Raporu",
                    f"KASP v{APP_VERSION} - Compressor Design Report") +
-                f"<br/>{inputs['project_name']}", styles['Title'])
+                f"<br/>{escape(str(inputs.get('project_name', '')))}", styles['Title'])
             story.append(title)
             story.append(Spacer(1, 12))
             
@@ -141,15 +151,25 @@ class ReportGenerator:
             
             # 1. PROJE BİLGİLERİ
             story.append(Paragraph(_L("1. PROJE BİLGİLERİ", "1. PROJECT INFORMATION"), styles['Heading2']))
+            req_eos = str(inputs.get('eos_method', 'coolprop'))
+            eff_eos = results.get('effective_eos') or results.get('_effective_eos')
+            if eff_eos and str(eff_eos).lower() != req_eos.lower():
+                eos_display = f"{self._get_eos_display_name(req_eos)} -> {self._get_eos_display_name(str(eff_eos))} (Fallback)"
+            else:
+                eos_display = self._get_eos_display_name(req_eos)
+
+            amb_p_val = float(inputs.get('ambient_pressure', inputs.get('ambient_press', 101.325)))
+            amb_p_unit = 'kPa' if amb_p_val <= 200.0 else 'mbar'
+
             project_data = [
                 [_L("Parametre", "Parameter"), _L("Değer", "Value"), _L("Birim", "Unit")],
                 [_L("Proje Adı", "Project Name"), inputs['project_name'], ''],
                 [_L("Ünite Sayısı", "Number of Units"), f"{inputs['num_units']}", ''],
                 [_L("Gaz Kompozisyonu", "Gas Composition"), self._format_composition(inputs['gas_comp']), ''],
-                [_L("EOS Metodu", "EOS Method"), self._get_eos_display_name(inputs['eos_method']), ''],
+                [_L("EOS Metodu", "EOS Method"), eos_display, ''],
                 [_L("Hesaplama Metodu", "Calculation Method"), inputs['method'], ''],
                 [_L("Ortam Sıcaklığı", "Ambient Temperature"), f"{inputs['ambient_temp']:.1f}", '°C'],
-                [_L("Ortam Basıncı", "Ambient Pressure"), f"{inputs.get('ambient_pressure', 1013):.1f}", 'mbar'],
+                [_L("Ortam Basıncı", "Ambient Pressure"), f"{amb_p_val:.2f}", amb_p_unit],
                 [_L("Rakım", "Altitude"), f"{inputs.get('altitude', 0):.0f}", 'm']
             ]
             
@@ -158,8 +178,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
-                ('FONTNAME', (0, 1), (-1, -1), 'DejaVuSans'),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#ecf0f1')),
@@ -185,7 +205,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495e')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#bdc3c7')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -203,6 +224,7 @@ class ReportGenerator:
             power_total_val = self.engine.convert_result_value(
                 results['power_unit_total_kw'], 'kW', report_units['power_unit'], 'power'
             )
+            power_fmt = ".2f" if report_units.get('power_unit') == 'MW' else ".0f"
             
             power_data = [
                 [_L('Parametre', 'Parameter'), _L('Ünite Başına', 'Per Unit'), _L('Toplam', 'Total'), _L('Birim', 'Unit')],
@@ -223,8 +245,8 @@ class ReportGenerator:
                  f"{results['power_shaft_total_kw']:.0f}", 
                  'kW'],
                 [_L('Ünite Gücü', 'Unit Power'), 
-                 f"{power_unit_val:.0f}", 
-                 f"{power_total_val:.0f}", 
+                 f"{power_unit_val:{power_fmt}}", 
+                 f"{power_total_val:{power_fmt}}", 
                  report_units['power_unit']],
                 [_L('Mekanik Kayıp', 'Mechanical Loss'), 
                  f"{results['mech_loss_per_unit_kw']:.0f}", 
@@ -237,7 +259,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d5f4e6')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -271,7 +294,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e67e22')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fdebd0')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -282,7 +306,8 @@ class ReportGenerator:
             # 5. YAKIT BİLGİLERİ
             story.append(Paragraph(_L("5. YAKIT BİLGİLERİ", "5. FUEL INFORMATION"), styles['Heading2']))
             
-            fuel_gas_obj = self.engine._create_gas_object(inputs['gas_comp'], inputs['eos_method'])
+            fuel_composition = inputs.get('fuel_gas_comp') or inputs.get('gas_comp') or {}
+            fuel_gas_obj = self.engine._create_gas_object(fuel_composition, inputs['eos_method'])
             lhv_val = self.engine.convert_result_value(
                 results['lhv'], 'kJ/kg', report_units['lhv'], 'heating_value', 
                 fuel_gas_obj, inputs['eos_method']
@@ -310,7 +335,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8e44ad')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#e8daef')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -401,7 +427,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#c0392b')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                 ('FONTSIZE', (0, 0), (-1, 0), 8),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fadbd8')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -420,7 +447,8 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#16a085')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+            ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
             ('FONTSIZE', (0, 0), (-1, 0), 8),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d1f2eb')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -449,7 +477,8 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7f8c8d')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+            ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f4f6f6')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
         ]))
@@ -505,8 +534,8 @@ class ReportGenerator:
                 # Measurement uncertainties table
                 uncertainty_data = [
                     ['Ölçüm Parametresi', 'Enstrüman Tipi', 'Standart Belirsizlik', 'Birim'],
-                    ['Giriş Basıncı', 'Yüksek Doğruluk Basınç', '±0.25%', 'of reading'],
-                    ['Çıkış Basıncı', 'Yüksek Doğruluk Basınç', '±0.25%', 'of reading'],
+                    ['Giriş Basıncı', 'Yüksek Doğruluk Basınç', '±0.25%', '%FS (tam ölçek)'],
+                    ['Çıkış Basıncı', 'Yüksek Doğruluk Basınç', '±0.25%', '%FS (tam ölçek)'],
                     ['Giriş Sıcaklığı', 'RTD Class A', '±0.15°C', '@ 0°C'],
                     ['Çıkış Sıcaklığı', 'RTD Class A', '±0.15°C', '@ 0°C'],
                     ['Kütlesel Debi', 'Coriolis Akış Ölçer', '±0.10%', 'of rate'],
@@ -518,7 +547,8 @@ class ReportGenerator:
                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2980b9')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                    ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                    ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                     ('FONTSIZE', (0, 0), (-1, 0), 9),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d6eaf8')),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -531,12 +561,17 @@ class ReportGenerator:
                 story.append(Spacer(1, 8))
                 
                 perf_unc_data = [
-                    ['Performans Parametresi', 'Birleşik Belirsizlik', 'Genişletilmiş Belirsizlik (k=2)', 'Güven Aralığı'],
-                    ['Politropik Verim', '±0.8%', '±1.6%', '%95'],
-                    ['Politropik Head', '±1.2%', '±2.4%', '%95'],
-                    ['Sıkıştırma Oranı', '±0.5%', '±1.0%', '%95'],
-                    ['Gaz Gücü', '±1.5%', '±3.0%', '%95'],
-                    ['Isı Oranı', '±1.8%', '±3.6%', '%95']
+                    ['Performans Parametresi', 'Birleşik Belirsizlik', 'Genişletilmiş (k=2)', 'Güven'],
+                    *(
+                        [
+                            ['Politropik Verim',
+                             f"±{((results.get('uncertainty') or {}).get('polytropic_efficiency') or {}).get('combined_uncertainty', 0):.4f}",
+                             f"±{((results.get('uncertainty') or {}).get('polytropic_efficiency') or {}).get('expanded_uncertainty', 0):.4f}",
+                             ((results.get('uncertainty') or {}).get('polytropic_efficiency') or {}).get('confidence_level', '95%')],
+                        ]
+                        if (results.get('uncertainty') or {}).get('polytropic_efficiency')
+                        else [['Politropik Verim', 'hesaplanmadı', 'hesaplanmadı', '-']]
+                    ),
                 ]
                 
                 perf_unc_table = Table(perf_unc_data, colWidths=[140, 100, 100, 80])
@@ -544,7 +579,8 @@ class ReportGenerator:
                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                    ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                    ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                     ('FONTSIZE', (0, 0), (-1, 0), 9),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d5f5e3')),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -553,16 +589,25 @@ class ReportGenerator:
                 story.append(Spacer(1, 12))
                 
                 # Uncertainty methodology note
-                methodology_note = """
-                <b>Belirsizlik Analizi Metodolojisi:</b><br/>
-                • RSS (Root-Sum-Square) metodu ile birleşik belirsizlik hesaplanmıştır<br/>
-                • Duyarlılık katsayıları sayısal türev ile belirlenmiştir<br/>
-                • Kapsama faktörü k=2 kullanılarak %95 güven aralığı sağlanmıştır<br/>
-                • Tüm ölçümler ASME PTC 10 Appendix B gereksinimlerine uygundur<br/><br/>
-                
-                <b>Referans Standart:</b><br/>
-                ASME PTC 10-1997: Performance Test Code on Compressors and Exhausters, Appendix B - Measurement Uncertainty
-                """
+                _unc = results.get('uncertainty') or {}
+                _compliant = _unc.get('asme_ptc10_compliant')
+                _compliance_line = (
+                    "• ASME PTC 10 Appendix B uygunluğu: <b>EVET</b> (ölçüm belirsizlikleri)<br/>"
+                    if _compliant
+                    else "• ASME PTC 10 Appendix B uygunluğu: <b>HAYIR / KISMİ</b> — "
+                         + escape("; ".join(_unc.get('compliance_reasons') or ["gerekçe belirtilmedi"]))
+                         + "<br/>"
+                )
+                methodology_note = (
+                    "<b>Belirsizlik Analizi Metodolojisi:</b><br/>"
+                    "• RSS (Root-Sum-Square) metodu ile birleşik belirsizlik hesaplanmıştır<br/>"
+                    "• Duyarlılık katsayıları sayısal türev ile belirlenmiştir<br/>"
+                    "• Kapsama faktörü k=2 kullanılarak %95 güven aralığı sağlanmıştır<br/>"
+                    + _compliance_line +
+                    "<br/>"
+                    "<b>Referans Standart:</b><br/>"
+                    "ASME PTC 10-1997: Performance Test Code on Compressors and Exhausters, Appendix B - Measurement Uncertainty"
+                )
                 story.append(Paragraph(methodology_note, styles['Normal']))
                 
                 self.logger.info("ASME PTC 10 uncertainty analysis section added to PDF report")
@@ -643,7 +688,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e67e22')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fdebd0')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -693,7 +739,7 @@ class ReportGenerator:
             _set_pdf_fonts(styles)
             
             # Başlık
-            title = Paragraph(f"KASP v{APP_VERSION} - Performans Degerlendirme Raporu<br/>{inputs['unit_name']}", styles['Title'])
+            title = Paragraph(f"KASP v{APP_VERSION} - Performans Değerlendirme Raporu<br/>{escape(str(inputs.get('unit_name', '')))}", styles['Title'])
             story.append(title)
             story.append(Spacer(1, 12))
             
@@ -705,19 +751,24 @@ class ReportGenerator:
             
             # 1. TEST KOŞULLARI
             story.append(Paragraph("1. TEST KOŞULLARI", styles['Heading2']))
+            amb_p_val = float(inputs.get('ambient_pressure', inputs.get('ambient_press', 101.325)))
+            amb_p_unit = 'kPa' if amb_p_val <= 200.0 else 'mbar'
+            unit_name = inputs.get('unit_name', inputs.get('project_name', 'Performans Testi'))
+            fuel_flow_val = inputs.get('fuel_flow', results.get('fuel_cons_kg_h', 0.0))
+            fuel_flow_unit = inputs.get('fuel_flow_unit', 'kg/h')
             test_data = [
                 ['Parametre', 'Değer', 'Birim'],
-                ['Test Edilen Ünite', inputs['unit_name'], ''],
-                ['Giriş Basıncı', f"{inputs['p_in']}", inputs['p_in_unit']],
-                ['Giriş Sıcaklığı', f"{inputs['t_in']}", inputs['t_in_unit']],
-                ['Çıkış Basıncı', f"{inputs['p_out']}", inputs['p_out_unit']],
-                ['Çıkış Sıcaklığı', f"{inputs['t_out']}", inputs['t_out_unit']],
-                ['Gaz Debisi', f"{inputs['flow']}", inputs['flow_unit']],
-                ['Yakıt Tüketimi', f"{inputs['fuel_flow']}", inputs['fuel_flow_unit']],
-                ['Ortam Sıcaklığı', f"{inputs['ambient_temp']:.1f}", '°C'],
-                ['Ortam Basıncı', f"{inputs['ambient_press']:.1f}", 'mbar'],
-                ['Nem Oranı', f"{inputs.get('humidity', 60):.1f}", '%'],
-                ['Rakım', f"{inputs.get('altitude', 0):.0f}", 'm']
+                ['Test Edilen Ünite', str(unit_name), ''],
+                ['Giriş Basıncı', f"{inputs.get('p_in', 0.0)}", inputs.get('p_in_unit', 'bar(a)')],
+                ['Giriş Sıcaklığı', f"{inputs.get('t_in', 0.0)}", inputs.get('t_in_unit', '°C')],
+                ['Çıkış Basıncı', f"{inputs.get('p_out', 0.0)}", inputs.get('p_out_unit', 'bar(a)')],
+                ['Çıkış Sıcaklığı', f"{inputs.get('t_out', 0.0)}", inputs.get('t_out_unit', '°C')],
+                ['Gaz Debisi', f"{inputs.get('flow', 0.0)}", inputs.get('flow_unit', 'kg/s')],
+                ['Yakıt Tüketimi', f"{fuel_flow_val}", fuel_flow_unit],
+                ['Ortam Sıcaklığı', f"{float(inputs.get('ambient_temp', 15.0)):.1f}", '°C'],
+                ['Ortam Basıncı', f"{amb_p_val:.2f}", amb_p_unit],
+                ['Nem Oranı', f"{float(inputs.get('humidity', 60)):.1f}", '%'],
+                ['Rakım', f"{float(inputs.get('altitude', 0)):.0f}", 'm']
             ]
             
             test_table = Table(test_data, colWidths=[150, 100, 80])
@@ -725,7 +776,8 @@ class ReportGenerator:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#ecf0f1')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -740,6 +792,7 @@ class ReportGenerator:
             
             doc.build(story)
             self.logger.info(f"Performance report created: {self.file_path}")
+            return True
             
         except Exception as e:
             self.logger.error(f"Performance report generation error: {e}", exc_info=True)
@@ -750,37 +803,58 @@ class ReportGenerator:
         from reportlab.lib import colors
         from reportlab.platypus import Table, TableStyle, Paragraph, Spacer
         
+        def _eff_frac(val):
+            v = float(val or 0.0)
+            return v / 100.0 if v > 1.0 else v
+
+        act_poly = _eff_frac(results.get('actual_poly_eff', results.get('poly_eff', 0.0)))
+        des_poly = _eff_frac(results.get('design_poly_eff', results.get('expected_poly_eff', act_poly)))
+        dev_poly = float(results.get('deviation_poly_eff', 0.0))
+
+        act_therm = _eff_frac(results.get('actual_therm_eff', results.get('turb_eff', 0.0)))
+        exp_therm = _eff_frac(results.get('expected_therm_eff', act_therm))
+        dev_therm = float(results.get('deviation_therm_eff', 0.0))
+
+        act_hr = float(results.get('actual_heat_rate', 0.0))
+        exp_hr = float(results.get('expected_heat_rate', act_hr))
+        dev_hr = float(results.get('deviation_heat_rate', 0.0))
+
+        act_pwr = float(results.get('actual_power', results.get('shaft_power_kw', 0.0)))
+        exp_pwr = float(results.get('expected_power', act_pwr))
+        dev_pwr = float(results.get('deviation_power', 0.0))
+
         # Performance comparison data
         perf_data = [
             ['Parametre', 'Gerçek', 'Tasarım', 'Sapma (%)', 'Durum'],
             ['Politropik Verim (%)', 
-             f"{results['actual_poly_eff']*100:.2f}", 
-             f"{results['design_poly_eff']*100:.2f}",
-             f"{results['deviation_poly_eff']:.2f}",
-             self._get_status_icon(results['deviation_poly_eff'])],
+             f"{act_poly*100:.2f}", 
+             f"{des_poly*100:.2f}",
+             f"{dev_poly:.2f}",
+             self._get_status_icon(dev_poly)],
             ['Isıl Verim (%)', 
-             f"{results['actual_therm_eff']*100:.2f}", 
-             f"{results['expected_therm_eff']*100:.2f}",
-             f"{results['deviation_therm_eff']:.2f}",
-             self._get_status_icon(results['deviation_therm_eff'])],
+             f"{act_therm*100:.2f}", 
+             f"{exp_therm*100:.2f}",
+             f"{dev_therm:.2f}",
+             self._get_status_icon(dev_therm)],
             ['Isı Oranı (kJ/kWh)', 
-             f"{results['actual_heat_rate']:.0f}", 
-             f"{results['expected_heat_rate']:.0f}",
-             f"{results['deviation_heat_rate']:.2f}",
-             self._get_status_icon(results['deviation_heat_rate'])],
+             f"{act_hr:.0f}", 
+             f"{exp_hr:.0f}",
+             f"{dev_hr:.2f}",
+             self._get_status_icon(dev_hr)],
             ['Çıkış Gücü (kW)', 
-             f"{results['actual_power']:.0f}", 
-             f"{results['expected_power']:.0f}",
-             f"{results['deviation_power']:.2f}",
-             self._get_status_icon(results['deviation_power'])]
+             f"{act_pwr:.0f}", 
+             f"{exp_pwr:.0f}",
+             f"{dev_pwr:.2f}",
+             self._get_status_icon(dev_pwr)]
         ]
         
-        perf_table = Table(perf_data, colWidths=[120, 80, 80, 60, 40])
+        perf_table = Table(perf_data, colWidths=[120, 80, 80, 60, 60])
         table_style = [
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+            ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
             ('FONTSIZE', (0, 0), (-1, 0), 9),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#d5f4e6')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -804,17 +878,22 @@ class ReportGenerator:
         # 3. PERFORMANS DURUMU
         story.append(Paragraph("3. PERFORMANS DURUMU", styles['Heading2']))
         
-        status = results['performance_status']
+        status = results.get('performance_status') or {
+            'status': 'UYGUN',
+            'color': 'green',
+            'description': 'Performans değerleri beklenen sınırlar içindedir.',
+            'recommendation': 'Rutin izlemeye devam edin.',
+        }
         status_text = f"""
-        <b>Performans Durumu:</b> <font color="{status['color']}">{status['status']}</font><br/>
-        <b>Açıklama:</b> {status['description']}<br/>
-        <b>Öneri:</b> {status['recommendation']}<br/><br/>
+        <b>Performans Durumu:</b> <font color="{status.get('color', 'green')}">{status.get('status', 'UYGUN')}</font><br/>
+        <b>Açıklama:</b> {status.get('description', '')}<br/>
+        <b>Öneri:</b> {status.get('recommendation', '')}<br/><br/>
         
         <b>Detaylı Analiz:</b><br/>
-        • Politropik Verim Sapması: {results['deviation_poly_eff']:.2f}%<br/>
-        • Isıl Verim Sapması: {results['deviation_therm_eff']:.2f}%<br/>
-        • Isı Oranı Sapması: {results['deviation_heat_rate']:.2f}%<br/>
-        • Güç Sapması: {results['deviation_power']:.2f}%<br/>
+        • Politropik Verim Sapması: {dev_poly:.2f}%<br/>
+        • Isıl Verim Sapması: {dev_therm:.2f}%<br/>
+        • Isı Oranı Sapması: {dev_hr:.2f}%<br/>
+        • Güç Sapması: {dev_pwr:.2f}%<br/>
         """
         
         status_para = Paragraph(status_text, styles['Normal'])
@@ -824,13 +903,27 @@ class ReportGenerator:
         # 4. TEST KOŞULLARI DETAYI
         story.append(Paragraph("4. TEST KOŞULLARI DETAYI", styles['Heading2']))
         
+        raw_isen = results.get(
+            'actual_isentropic_eff',
+            results.get('isen_eff', 0.0) / 100.0 if results.get('isen_eff', 0.0) > 1.0 else results.get('isen_eff', 0.0),
+        )
+        tc = results.get('test_conditions') or {}
+        tc_mass_flow = float(tc.get('mass_flow', inputs.get('flow_kgs', inputs.get('flow', 0.0))))
+        tc_fuel_flow = float(tc.get('fuel_flow', results.get('fuel_cons_kg_h', inputs.get('fuel_flow', 0.0))))
+        tc_cr = float(
+            tc.get(
+                'compression_ratio',
+                float(inputs.get('p2_pa', inputs.get('p_out', 1.0))) / max(float(inputs.get('p1_pa', inputs.get('p_in', 1.0))), 1e-9),
+            )
+        )
+        tc_head = float(tc.get('head', results.get('poly_head_kj_kg', 0.0)))
         test_details_data = [
             ['Parametre', 'Değer', 'Birim'],
-            ['Kütlesel Debi', f"{results['test_conditions']['mass_flow']:.3f}", 'kg/s'],
-            ['Yakıt Tüketimi', f"{results['test_conditions']['fuel_flow']/3600:.3f}", 'kg/s'],
-            ['Sıkıştırma Oranı', f"{results['test_conditions']['compression_ratio']:.2f}", ''],
-            ['Politropik Head', f"{results['test_conditions']['head']:.1f}", 'kJ/kg'],
-            ['İzentropik Verim', f"{results['actual_isentropic_eff']*100:.2f}", '%']
+            ['Kütlesel Debi', f"{tc_mass_flow:.3f}", 'kg/s'],
+            ['Yakıt Tüketimi', f"{tc_fuel_flow/3600:.3f}", 'kg/s'],
+            ['Sıkıştırma Oranı', f"{tc_cr:.2f}", ''],
+            ['Politropik Head', f"{tc_head:.1f}", 'kJ/kg'],
+            ['İzentropik Verim', f"{float(raw_isen)*100:.2f}", '%']
         ]
         
         test_details_table = Table(test_details_data, colWidths=[120, 100, 80])
@@ -838,7 +931,8 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8e44ad')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+            ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#e8daef')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
         ]))
@@ -850,14 +944,15 @@ class ReportGenerator:
         
         factors = results.get('corrected_values', {}).get('correction_factors', {})
         factor_inputs = factors.get('inputs', {})
+        # Uygulanan (applied_*) faktorler gosterilir; ham faktorler degil (P3-16)
         correction_data = [
-            ['Faktör', 'Değer', 'Etki'],
-            ['Sıcaklık', f"{factor_inputs.get('ambient_temp_c', 15.0):.1f} °C", f"{(factors.get('temperature_factor', 1.0) - 1) * 100:+.1f}%"],
-            ['Basınç', f"{factor_inputs.get('ambient_pressure_kpa', 101.325):.3f} kPa", f"{(factors.get('pressure_factor', 1.0) - 1) * 100:+.1f}%"],
-            ['Nem', f"{factor_inputs.get('relative_humidity_pct', 60.0):.1f}%", f"{(factors.get('humidity_factor', 1.0) - 1) * 100:+.1f}%"],
-            ['Rakım', f"{factor_inputs.get('altitude_m', 0.0):.0f} m", f"{(factors.get('altitude_factor', 1.0) - 1) * 100:+.1f}%"],
-            ['Giriş Kaybı', f"{factor_inputs.get('inlet_pressure_loss_kpa', 0.0):.3f} kPa", f"{(factors.get('inlet_loss_factor', 1.0) - 1) * 100:+.1f}%"],
-            ['Egzoz Kaybı', f"{factor_inputs.get('exhaust_pressure_loss_kpa', 0.0):.3f} kPa", f"{(factors.get('exhaust_loss_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Faktör', 'Değer', 'Uygulanan Etki'],
+            ['Sıcaklık', f"{factor_inputs.get('ambient_temp_c', 15.0):.1f} °C", f"{(factors.get('applied_temperature_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Basınç', f"{factor_inputs.get('ambient_pressure_kpa', 101.325):.3f} kPa", f"{(factors.get('applied_pressure_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Nem', f"{factor_inputs.get('relative_humidity_pct', 60.0):.1f}%", f"{(factors.get('applied_humidity_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Rakım', f"{factor_inputs.get('altitude_m', 0.0):.0f} m", f"{(factors.get('applied_altitude_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Giriş Kaybı', f"{factor_inputs.get('inlet_pressure_loss_kpa', 0.0):.3f} kPa", f"{(factors.get('applied_inlet_loss_factor', 1.0) - 1) * 100:+.1f}%"],
+            ['Egzoz Kaybı', f"{factor_inputs.get('exhaust_pressure_loss_kpa', 0.0):.3f} kPa", f"{(factors.get('applied_exhaust_loss_factor', 1.0) - 1) * 100:+.1f}%"],
             ['Toplam Güç Faktörü', f"{factors.get('power_factor', 1.0):.4f}", ''],
             ['Düzeltilmiş Güç', f"{results.get('corrected_power', 0.0):.0f} kW", 'ISO/PTC'],
             ['Düzeltilmiş Isı Oranı', f"{results.get('corrected_heat_rate', 0.0):.0f} kJ/kWh", 'ISO/PTC'],
@@ -868,7 +963,8 @@ class ReportGenerator:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e67e22')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+            ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
             ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fdebd0')),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
         ]))
@@ -877,9 +973,13 @@ class ReportGenerator:
     def _format_composition(self, composition):
         """Gaz kompozisyonunu formatla"""
         components = []
-        for comp, frac in composition.items():
-            if frac > 0.01:  # Sadece %1'den büyük bileşenler
-                components.append(f"{comp}: {frac:.1f}%")
+        for comp, frac in (composition or {}).items():
+            val = float(frac or 0.0)
+            if val > 0:
+                if val < 1.0:
+                    components.append(f"{comp}: {val:.2f}%")
+                else:
+                    components.append(f"{comp}: {val:.1f}%")
         return ", ".join(components) if components else "Karışım"
 
     @staticmethod
@@ -1005,13 +1105,18 @@ class ReportGenerator:
         }
 
     def _get_eos_display_name(self, eos_method):
-        """EOS metodunun görünen adını getir"""
+        """EOS metodunun görünen adını getir (DejaVuSans uyumlu, emojisiz)"""
         names = {
-            'coolprop': '🎯 Yüksek Doğruluk (CoolProp)',
-            'pr': '📊 Peng-Robinson (thermo)',
-            'srk': '📈 SRK (thermo)'
+            'coolprop': 'Yüksek Doğruluk (CoolProp)',
+            'pr': 'Peng-Robinson (thermo)',
+            'srk': 'SRK (thermo)',
+            'thermopack': 'ThermoPack (SINTEF)',
+            'aga8': 'AGA8-DC92 (GERG-2008 / Doğal Gaz)',
+            'neqsim': 'NeqSim (Equinor)',
+            'dwsim': 'DWSIM (Standalone)',
+            'ccp': 'CCP (Petrobras)',
         }
-        return names.get(eos_method, eos_method)
+        return names.get(str(eos_method).lower(), str(eos_method))
 
     def _format_eos_distribution(self, distribution):
         """EOS dağılımını formatla"""
@@ -1020,18 +1125,30 @@ class ReportGenerator:
         return ", ".join([f"{k}: {v}" for k, v in distribution.items()])
 
     def _get_status_icon(self, deviation):
-        """Sapma değerine göre durum ikonu"""
+        """Sapma değerine göre durum ikonu (DejaVuSans uyumlu)"""
         deviation_abs = abs(deviation)
         if deviation_abs <= 2.0:
-            return "✅"
+            return "✓ UYGUN"
         elif deviation_abs <= 5.0:
-            return "⚠️"
+            return "! UYARI"
         else:
-            return "❌"
+            return "✗ KRİTİK"
 
     def generate_summary_report(self, inputs, results, selected_units):
         """Özet rapor oluşturur"""
         try:
+            recommended = []
+            if selected_units:
+                for i, unit in enumerate(selected_units[:3]):
+                    unit_info = self._describe_report_unit(unit)
+                    recommended.append({
+                        'rank': i + 1,
+                        'turbine': unit_info['name'],
+                        'power': unit_info['available_power_kw'],
+                        'efficiency': unit_info['efficiency_rating'],
+                        'score': unit_info['selection_score'],
+                    })
+
             summary = {
                 'project_name': inputs['project_name'],
                 'calculation_date': datetime.datetime.now().isoformat(),
@@ -1047,16 +1164,7 @@ class ReportGenerator:
                     'thermal_efficiency': inputs['therm_eff'] / 100.0,
                     'heat_rate': results['heat_rate']
                 },
-                'recommended_turbines': [
-                    {
-                        'rank': i + 1,
-                        'turbine': unit['turbine'],
-                        'power': unit['available_power_kw'],
-                        'efficiency': unit['efficiency_rating'],
-                        'score': unit['selection_score']
-                    }
-                    for i, unit in enumerate(selected_units[:3])
-                ] if selected_units else [],
+                'recommended_turbines': recommended,
                 'system_performance': self.engine.performance_monitor.get_statistics()
             }
             

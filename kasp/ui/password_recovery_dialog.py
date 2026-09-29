@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
 )
 
 from kasp.i18n import tr
-from kasp.security import normalize_recovery_key, normalize_security_answer
+from kasp.security import check_lockout, normalize_recovery_key, normalize_security_answer
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +191,11 @@ class PasswordRecoveryDialog(QDialog):
             self._set_status(tr("Lütfen bir kullanıcı adı giriniz."), is_error=True)
             return
 
+        locked, lock_msg = check_lockout(username)
+        if locked:
+            self._set_status(tr(f"Çok fazla hatalı deneme. {lock_msg}"), is_error=True)
+            return
+
         user_dict = self._user_manager.db.get_user_by_username(username)
         if not user_dict:
             self._set_status(tr("Kullanıcı bulunamadı."), is_error=True)
@@ -265,11 +270,10 @@ class PasswordRecoveryDialog(QDialog):
 
         if ok:
             self.recovered_username = username
-            QMessageBox.information(
-                self,
-                tr("Başarılı"),
-                tr("Şifreniz başarıyla sıfırlandı!\nYeni şifrenizle giriş yapabilirsiniz."),
-            )
+            message = tr("Şifreniz başarıyla sıfırlandı!\nYeni şifrenizle giriş yapabilirsiniz.")
+            if err:
+                message += "\n\n" + err
+            QMessageBox.information(self, tr("Başarılı"), message)
             self.accept()
         else:
             self._set_status(err or tr("Şifre sıfırlanamadı."), is_error=True)

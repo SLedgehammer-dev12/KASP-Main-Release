@@ -9,6 +9,8 @@ venv/
 build/
 dist/
 *.log
+*.db
+kasp_database.db
 *.db-journal
 *.db-wal
 *.db-shm
@@ -29,3 +31,4 @@ git_yedek/
 .vscode/
 deneme.kasp
 kasp_lockout.json*
+kasp_config.json

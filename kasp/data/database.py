@@ -8,6 +8,150 @@ import os
 import re
 
 
+# JSON şema doğrulama — her kayıt yüklenmeden önce kontrol edilir (P4-5).
+# Eksik/yanlış tipli alanlar, negatif/placeholder değerler hata verir.
+# Bu, "min_flow=0 / max_flow=1000 / PR=10" gibi placeholder'ların
+# sessizce DB'ye girmesini engeller.
+
+TURBINE_REQUIRED = {
+    "manufacturer": str,
+    "model": str,
+    "type": str,
+    "iso_power_kw": (int, float),
+    "iso_heat_rate_kj_kwh": (int, float),
+}
+
+TURBINE_OPTIONAL = {
+    "performance_correction_data": dict,
+    "surge_flow": (int, float),
+    "stonewall_flow": (int, float),
+    "max_pressure_ratio": (int, float),
+    "min_flow_kgs": (int, float),
+    "max_flow_kgs": (int, float),
+    "fuel_type": str,
+}
+
+COMPRESSOR_REQUIRED = {
+    "manufacturer": str,
+    "model": str,
+    "max_pressure_ratio": (int, float),
+    "min_flow_kgs": (int, float),
+    "max_flow_kgs": (int, float),
+}
+
+COMPRESSOR_OPTIONAL = {
+    "performance_map_data": dict,
+}
+
+
+def _validate_turbine_record(t: dict, idx: int) -> list[str]:
+    """Tek bir türbin kaydını doğrular. Hata listesi döner (boşsa geçerli)."""
+    errors = []
+    for field, expected_type in TURBINE_REQUIRED.items():
+        if field not in t:
+            errors.append(f"Satır {idx}: Zorunlu alan eksik: '{field}'")
+            continue
+        val = t[field]
+        if not isinstance(val, expected_type):
+            errors.append(f"Satır {idx}: '{field}' tipi yanlış (beklenen: {expected_type.__name__ if isinstance(expected_type, type) else 'sayi'}, actual: {type(val).__name__})")
+    for field, expected_type in TURBINE_OPTIONAL.items():
+        if field in t:
+            val = t[field]
+            if val is not None and not isinstance(val, expected_type):
+                errors.append(f"Satır {idx}: '{field}' tipi yanlış (beklenen: {expected_type.__name__ if isinstance(expected_type, type) else 'sayi/dict'}, actual: {type(val).__name__})")
+    # Fiziksel mantık kontrolleri
+    if "min_flow_kgs" in t and "max_flow_kgs" in t:
+        mn = t["min_flow_kgs"]
+        mx = t["max_flow_kgs"]
+        if mn is not None and mx is not None and mx <= mn:
+            errors.append(f"Satır {idx}: max_flow_kgs ({mx}) min_flow_kgs ({mn})'dan büyük olmalı")
+    if "max_pressure_ratio" in t:
+        pr = t["max_pressure_ratio"]
+        if pr is not None and pr <= 1.0:
+            errors.append(f"Satır {idx}: max_pressure_ratio > 1.0 olmalı (actual: {pr})")
+    if "iso_power_kw" in t:
+        pw = t["iso_power_kw"]
+        if pw is not None and pw <= 0:
+            errors.append(f"Satır {idx}: iso_power_kw > 0 olmalı (actual: {pw})")
+    # Placeholder benzeri değerler için uyarı (hata değil)
+    if t.get("min_flow_kgs") == 0 and t.get("max_flow_kgs") in (500, 1000, 9999):
+        errors.append(f"Satır {idx}: UYARI - min_flow=0 ve max_flow={t['max_flow_kgs']} placeholder gibi görünüyor")
+    if t.get("max_pressure_ratio") == 10.0 and t.get("surge_flow") == 0 and t.get("stonewall_flow") in (500, 1000, 9999):
+        errors.append(f"Satır {idx}: UYARI - surge/stonewall placeholder gibi görünüyor")
+    return errors
+
+
+def _validate_compressor_record(c: dict, idx: int) -> list[str]:
+    """Tek bir kompresör kaydını doğrular. Hata listesi döner (boşsa geçerli)."""
+    errors = []
+    for field, expected_type in COMPRESSOR_REQUIRED.items():
+        if field not in c:
+            errors.append(f"Satır {idx}: Zorunlu alan eksik: '{field}'")
+            continue
+        val = c[field]
+        if not isinstance(val, expected_type):
+            errors.append(f"Satır {idx}: '{field}' tipi yanlış (beklenen: {expected_type.__name__ if isinstance(expected_type, type) else 'sayi'}, actual: {type(val).__name__})")
+    for field, expected_type in COMPRESSOR_OPTIONAL.items():
+        if field in c:
+            val = c[field]
+            if val is not None and not isinstance(val, expected_type):
+                errors.append(f"Satır {idx}: '{field}' tipi yanlış (beklenen: {expected_type.__name__ if isinstance(expected_type, type) else 'dict'}, actual: {type(val).__name__})")
+    # Fiziksel mantık kontrolleri
+    mn = c.get("min_flow_kgs")
+    mx = c.get("max_flow_kgs")
+    if mn is not None and mx is not None and mx <= mn:
+        errors.append(f"Satır {idx}: max_flow_kgs ({mx}) min_flow_kgs ({mn})'dan büyük olmalı")
+    pr = c.get("max_pressure_ratio")
+    if pr is not None and pr <= 1.0:
+        errors.append(f"Satır {idx}: max_pressure_ratio > 1.0 olmalı (actual: {pr})")
+    # Placeholder uyarısı
+    if c.get("min_flow_kgs") == 0 and c.get("max_flow_kgs") in (500, 1000, 9999):
+        errors.append(f"Satır {idx}: UYARI - min_flow=0 ve max_flow={c['max_flow_kgs']} placeholder gibi görünüyor")
+    if c.get("max_pressure_ratio") == 10.0 and c.get("performance_map_data") == {}:
+        errors.append(f"Satır {idx}: UYARI - boş performance_map_data, seçimde harita kullanılamaz")
+    return errors
+
+
+def validate_sample_data(filepath: str, validator_fn) -> tuple[list[dict], list[str]]:
+    """JSON dosyasını yükler ve her kaydı doğrular.
+    
+    Returns:
+        (valid_records, errors)
+    """
+    if not os.path.exists(filepath):
+        return [], [f"Dosya bulunamadı: {filepath}"]
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        return [], [f"Geçersiz JSON ({filepath}): {e}"]
+    except Exception as e:
+        return [], [f"Dosya okuma hatası ({filepath}): {e}"]
+
+    if not isinstance(data, list):
+        return [], [f"JSON kök bir dizi olmalı ({filepath})"]
+
+    valid = []
+    errors = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            errors.append(f"Satır {i}: Nesne değil, {type(item).__name__}")
+            continue
+        item_errors = validator_fn(item, i)
+        # "UYARI" prefix'i hata mesajının içinde geçiyor (Satır N: UYARI - ...)
+        # Bu yüzden .startswith() yerine "UYARI" in string kontrolü yap.
+        has_real_error = any("UYARI" not in e for e in item_errors)
+        if has_real_error:
+            errors.extend([e for e in item_errors if "UYARI" not in e])
+        else:
+            # Sadece uyarı varsa kaydı kabul et ama uyarıları logla
+            for e in item_errors:
+                if "UYARI" in e:
+                    logging.getLogger(__name__).warning(f"{filepath}: {e}")
+            valid.append(item)
+    return valid, errors
+
+
 def _resolve_db_path(db_name="kasp_database.db"):
     if not getattr(sys, "frozen", False):
         return db_name
@@ -29,16 +173,32 @@ class UnitDatabase:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.create_tables()
         self._migrate_database_schema()
-        # Only insert sample data if tables are empty (avoid redundant I/O on every startup)
-        if self._is_turbine_table_empty():
+        # Sync sample data if tables are empty or missing newer turbines
+        if self._is_turbine_table_empty() or self._needs_sample_data_sync():
             self.insert_sample_data()
     
     def get_connection(self):
         """Thread-safe bağlantı oluştur"""
-        if not hasattr(self._local, 'conn'):
-            self._local.conn = sqlite3.connect(self.db_name, check_same_thread=False)
-            self._local.conn.row_factory = sqlite3.Row
+        if getattr(self._local, 'conn', None) is None:
+            conn = sqlite3.connect(self.db_name, timeout=10.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA busy_timeout = 5000;")
+                conn.execute("PRAGMA journal_mode = WAL;")
+            except sqlite3.Error:
+                pass
+            self._local.conn = conn
         return self._local.conn
+    
+    def close(self):
+        """Thread-local bağlantıyı kapat"""
+        conn = getattr(self._local, 'conn', None)
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+            self._local.conn = None
     
     def get_cursor(self):
         """Thread-safe cursor döndür"""
@@ -55,6 +215,16 @@ class UnitDatabase:
         except sqlite3.OperationalError:
             # Table doesn't exist yet
             return True
+
+    def _needs_sample_data_sync(self):
+        """Check if existing database is missing newer sample turbines (< 146)"""
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT COUNT(*) FROM Turbines")
+            count = cursor.fetchone()[0]
+            return count < 146
+        except sqlite3.Error:
+            return False
     
     def create_tables(self):
         """Veritabanı tablolarını oluştur"""
@@ -183,31 +353,31 @@ class UnitDatabase:
         self.logger.info("VT Şema Güncellemesi Tamamlandı.")
     
     def insert_sample_data(self):
-        """JSON dosyalarından örnek verileri yükle"""
+        """JSON dosyalarından örnek verileri yükle (şema doğrulamalı)."""
         try:
             cursor = self.get_cursor()
-            
+
             # Turbines
             turbines_path = os.path.join(os.path.dirname(__file__), 'turbines.json')
             if os.path.exists(turbines_path):
-                with open(turbines_path, 'r', encoding='utf-8') as f:
-                    turbines = json.load(f)
-                
-                for t in turbines:
+                valid_turbines, errors = validate_sample_data(turbines_path, _validate_turbine_record)
+                if errors:
+                    raise ValueError(f"Türbin verisi doğrulama hataları: {'; '.join(errors)}")
+                for t in valid_turbines:
                     correction_data = t.get('performance_correction_data', {})
                     if isinstance(correction_data, dict):
                         correction_data = json.dumps(correction_data)
-                    
+
                     cursor.execute("""
                         INSERT OR IGNORE INTO Turbines(
-                            manufacturer, model, type, iso_power_kw, iso_heat_rate_kj_kwh, 
+                            manufacturer, model, type, iso_power_kw, iso_heat_rate_kj_kwh,
                             performance_correction_data, surge_flow, stonewall_flow,
                             max_pressure_ratio, min_flow_kgs, max_flow_kgs, fuel_type
                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                     """, (
                         t['manufacturer'], t['model'], t['type'], t['iso_power_kw'], t['iso_heat_rate_kj_kwh'],
                         correction_data, t.get('surge_flow', 0), t.get('stonewall_flow', 0),
-                        t.get('max_pressure_ratio', 10.0), t.get('min_flow_kgs', 0), 
+                        t.get('max_pressure_ratio', 10.0), t.get('min_flow_kgs', 0),
                         t.get('max_flow_kgs', 1000), t.get('fuel_type', 'Natural Gas')
                     ))
             else:
@@ -216,42 +386,40 @@ class UnitDatabase:
             # Compressors
             compressors_path = os.path.join(os.path.dirname(__file__), 'compressors.json')
             if os.path.exists(compressors_path):
-                with open(compressors_path, 'r', encoding='utf-8') as f:
-                    compressors = json.load(f)
-                
-                for c in compressors:
+                valid_compressors, errors = validate_sample_data(compressors_path, _validate_compressor_record)
+                if errors:
+                    raise ValueError(f"Kompresör verisi doğrulama hataları: {'; '.join(errors)}")
+                for c in valid_compressors:
                     map_data = c.get('performance_map_data', {})
                     if isinstance(map_data, dict):
                         map_data = json.dumps(map_data)
-                        
+
                     cursor.execute("""
                         INSERT OR IGNORE INTO Compressors(
                             manufacturer, model, max_pressure_ratio, min_flow_kgs, max_flow_kgs, performance_map_data
                         ) VALUES(?,?,?,?,?,?)
                     """, (
-                        c['manufacturer'], c['model'], c['max_pressure_ratio'], 
+                        c['manufacturer'], c['model'], c['max_pressure_ratio'],
                         c['min_flow_kgs'], c['max_flow_kgs'], map_data
                     ))
             else:
                 self.logger.warning(f"Kompresör veri dosyası bulunamadı: {compressors_path}")
-            
+
             self.get_connection().commit()
-            self.logger.info("Örnek veriler veritabanına yüklendi.")
-            
+            self.logger.info("Örnek veriler veritabanına yüklendi (doğrulamalı).")
+
         except Exception as e:
             self.logger.error(f"Örnek veri ekleme hatası: {e}", exc_info=True)
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
     
     def get_all_turbines_full_data(self):
         """Tüm türbin verilerini getir"""
         try:
             cursor = self.get_cursor()
-            cursor.execute("""
-                SELECT *, 
-                       json_extract(performance_correction_data, '$.temperature_correction') as temp_correction,
-                       json_extract(performance_correction_data, '$.altitude_correction') as alt_correction
-                FROM Turbines 
-                ORDER BY manufacturer, iso_power_kw
-            """)
+            cursor.execute("SELECT * FROM Turbines ORDER BY manufacturer, iso_power_kw")
             
             turbines = []
             for row in cursor.fetchall():
@@ -307,7 +475,12 @@ class UnitDatabase:
             if row:
                 turbine = dict(row)
                 if turbine['performance_correction_data']:
-                    turbine['performance_correction_data'] = json.loads(turbine['performance_correction_data'])
+                    try:
+                        turbine['performance_correction_data'] = json.loads(turbine['performance_correction_data'])
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        turbine['performance_correction_data'] = {}
+                else:
+                    turbine['performance_correction_data'] = {}
                 
                 turbine.pop('temp_correction', None)
                 turbine.pop('alt_correction', None)
@@ -328,11 +501,23 @@ class UnitDatabase:
                  correction_data_str = json.dumps(correction_data_str)
                  
             cursor.execute("""
-                INSERT OR REPLACE INTO Turbines 
+                INSERT INTO Turbines 
                 (manufacturer, model, type, iso_power_kw, iso_heat_rate_kj_kwh, 
                  performance_correction_data, surge_flow, stonewall_flow, max_pressure_ratio,
                  min_flow_kgs, max_flow_kgs, fuel_type)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(manufacturer, model) DO UPDATE SET
+                    type = excluded.type,
+                    iso_power_kw = excluded.iso_power_kw,
+                    iso_heat_rate_kj_kwh = excluded.iso_heat_rate_kj_kwh,
+                    performance_correction_data = excluded.performance_correction_data,
+                    surge_flow = excluded.surge_flow,
+                    stonewall_flow = excluded.stonewall_flow,
+                    max_pressure_ratio = excluded.max_pressure_ratio,
+                    min_flow_kgs = excluded.min_flow_kgs,
+                    max_flow_kgs = excluded.max_flow_kgs,
+                    fuel_type = excluded.fuel_type,
+                    last_updated = CURRENT_TIMESTAMP
             """, (
                 turbine_data['manufacturer'],
                 turbine_data['model'],
@@ -352,6 +537,10 @@ class UnitDatabase:
             self.logger.info(f"Türbin eklendi: {turbine_data['manufacturer']} {turbine_data['model']}")
             return True
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Türbin ekleme hatası: {e}")
             return False
     
@@ -373,6 +562,10 @@ class UnitDatabase:
             self.get_connection().commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Türbin güncelleme hatası: {e}")
             return False
     
@@ -384,6 +577,10 @@ class UnitDatabase:
             self.get_connection().commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Türbin silme hatası: {e}")
             return False
     
@@ -397,9 +594,15 @@ class UnitDatabase:
                  map_data_str = json.dumps(map_data_str)
                  
             cursor.execute("""
-                INSERT OR REPLACE INTO Compressors 
+                INSERT INTO Compressors 
                 (manufacturer, model, max_pressure_ratio, min_flow_kgs, max_flow_kgs, performance_map_data)
                 VALUES(?,?,?,?,?,?)
+                ON CONFLICT(model) DO UPDATE SET
+                    manufacturer = excluded.manufacturer,
+                    max_pressure_ratio = excluded.max_pressure_ratio,
+                    min_flow_kgs = excluded.min_flow_kgs,
+                    max_flow_kgs = excluded.max_flow_kgs,
+                    performance_map_data = excluded.performance_map_data
             """, (
                 compressor_data['manufacturer'],
                 compressor_data['model'],
@@ -412,6 +615,10 @@ class UnitDatabase:
             self.get_connection().commit()
             return True
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Kompresör ekleme hatası: {e}")
             return False
     
@@ -423,6 +630,10 @@ class UnitDatabase:
             self.get_connection().commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Kompresör silme hatası: {e}")
             return False
     
@@ -442,6 +653,10 @@ class UnitDatabase:
             self.get_connection().commit()
             return True
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Geçmiş kaydetme hatası: {e}")
             return False
     
@@ -481,19 +696,34 @@ class UnitDatabase:
             self.get_connection().commit()
             self.logger.info("Varsayılan admin kullanıcısı oluşturuldu (şifre değiştirme zorunlu).")
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Admin oluşturma hatası: {e}")
 
-    def ensure_default_admin_must_change_password(self, default_password_hash):
-        """Mevcut admin'in parolası varsayılanysa must_change_password=1 yap."""
+    def ensure_default_admin_must_change_password(self, default_password_hash=None):
+        """Mevcut admin'in must_change_password=1 olmasi gerekiyorsa ayarlar.
+
+        DEFAULT_PASSWORD kalktigi icin (P4-6), admin varsa ve must_change_password
+        henuz ayarlanmamissa, bunu zorunlu hale getirir. Bu, ilk kurulumda
+        rastgele olusturulan parolanin degistirilmesini saglar.
+        """
         try:
             cursor = self.get_cursor()
             cursor.execute("SELECT password_hash, must_change_password FROM Users WHERE username = 'admin'")
             row = cursor.fetchone()
-            if row and row["password_hash"] == default_password_hash and not row["must_change_password"]:
-                cursor.execute("UPDATE Users SET must_change_password = 1 WHERE username = 'admin'")
-                self.get_connection().commit()
-                self.logger.info("Mevcut admin kullanıcısı için şifre değiştirme zorunlu hale getirildi.")
+            if not row or row["must_change_password"]:
+                return
+            # Sabit default parola kalktigi icin (P4-6), her admin icin zorunlu degistirme
+            cursor.execute("UPDATE Users SET must_change_password = 1 WHERE username = 'admin'")
+            self.get_connection().commit()
+            self.logger.info("Mevcut admin kullanıcısı için şifre değiştirme zorunlu hale getirildi (P4-6).")
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Admin şifre politikası güncelleme hatası: {e}")
 
     def get_user_by_username(self, username):
@@ -525,8 +755,16 @@ class UnitDatabase:
             self.get_connection().commit()
             return cursor.lastrowid
         except sqlite3.IntegrityError:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             return None
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Kullanıcı ekleme hatası: {e}")
             return None
 
@@ -547,6 +785,10 @@ class UnitDatabase:
             self.get_connection().commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Kullanıcı güncelleme hatası: {e}")
             return False
 
@@ -556,6 +798,10 @@ class UnitDatabase:
             cursor.execute("UPDATE Users SET last_login = datetime('now') WHERE id = ?", (user_id,))
             self.get_connection().commit()
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Login güncelleme hatası: {e}")
 
     def delete_user(self, user_id):
@@ -565,5 +811,9 @@ class UnitDatabase:
             self.get_connection().commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
             self.logger.error(f"Kullanıcı silme hatası: {e}")
             return False

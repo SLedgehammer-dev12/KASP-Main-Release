@@ -6,6 +6,8 @@ Proje kaydetme ve yükleme işlevleri
 import json
 import datetime
 import logging
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -16,6 +18,7 @@ class ProjectManager:
     
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.last_error = None
     
     def save_project(self, filepath, inputs, results=None):
         """
@@ -53,6 +56,7 @@ class ProjectManager:
                     
                     # Hesaplama parametreleri
                     'eos_method': inputs.get('eos_method', 'coolprop'),
+                    'solver_method': inputs.get('solver_method', 'auto'),
                     'method': inputs.get('method', 'Metot 1: Ortalama Özellikler'),
                     'poly_eff': inputs.get('poly_eff', 90.0),
                     'therm_eff': inputs.get('therm_eff', 35.0),
@@ -73,6 +77,7 @@ class ProjectManager:
                     
                     # Site koşulları
                     'ambient_temp': inputs.get('ambient_temp', 15.0),
+                    'ambient_pressure': inputs.get('ambient_pressure', 101.325),
                     'ambient_press': inputs.get('ambient_press', 1013),
                     'altitude': inputs.get('altitude', 0),
                     'humidity': inputs.get('humidity', 60)
@@ -80,29 +85,64 @@ class ProjectManager:
                 'results': results if results else None
             }
             
-            # JSON olarak kaydet
+            # JSON olarak atomik kaydet
             filepath = Path(filepath)
             if not filepath.suffix:
                 filepath = filepath.with_suffix('.kasp')
+            filepath.parent.mkdir(parents=True, exist_ok=True)
             
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(project_data, f, indent=2, ensure_ascii=False)
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode='w',
+                    encoding='utf-8',
+                    dir=str(filepath.parent),
+                    prefix=filepath.stem + '_',
+                    suffix='.tmp',
+                    delete=False,
+                ) as f:
+                    tmp_path = f.name
+                    json.dump(project_data, f, indent=2, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(filepath))
+            except Exception:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                raise
             
+            self.last_error = None
             self.logger.info(f"Proje kaydedildi: {filepath}")
             return True, str(filepath)
             
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Proje kaydetme hatası: {e}", exc_info=True)
             return False, str(e)
     
     def _migrate_project_schema(self, project_data: dict) -> dict:
         """Eski şema sürümlerini güncel sürüme yükseltir."""
-        schema_version = project_data.get('schema_version', project_data.get('version', '1.0'))
+        schema_version = str(project_data.get('schema_version', project_data.get('version', '1.0')))
         
-        # Schema version 1.x / 2.x / 3.x / 4.0 -> 4.1 migration
         if schema_version != self.VERSION:
+            try:
+                major = int(schema_version.split('.')[0])
+                curr_major = int(self.VERSION.split('.')[0])
+            except ValueError:
+                major, curr_major = 1, 4
+            if major > curr_major:
+                self.logger.warning(
+                    f"Proje şeması mevcut sürümden daha yeni ({schema_version} > {self.VERSION}); "
+                    "bazı alanlar tam desteklenmeyebilir."
+                )
+                return project_data
+
+            # Schema version 1.x / 2.x / 3.x / 4.0 -> 4.1 migration
             self.logger.info(f"Proje şeması yükseltiliyor: {schema_version} -> {self.VERSION}")
-            inputs = project_data.get('inputs', {})
+            inputs = project_data.setdefault('inputs', {})
             
             # Eksik alanları varsayılanlarla doldur
             defaults = {
@@ -112,6 +152,8 @@ class ProjectManager:
                 'lhv_source': 'kasp',
                 'fuel_gas_comp': {},
                 'site_correction_inputs': {},
+                'ambient_pressure': 101.325,
+                'solver_method': 'auto',
             }
             for key, default_val in defaults.items():
                 if key not in inputs:
@@ -146,9 +188,11 @@ class ProjectManager:
             inputs = project_data.get('inputs', {})
             results = project_data.get('results')
             
+            self.last_error = None
             self.logger.info(f"Proje yüklendi: {filepath}")
             return True, inputs, results
             
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Proje yükleme hatası: {e}", exc_info=True)
             return False, None, None

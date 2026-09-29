@@ -230,24 +230,6 @@ class KaspMainWindow(QMainWindow):
         # Sürüm notlarını göster (Ayarlara bağlı)
         self._check_for_updates(manual=False)
 
-    def _show_changelog_if_needed(self):
-        try:
-            if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
-                return
-            if os.environ.get("KASP_SKIP_CHANGELOG_DIALOG") == "1":
-                return
-            from kasp.config_manager import get_config_manager
-            config = get_config_manager()
-            skip_v46 = config.get('ui.skip_changelog_v46', False)
-            if not skip_v46:
-                from kasp.ui.dialogs import ChangelogDialog
-                dialog = ChangelogDialog(self)
-                dialog.exec_()
-                if dialog.do_not_show_again:
-                    config.set('ui.skip_changelog_v46', True)
-        except Exception as e:
-            self.logger.warning(f"Changelog dialog error: {e}")
-
     def closeEvent(self, event):
         self._save_splitter_state()
         self._cleanup_update_check_thread()
@@ -329,6 +311,7 @@ class KaspMainWindow(QMainWindow):
         self._apply_saved_theme()
         self._apply_saved_language()
         self._update_composition_total_label()
+        self.restore_splitter_state()
 
     def _apply_saved_theme(self):
         try:
@@ -343,8 +326,12 @@ class KaspMainWindow(QMainWindow):
     def _apply_saved_language(self):
         try:
             from kasp.config_manager import get_config_manager
+            from kasp.i18n import set_language, refresh_all_windows
             lang = get_config_manager().get("app.language", "tr")
+            set_language(lang)
             self._update_language_checkmarks(lang)
+            if lang == "en":
+                refresh_all_windows(self)
         except Exception:
             pass
 
@@ -363,8 +350,16 @@ class KaspMainWindow(QMainWindow):
         from kasp.config_manager import get_config_manager
         from kasp.i18n import set_language, refresh_all_windows
         set_language(lang)
-        self.setWindowTitle(f"KASP v{APP_VERSION} - " + ("Termodinamik Analiz" if lang == "tr" else "Thermodynamic Analysis"))
-        refresh_all_windows()
+        base_title = f"KASP v{APP_VERSION} - " + ("Termodinamik Analiz" if lang == "tr" else "Thermodynamic Analysis")
+        try:
+            from kasp.security import Session
+            user = Session.current_user()
+            if user:
+                base_title = f"{base_title} — {user.username} ({user.role})"
+        except Exception:
+            pass
+        self.setWindowTitle(base_title)
+        refresh_all_windows(self)
         self._update_language_checkmarks(lang)
 
     def _update_theme_checkmarks(self, theme_name):
@@ -453,13 +448,19 @@ class KaspMainWindow(QMainWindow):
         return MainWindowAuxiliaryController(self).populate_unit_combos()
 
     def _setup_unit_tooltips(self):
-        pass
+        from kasp.ui.main_window_input_helpers import MainWindowInputController
+
+        return MainWindowInputController(self).setup_unit_tooltips()
 
     def _update_method_options(self):
-        pass
+        from kasp.ui.main_window_input_helpers import MainWindowInputController
+
+        return MainWindowInputController(self).update_method_options()
 
     def _update_button_state(self):
-        pass
+        from kasp.ui.main_window_input_helpers import MainWindowInputController
+
+        return MainWindowInputController(self).update_button_state()
 
     def setup_basic_results_tab(self):
         from kasp.ui.design_results_tab_builders import build_basic_results_tab
@@ -483,6 +484,9 @@ class KaspMainWindow(QMainWindow):
 
     def _update_results_ui(self, results, selected_units):
         return self.design_results_presenter.apply_results(results, selected_units)
+
+    def clear_results_ui(self):
+        return self.design_results_presenter.clear_results_ui()
 
     def _update_single_result_unit(self, key, new_unit):
         return self.design_results_presenter.update_single_result_unit(key, new_unit)
@@ -516,7 +520,11 @@ class KaspMainWindow(QMainWindow):
         return self.design_results_presenter.serialize_selected_units(selected_units)
 
     def _build_release_client(self):
-        return GitHubReleaseClient(api_url=RELEASES_API_URL, timeout=8.0)
+        client = getattr(self, "_release_client", None)
+        if client is None:
+            client = GitHubReleaseClient(api_url=RELEASES_API_URL, timeout=8.0)
+            self._release_client = client
+        return client
 
     def _cleanup_update_check_thread(self):
         if self.update_check_thread is not None:
@@ -644,7 +652,7 @@ class KaspMainWindow(QMainWindow):
             self,
             "Guncellemeyi Nereye Indirmek Istiyorsunuz?",
             default_name,
-            "Executable Files (*.exe);;All Files (*)",
+            "All Files (*)",
         )
         if not target_path:
             return
@@ -658,7 +666,7 @@ class KaspMainWindow(QMainWindow):
 
         self.update_progress_dialog = QProgressDialog(
             "Guncelleme indiriliyor...",
-            None,
+            "İptal",
             0,
             100,
             self,
@@ -680,10 +688,18 @@ class KaspMainWindow(QMainWindow):
         self.update_download_worker.progress.connect(self._handle_update_download_progress)
         self.update_download_worker.finished.connect(self._handle_update_download_finished)
         self.update_download_worker.error.connect(self._handle_update_download_error)
+        self.update_download_worker.cancelled.connect(self._handle_update_download_cancelled)
         self.update_download_worker.finished.connect(self.update_download_thread.quit)
         self.update_download_worker.error.connect(self.update_download_thread.quit)
+        self.update_download_worker.cancelled.connect(self.update_download_thread.quit)
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.canceled.connect(self._cancel_update_download)
         self.update_download_thread.finished.connect(self._cleanup_update_download_thread)
         self.update_download_thread.start()
+
+    def _cancel_update_download(self):
+        if self.update_download_worker is not None:
+            self.update_download_worker.request_cancel()
 
     def _handle_update_download_progress(self, percent, message):
         if self.update_progress_dialog is None:
@@ -700,6 +716,11 @@ class KaspMainWindow(QMainWindow):
             "Indirme Tamamlandi",
             f"Guncelleme dosyasi indirildi:\n{path}",
         )
+
+    def _handle_update_download_cancelled(self):
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.close()
+        QMessageBox.information(self, "Iptal", "Guncelleme indirmesi iptal edildi.")
 
     def _handle_update_download_error(self, message):
         if self.update_progress_dialog is not None:
@@ -730,7 +751,9 @@ class KaspMainWindow(QMainWindow):
     def normalize_composition(self):
         return self.gas_composition_workflow.normalize_composition()
 
-    def _get_gas_composition(self):
+    def _get_gas_composition(self, strict=False):
+        if strict:
+            return self.gas_composition_workflow.get_gas_composition(strict=True)
         return self.gas_composition_workflow.get_gas_composition()
 
     def _get_design_inputs(self):
@@ -738,14 +761,14 @@ class KaspMainWindow(QMainWindow):
             inputs, total_percentage = self.design_input_binder.collect()
             if abs(total_percentage - 100.0) > 1.0:
                 self.logger.warning(
-                    "Kompozisyon toplamÄ± %%100'den farklÄ± (%%%0.2f). Engine normalize edecek.",
+                    "Kompozisyon toplamı %%100'den farklı (%%%0.2f). Engine normalize edecek.",
                     total_percentage,
                 )
                 reply = QMessageBox.warning(
                     self,
-                    "âš  Gaz Kompozisyonu ToplamÄ±",
-                    f"Gaz bileÅŸenlerinin toplamÄ± <b>%{total_percentage:.2f}</b> â€” bu deÄŸer %100 olmalÄ±dÄ±r.<br><br>"
-                    "HesabÄ± yine de devam ettirmek istiyor musunuz? "
+                    "⚠ Gaz Kompozisyonu Toplamı",
+                    f"Gaz bileşenlerinin toplamı <b>%{total_percentage:.2f}</b> — bu değer %100 olmalıdır.<br><br>"
+                    "Hesabı yine de devam ettirmek istiyor musunuz? "
                     "(Motor otomatik olarak normalize edecektir.)",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
@@ -754,11 +777,11 @@ class KaspMainWindow(QMainWindow):
                     return None
             return inputs
         except ValueError as exc:
-            QMessageBox.critical(self, "Girdi HatasÄ±", f"LÃ¼tfen tÃ¼m zorunlu alanlarÄ± kontrol edin:\n{exc}")
+            QMessageBox.critical(self, "Girdi Hatası", f"Lütfen tüm zorunlu alanları kontrol edin:\n{exc}")
             return None
         except Exception as exc:
-            self.logger.error(f"Girdi toplama sÄ±rasÄ±nda beklenmeyen hata: {exc}")
-            QMessageBox.critical(self, "Sistem HatasÄ±", "Girdi toplama sÄ±rasÄ±nda beklenmeyen bir hata oluÅŸtu.")
+            self.logger.error(f"Girdi toplama sırasında beklenmeyen hata: {exc}")
+            QMessageBox.critical(self, "Sistem Hatası", "Girdi toplama sırasında beklenmeyen bir hata oluştu.")
             return None
 
     def run_calculation(self):
@@ -781,9 +804,6 @@ class KaspMainWindow(QMainWindow):
 
     def calculation_cancelled(self):
         return self.design_calculation_workflow.calculation_cancelled()
-
-    def _toggle_perf_driver_inputs(self):
-        return self.performance_workflow.toggle_driver_inputs()
 
     def handle_design_report(self):
         return self.document_workflow.handle_design_report()
@@ -824,8 +844,6 @@ class KaspMainWindow(QMainWindow):
             return
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(500, self.change_password)
-        from kasp.core.user_manager import UserManager
-        from kasp.data.database import UnitDatabase
 
     def _apply_tab_visibility(self):
         from kasp.security import Session
@@ -872,42 +890,65 @@ class KaspMainWindow(QMainWindow):
         method_btn = self._eng_widgets.get("method_run_btn")
         if method_btn:
             method_btn.clicked.connect(self._run_method_shootout)
+        stop_btn = self._eng_widgets.get("shootout_stop_btn")
+        if stop_btn:
+            stop_btn.clicked.connect(self._stop_shootout)
 
     def _run_eos_shootout(self):
         if not getattr(self, "last_design_inputs", None):
+            from kasp.i18n import tr
+            QMessageBox.information(
+                self,
+                tr("Bilgi"),
+                tr("Önce Tasarım sekmesinde bir hesaplama çalıştırın."),
+            )
             return
-        from kasp.core.engineering import run_eos_shootout
+        from kasp.utils.workers import ShootoutWorker
+        from PyQt5.QtCore import QThread
+
         table = self._eng_widgets["eos_table"]
-        table.setRowCount(0)
         prop_table = self._eng_widgets["prop_table"]
-        prop_table.setRowCount(0)
         chain_table = self._eng_widgets.get("chain_table")
-        if chain_table:
-            chain_table.setRowCount(0)
         detail_frame = self._eng_widgets.get("eos_detail_frame")
         if detail_frame:
             detail_frame.setVisible(False)
-        
-        self._shootout_results = run_eos_shootout(self.engine, self.last_design_inputs)
-        for r in self._shootout_results:
-            if r.get("eos") is None:
-                continue  # chain log entry
-            
+        if chain_table:
+            chain_table.setRowCount(0)
+
+        table.setRowCount(0)
+        prop_table.setRowCount(0)
+
+        eos_btn = self._eng_widgets.get("eos_run_btn")
+        if eos_btn:
+            eos_btn.setEnabled(False)
+
+        thread = QThread()
+        worker = ShootoutWorker(self.engine, self.last_design_inputs, mode="eos")
+        worker.moveToThread(thread)
+
+        self._shootout_results = []
+        self._shootout_thread = thread
+        self._shootout_worker = worker
+
+        def on_item_ready(item):
+            """Worker'dan gelen her EOS sonucunu hemen tabloya ekle."""
+            if item.get("eos") is None:
+                return
+            r = item
             raw = r.get("raw_props", {})
-            fallback_from = raw.get("fallback_from", "")
-            fallback_to = raw.get("fallback_to", "")
-            
-            # EOS ana tablosu (5 kolon)
+
             row = table.rowCount()
             table.insertRow(row)
             table.setItem(row, 0, QTableWidgetItem(r.get("label", "—")))
             if r["success"]:
-                if fallback_from:
+                fb_from = raw.get("fallback_from", "")
+                fb_to = raw.get("fallback_to", "")
+                if fb_from:
                     status = "⚠️ Fallback"
                 else:
                     status = "✅ Doğrudan"
                 table.setItem(row, 1, QTableWidgetItem(status))
-                table.setItem(row, 2, QTableWidgetItem(f"{r.get('t_out', 0) - 273.15:.1f}" if r.get('t_out') else "—"))
+                table.setItem(row, 2, QTableWidgetItem(f"{r.get('t_out', 0):.1f}" if r.get('t_out') else "—"))
                 table.setItem(row, 3, QTableWidgetItem(f"{r.get('head_kj_kg', 0):.1f}" if r.get('head_kj_kg') else "—"))
                 table.setItem(row, 4, QTableWidgetItem(f"{r.get('power_kw', 0):.1f}" if r.get('power_kw') else "—"))
             else:
@@ -916,7 +957,6 @@ class KaspMainWindow(QMainWindow):
                 table.setItem(row, 3, QTableWidgetItem("—"))
                 table.setItem(row, 4, QTableWidgetItem("—"))
 
-            # Ham property tablosu
             if r["success"] and raw:
                 prow = prop_table.rowCount()
                 prop_table.insertRow(prow)
@@ -930,24 +970,65 @@ class KaspMainWindow(QMainWindow):
                 prop_table.setItem(prow, 7, QTableWidgetItem(str(raw.get('inlet_phase', "—"))))
                 prop_table.setItem(prow, 8, QTableWidgetItem(f"{raw.get('mass_flow_kgs', 0):.4f}" if raw.get('mass_flow_kgs') else "—"))
 
-        table.resizeRowsToContents()
-        table.updateGeometry()
-        prop_table.resizeRowsToContents()
-        prop_table.updateGeometry()
+            table.resizeRowsToContents()
+            table.updateGeometry()
+            prop_table.resizeRowsToContents()
+            prop_table.updateGeometry()
 
-        # Fallback zincir kaydi
-        if chain_table:
-            chain_table.setRowCount(0)
-            for r in self._shootout_results:
-                chain_log = r.get("_fallback_chain_log", [])
-                if chain_log:
-                    for log_entry in chain_log:
-                        crow = chain_table.rowCount()
-                        chain_table.insertRow(crow)
-                        chain_table.setItem(crow, 0, QTableWidgetItem(log_entry.get("layer", "eos")))
-                        chain_table.setItem(crow, 1, QTableWidgetItem(f"{log_entry.get('from', '?')} → {log_entry.get('to', '?')}"))
-                        chain_table.setItem(crow, 2, QTableWidgetItem(log_entry.get("reason", "—")))
-                        chain_table.setItem(crow, 3, QTableWidgetItem(str(log_entry.get("count", 1))))
+            self._shootout_results.append(r)
+
+        def on_finished(results):
+            """Tum EOS'ler bittiginde veya iptal edildiğinde."""
+            self._shootout_results = results
+
+            # Fallback zincir kaydi
+            if chain_table:
+                chain_table.setRowCount(0)
+                for r in results:
+                    chain_log = r.get("_fallback_chain_log", [])
+                    if chain_log:
+                        for log_entry in chain_log:
+                            crow = chain_table.rowCount()
+                            chain_table.insertRow(crow)
+                            chain_table.setItem(crow, 0, QTableWidgetItem(log_entry.get("layer", "eos")))
+                            chain_table.setItem(crow, 1, QTableWidgetItem(f"{log_entry.get('from', '?')} → {log_entry.get('to', '?')}"))
+                            chain_table.setItem(crow, 2, QTableWidgetItem(log_entry.get("reason", "—")))
+                            chain_table.setItem(crow, 3, QTableWidgetItem(str(log_entry.get("count", 1))))
+
+            if eos_btn:
+                eos_btn.setEnabled(True)
+            thread.quit()
+
+        def on_error(msg):
+            from kasp.i18n import tr
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, tr("Hata"), f"{tr('Shootout hatası')}: {msg}")
+            if eos_btn:
+                eos_btn.setEnabled(True)
+            thread.quit()
+
+        def on_cancelled():
+            from kasp.i18n import tr
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, tr("Bilgi"), tr("Shootout iptal edildi."))
+            if eos_btn:
+                eos_btn.setEnabled(True)
+            thread.quit()
+
+        def on_progress(pct, msg):
+            self.logger.debug(f"EOS Shootout: {pct}% - {msg}")
+
+        worker.item_ready.connect(on_item_ready)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        worker.cancelled.connect(on_cancelled)
+        worker.progress.connect(on_progress)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.started.connect(worker.run)
+
+        thread.start()
 
     def _on_shootout_row_selected(self):
         """EOS Shootout satir secimi → detay panelini guncelle."""
@@ -997,7 +1078,7 @@ class KaspMainWindow(QMainWindow):
         # Detay metrikler
         detail_form.addRow("⏱️ Süre:", QLabel(f"{r.get('elapsed_s', 0):.2f}s"))
         if r.get("poly_eff_actual"):
-            detail_form.addRow("η_poly:", QLabel(f"{r.get('poly_eff_actual', 0):.1f}%"))
+            detail_form.addRow("η_poly:", QLabel(f"{r.get('poly_eff_actual', 0) * 100:.1f}%"))
         if r.get("head_diff_pct") is not None:
             detail_form.addRow("Head Δ%:", QLabel(f"{r.get('head_diff_pct', 0):+.2f}%"))
 
@@ -1014,24 +1095,90 @@ class KaspMainWindow(QMainWindow):
 
     def _run_method_shootout(self):
         if not getattr(self, "last_design_inputs", None):
+            from kasp.i18n import tr
+            QMessageBox.information(
+                self,
+                tr("Bilgi"),
+                tr("Önce Tasarım sekmesinde bir hesaplama çalıştırın."),
+            )
             return
-        from kasp.core.engineering import run_method_shootout
+        from kasp.utils.workers import ShootoutWorker
+        from PyQt5.QtCore import QThread
+
         table = self._eng_widgets["method_table"]
         table.setRowCount(0)
-        results = run_method_shootout(self.engine, self.last_design_inputs)
-        for r in results:
+
+        method_btn = self._eng_widgets.get("method_run_btn")
+        if method_btn:
+            method_btn.setEnabled(False)
+
+        thread = QThread()
+        worker = ShootoutWorker(self.engine, self.last_design_inputs, mode="method")
+        worker.moveToThread(thread)
+
+        self._shootout_results = []
+        self._shootout_thread = thread
+        self._shootout_worker = worker
+
+        def on_item_ready(item):
+            r = item
             row = table.rowCount()
             table.insertRow(row)
             table.setItem(row, 0, QTableWidgetItem(r.get("label", "—")))
             if r["success"]:
-                table.setItem(row, 1, QTableWidgetItem(f"{r.get('t_out', 0) - 273.15:.1f}" if r.get('t_out') else "—"))
+                table.setItem(row, 1, QTableWidgetItem(f"{r.get('t_out', 0):.1f}" if r.get('t_out') else "—"))
                 table.setItem(row, 2, QTableWidgetItem(f"{r.get('head_kj_kg', 0):.1f}" if r.get('head_kj_kg') else "—"))
                 table.setItem(row, 3, QTableWidgetItem(f"{r.get('power_kw', 0):.1f}" if r.get('power_kw') else "—"))
-                table.setItem(row, 4, QTableWidgetItem(f"{r.get('poly_eff_actual', 0):.1f}%" if r.get('poly_eff_actual') else "—"))
+                table.setItem(row, 4, QTableWidgetItem(f"{r.get('poly_eff_actual', 0) * 100:.1f}%" if r.get('poly_eff_actual') else "—"))
                 table.setItem(row, 5, QTableWidgetItem("✓" if r.get('convergence') else "✗"))
                 table.setItem(row, 6, QTableWidgetItem(f"{r.get('elapsed_s', 0):.2f}"))
             else:
                 table.setItem(row, 1, QTableWidgetItem(f"❌ {r.get('error', '')}"))
+
+            self._shootout_results.append(r)
+
+        def on_finished(results):
+            self._shootout_results = results
+            if method_btn:
+                method_btn.setEnabled(True)
+            thread.quit()
+
+        def on_error(msg):
+            from kasp.i18n import tr
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, tr("Hata"), f"{tr('Shootout hatası')}: {msg}")
+            if method_btn:
+                method_btn.setEnabled(True)
+            thread.quit()
+
+        def on_cancelled():
+            from kasp.i18n import tr
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, tr("Bilgi"), tr("Shootout iptal edildi."))
+            if method_btn:
+                method_btn.setEnabled(True)
+            thread.quit()
+
+        def on_progress(pct, msg):
+            self.logger.debug(f"Method Shootout: {pct}% - {msg}")
+
+        worker.item_ready.connect(on_item_ready)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        worker.cancelled.connect(on_cancelled)
+        worker.progress.connect(on_progress)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.started.connect(worker.run)
+
+        thread.start()
+
+    def _stop_shootout(self):
+        """Calisan shootout kosusunu iptal et (EOS veya Metot)."""
+        worker = getattr(self, "_shootout_worker", None)
+        if worker is not None:
+            worker.request_cancel()
 
     def _populate_engineering_dashboard(self, results):
         if not hasattr(self, "_eng_widgets") or not self._eng_widgets:

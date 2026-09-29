@@ -7,10 +7,10 @@ import logging
 
 DEFAULT_NATURAL_GAS_COMPOSITION = {
     "METHANE": 85.0,
-    "ETHANE": 8.0,
+    "ETHANE": 7.0,
     "PROPANE": 4.0,
-    "BUTANE": 2.0,
-    "NITROGEN": 1.0,
+    "NITROGEN": 2.0,
+    "CARBONDIOXIDE": 2.0,
 }
 
 
@@ -28,6 +28,9 @@ def standard_composition_for_gas(gas_name):
         return {"NITROGEN": 100.0}
     if "carbon dioxide" in normalized:
         return {"CARBONDIOXIDE": 100.0}
+    # H2S kontrolu "hydrogen" kontrolunden ONCE gelmeli (P1-9)
+    if "hydrogen sulfide" in normalized or "hydrogen sulphide" in normalized or "h2s" in normalized:
+        return {"HYDROGENSULFIDE": 100.0}
     if "hydrogen" in normalized:
         return {"HYDROGEN": 100.0}
     if "water" in normalized or normalized.startswith("su"):
@@ -177,25 +180,39 @@ def get_smart_method_recommendation(
     return "💡 <b>Kuru Satış Gazı:</b> <b>Metot 5 (Huntington-RK45)</b>, <b>Metot 4 (Doğrudan H-S)</b> veya <b>Metot 6 (Schultz 3-Üslü)</b> önerilir."
 
 
-def extract_gas_composition(entries, display_to_key):
-    """Build a component->percentage dict from UI table entries."""
+def extract_gas_composition(entries, display_to_key, strict=False):
+    """Build a component->percentage dict from UI table entries.
+
+    Ayni bilesen birden fazla satirda girilirse degerler TOPLANIR. Gecersiz
+    (sayisal olmayan / negatif) degerler ``strict=True`` ise ValueError ile
+    reddedilir; degilse yalnizca atlanir (canli toplam etiketi icin).
+    """
     gas_comp = {}
+    invalid = []
     for display_name, percentage_text in entries:
         display_name = (display_name or "").strip()
-        percentage_text = (percentage_text or "").strip().replace(",", ".")
-        if not display_name or not percentage_text:
+        raw_text = (percentage_text or "").strip().replace(",", ".")
+        if not display_name or not raw_text:
             continue
 
         try:
-            percentage = float(percentage_text)
+            percentage = float(raw_text)
         except ValueError:
+            invalid.append(f"{display_name}: '{percentage_text}' sayısal değil")
             continue
 
-        if percentage <= 0:
+        if percentage < 0:
+            invalid.append(f"{display_name}: negatif değer {percentage}")
+            continue
+
+        if percentage == 0:
             continue
 
         component_key = display_to_key.get(display_name, display_name.upper())
-        gas_comp[component_key] = percentage
+        gas_comp[component_key] = gas_comp.get(component_key, 0.0) + percentage
+
+    if invalid and strict:
+        raise ValueError("Geçersiz gaz kompozisyonu girişleri: " + "; ".join(invalid))
     return gas_comp
 
 
@@ -297,6 +314,8 @@ class GasCompositionController:
     def on_gas_selection_changed(self, gas_name):
         if gas_name != "Özel Karışım":
             self.load_standard_gas_composition(gas_name)
+        elif hasattr(self.window, "composition_table") and self.window.composition_table.rowCount() <= 1:
+            self.load_standard_gas_composition("Doğal Gaz")
         self.update_selected_gas_badge(gas_name)
 
     def load_standard_gas_composition(self, gas_name):
@@ -395,5 +414,35 @@ class GasCompositionController:
             self.window.logger.error(f"Normalize hatası: {exc}")
             QMessageBox.critical(self.window, "Hata", f"Normalize edilemedi: {exc}")
 
-    def get_gas_composition(self):
-        return extract_gas_composition(self._table_entries(), self.window.DISPLAY_TO_COOLPROP_KEY)
+    def get_gas_composition(self, strict=False):
+        entries = self._table_entries()
+        seen_keys = set()
+        duplicate_names = []
+        for display_name, percentage_text in entries:
+            display_name = (display_name or "").strip()
+            raw_text = (percentage_text or "").strip().replace(",", ".")
+            if not display_name or not raw_text:
+                continue
+            try:
+                pct = float(raw_text)
+            except ValueError:
+                continue
+            if pct <= 0:
+                continue
+            key = self.window.DISPLAY_TO_COOLPROP_KEY.get(display_name, display_name.upper())
+            if key in seen_keys and display_name not in duplicate_names:
+                duplicate_names.append(display_name)
+            seen_keys.add(key)
+        if duplicate_names:
+            msg = f"Tekrarlanan gaz bileşenleri toplandı: {', '.join(duplicate_names)}"
+            self.logger.warning(msg)
+            if hasattr(self.window, "statusBar") and callable(self.window.statusBar):
+                try:
+                    sb = self.window.statusBar()
+                    if sb is not None:
+                        sb.showMessage(f"⚠ {msg}", 4000)
+                except Exception:
+                    pass
+        return extract_gas_composition(
+            entries, self.window.DISPLAY_TO_COOLPROP_KEY, strict=strict
+        )

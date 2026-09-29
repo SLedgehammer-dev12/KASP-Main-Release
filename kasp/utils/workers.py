@@ -87,11 +87,14 @@ class CalculationWorker(QObject):
         
         # Task 4: Cancellation and progress tracking
         self._cancel_requested = False
+        self._run_id = None
         self.progress_tracker = ProgressTracker(total_steps=100)
 
     def request_cancel(self):
-        """Request calculation cancellation."""
+        """Request calculation cancellation (targets only this run when started)."""
         self._cancel_requested = True
+        from kasp.core.aerodynamics import request_calculation_cancel
+        request_calculation_cancel(self._run_id)
         self.logger.info("⚠️ Cancellation requested by user")
 
     def emit_progress(self, percentage, message):
@@ -134,110 +137,297 @@ class CalculationWorker(QObject):
         """
         try:
             # Step 1: Initialization (0%)
-            self.emit_progress(0, "Initializing calculation...")
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            
-            # Step 2: Input validation (5%)
-            self.emit_progress(5, "Validating inputs...")
-            self.logger.info("🚀 Calculation worker started")
-            self.logger.info(f"Selected EOS: {self.inputs.get('eos_method', 'N/A').upper()}")
-            
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            
-            # Step 3: Gas object creation (10%)
-            self.emit_progress(10, "Creating gas mixture...")
-            
-            # Step 4: Thermodynamic calculations (20-60%)
-            self.emit_progress(20, "Hesaplamalar başlıyor...")
-
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-
-            self.emit_progress(30, "Termodinamik özellikler hesaplanıyor...")
-
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-
-            self.emit_progress(40, "EOS motoru çalıştırılıyor...")
-
-            # --- Ana termodinamik hesaplama (% 40-60 arasında gerçekleşiyor) ---
-            self.logger.info("Phase 1: Thermodynamic calculation starting...")
-            results_raw = self.engine.calculate_design_performance_with_mode(self.inputs)
-            self.logger.info("Phase 1: Thermodynamic calculation complete ✓")
-            
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            
-            self.emit_progress(50, "Calculating power requirements...")
-            
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            
-            self.emit_progress(60, "Analyzing fuel consumption...")
-            
-            # --- Unit Selection Phase (70-95%) ---
-            required_power_per_unit_kw = results_raw['power_unit_kw']
-            site_conditions = {
-                'ambient_temp':     self.inputs['ambient_temp'],
-                'altitude':         self.inputs['altitude'],
-                # V4.3 Fix 4: Birim kPa — 1013 mbar değil, 101.325 kPa!
-                # UI'dan kPa olarak geldiğinden emin olun.
-                'ambient_pressure': self.inputs.get('ambient_pressure', 101.325),  # kPa
-                'humidity':         self.inputs.get('humidity', 60)
-            }
-            
-            self.emit_progress(70, "Searching for suitable turbines...")
-            self.logger.info(
-                f"Phase 2: Unit selection starting. "
-                f"Required power (per unit): {required_power_per_unit_kw:.2f} kW"
+            from kasp.core.aerodynamics import (
+                begin_calculation_run,
+                clear_calculation_cancel,
+                end_calculation_run,
             )
-            
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            
-            self.emit_progress(80, "Filtering compatible turbines...")
-            
-            selected_units = self.engine.select_units(
-                required_power_per_unit_kw, 
-                site_conditions, 
-                self.all_turbines_data, 
-                limit=5
-            )
-            
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            
-            self.emit_progress(90, "Ranking turbine options...")
-            self.logger.info(f"Phase 2: Unit selection complete. Found {len(selected_units)} units ✓")
-            
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            
-            # Step 12: Finalization (95-100%)
-            self.emit_progress(95, "Finalizing results...")
-            
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            
-            self.emit_progress(100, "Calculation complete!")
-            self.logger.info("✅ All calculations completed successfully")
-            
-            # Emit results
-            self.finished.emit(results_raw, selected_units)
-        
+            from kasp.core.exceptions import CalculationCancelled
+
+            clear_calculation_cancel()
+            # Run-bazli iptal jetonu: bu kosunun iptali diger kosulari etkilemez (P4-13)
+            self._run_id = begin_calculation_run()
+            try:
+                self._run_body()
+            finally:
+                end_calculation_run(self._run_id)
+        except CalculationCancelled:
+            self.logger.info("Hesaplama kullanıcı tarafından iptal edildi.")
+            self.cancelled.emit()
         except Exception as e:
             error_message = f"Critical calculation error: {e}"
             self.logger.error(error_message, exc_info=True)
             self.error.emit(error_message)
+
+    def _run_body(self):
+        """Step-wise calculation body (runs under this worker's run-ID)."""
+        self.emit_progress(0, "Initializing calculation...")
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        # Step 2: Input validation (5%)
+        self.emit_progress(5, "Validating inputs...")
+        self.logger.info("🚀 Calculation worker started")
+        self.logger.info(f"Selected EOS: {self.inputs.get('eos_method', 'N/A').upper()}")
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        # Step 3: Gas object creation (10%)
+        self.emit_progress(10, "Creating gas mixture...")
+
+        # Step 4: Thermodynamic calculations (20-60%)
+        self.emit_progress(20, "Hesaplamalar başlıyor...")
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        self.emit_progress(30, "Termodinamik özellikler hesaplanıyor...")
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        self.emit_progress(40, "EOS motoru çalıştırılıyor...")
+
+        # --- Ana termodinamik hesaplama (% 40-60 arasında gerçekleşiyor) ---
+        self.logger.info("Phase 1: Thermodynamic calculation starting...")
+        results_raw = self.engine.calculate_design_performance_with_mode(self.inputs)
+        self.logger.info("Phase 1: Thermodynamic calculation complete ✓")
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        self.emit_progress(50, "Calculating power requirements...")
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        self.emit_progress(60, "Analyzing fuel consumption...")
+
+        # --- Unit Selection Phase (70-95%) ---
+        # Pass un-margined driver/motor power so API 617 4% margin is not double-counted
+        # on top of TurbineSelector's own 5-20% oversize margin
+        required_power_per_unit_kw = results_raw.get(
+            'power_motor_per_unit_kw',
+            results_raw['power_unit_kw'] / 1.04,
+        )
+        site_conditions = {
+            'ambient_temp':     self.inputs['ambient_temp'],
+            'altitude':         self.inputs['altitude'],
+            # V4.3 Fix 4: Birim kPa — 1013 mbar değil, 101.325 kPa!
+            # UI'dan kPa olarak geldiğinden emin olun.
+            'ambient_pressure': self.inputs.get('ambient_pressure', 101.325),  # kPa
+            'humidity':         self.inputs.get('humidity', 60),
+            # Surge/stonewall marglari icin gercek isletme debisi (kg/s, unite basina) (P1-7)
+            'flow':             results_raw.get('mass_flow_per_unit_kgs'),
+        }
+
+        self.emit_progress(70, "Searching for suitable turbines...")
+        self.logger.info(
+            f"Phase 2: Unit selection starting. "
+            f"Required power (per unit): {required_power_per_unit_kw:.2f} kW"
+        )
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        self.emit_progress(80, "Filtering compatible turbines...")
+
+        selected_units = self.engine.select_units(
+            required_power_per_unit_kw,
+            site_conditions,
+            self.all_turbines_data,
+            limit=5
+        )
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        self.emit_progress(90, "Ranking turbine options...")
+        self.logger.info(f"Phase 2: Unit selection complete. Found {len(selected_units)} units ✓")
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        # Step 12: Finalization (95-100%)
+        self.emit_progress(95, "Finalizing results...")
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+
+        self.emit_progress(100, "Calculation complete!")
+        self.logger.info("✅ All calculations completed successfully")
+
+        # Emit results
+        self.finished.emit(results_raw, selected_units)
+
+
+class PerformanceWorker(QObject):
+    """Performans değerlendirmesini UI thread'i dışında çalıştırır (P3-20)."""
+
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+    cancelled = pyqtSignal()
+
+    def __init__(self, engine, inputs, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.inputs = inputs
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._cancel_requested = False
+        self._run_id = None
+
+    def run(self):
+        from kasp.core.aerodynamics import (
+            begin_calculation_run,
+            clear_calculation_cancel,
+            end_calculation_run,
+        )
+        from kasp.core.exceptions import CalculationCancelled
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+        clear_calculation_cancel()
+        # Run-bazli iptal jetonu: bu kosunun iptali diger kosulari etkilemez (P4-13)
+        self._run_id = begin_calculation_run()
+        try:
+            results = self.engine.evaluate_performance(self.inputs)
+            if self._cancel_requested:
+                self.cancelled.emit()
+                return
+            self.finished.emit(results)
+        except CalculationCancelled:
+            self.cancelled.emit()
+        except Exception as exc:
+            self.logger.error("Performans değerlendirme hatası: %s", exc, exc_info=True)
+            self.error.emit(str(exc))
+        finally:
+            end_calculation_run(self._run_id)
+
+    def request_cancel(self):
+        self._cancel_requested = True
+        from kasp.core.aerodynamics import request_calculation_cancel
+        request_calculation_cancel(self._run_id)
+
+
+class GraphGenerationWorker(QObject):
+    """Grafikleri UI thread'i disinda (headless Figure olarak) uretir (P3-20)."""
+
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, graph_manager, inputs, results, selected_units=None, parent=None):
+        super().__init__(parent)
+        self.graph_manager = graph_manager
+        self.inputs = inputs
+        self.results = results
+        self.selected_units = selected_units
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def run(self):
+        try:
+            graphs = self.graph_manager.generate_all_graphs(
+                self.inputs, self.results, self.selected_units, headless=True
+            )
+            self.finished.emit(graphs)
+        except Exception as exc:
+            self.logger.error("Grafik üretim hatası: %s", exc, exc_info=True)
+            self.error.emit(str(exc))
+
+
+class ShootoutWorker(QObject):
+    """EOS/Metot karsilastirmasini (shootout) UI thread'i disinda calistirir (P4-12).
+
+    Sonuclar `item_ready` ile parca parca yayinlanir; boylece tablo her EOS/Metot
+    bittikce dolar ve kullanici iptal ederse kismi sonuclar ekranda kalir.
+    Iptal yalnizca bu kosunun jetonunu isaretler (P4-13).
+    """
+
+    item_ready = pyqtSignal(dict)
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int, str)
+    cancelled = pyqtSignal()
+
+    def __init__(self, engine, inputs, mode="eos", parent=None):
+        super().__init__(parent)
+        if mode not in ("eos", "method"):
+            raise ValueError(f"Bilinmeyen shootout modu: {mode}")
+        self.engine = engine
+        self.inputs = dict(inputs)
+        self.mode = mode
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._cancel_requested = False
+        self._run_id = None
+
+    def request_cancel(self):
+        """Yalnizca bu shootout kosusunu iptal eder."""
+        self._cancel_requested = True
+        from kasp.core.aerodynamics import request_calculation_cancel
+        request_calculation_cancel(self._run_id)
+        self.logger.info("⚠️ Shootout iptali istendi.")
+
+    def _check_cancelled(self):
+        if self._cancel_requested:
+            return True
+        from kasp.core.aerodynamics import is_calculation_cancel_requested
+        return is_calculation_cancel_requested()
+
+    def run(self):
+        from kasp.core.aerodynamics import begin_calculation_run, end_calculation_run
+        from kasp.core.exceptions import CalculationCancelled
+
+        if self._cancel_requested:
+            self.cancelled.emit()
+            return
+        self._run_id = begin_calculation_run()
+        collected = []
+        try:
+            if self.mode == "eos":
+                from kasp.core.engineering import ALL_EOS_METHODS, run_eos_shootout
+                total = len(ALL_EOS_METHODS)
+                results = run_eos_shootout(
+                    self.engine,
+                    self.inputs,
+                    progress_cb=self._on_item,
+                    cancel_cb=self._check_cancelled,
+                )
+            else:
+                from kasp.core.engineering import ALL_METHOD_LABELS, run_method_shootout
+                total = len(ALL_METHOD_LABELS)
+                results = run_method_shootout(
+                    self.engine,
+                    self.inputs,
+                    progress_cb=self._on_item,
+                    cancel_cb=self._check_cancelled,
+                )
+            collected = list(results)
+            if self._check_cancelled():
+                self.cancelled.emit()
+                return
+            self.progress.emit(100, "Tamamlandı")
+            self.finished.emit(collected)
+        except CalculationCancelled:
+            self.logger.info("Shootout kullanıcı tarafından iptal edildi.")
+            self.cancelled.emit()
+        except Exception as exc:
+            self.logger.error("Shootout hatası: %s", exc, exc_info=True)
+            self.error.emit(str(exc))
+        finally:
+            end_calculation_run(self._run_id)
+
+    def _on_item(self, done: int, total: int, label: str, item: dict):
+        """engineering.py callback'i: satiri hemen yayinla, iptali denetle."""
+        self.progress.emit(int(done * 100 / max(total, 1)), f"{label} ({done}/{total})")
+        self.item_ready.emit(dict(item))

@@ -1,0 +1,22 @@
+# KASP pinned dependency lock (direct dependencies).
+# Generated from the development environment. Transitive dependencies are
+# resolved by pip according to the version ranges in requirements.txt.
+PyQt5==5.15.11
+numpy==2.4.5
+scipy==1.17.1
+matplotlib==3.10.9
+reportlab==4.5.1
+CoolProp==7.2.0
+thermo==0.6.0
+chemicals==1.5.1
+fastapi==0.141.1
+uvicorn==0.47.0
+pydantic==2.13.4
+pytest==9.0.3
+pyinstaller==6.20.0
+ccp==0.3.32
+thermopack==2.2.3
+neqsim==3.13.0
+# pythonnet: not installed in generation environment
+certifi==2026.4.22
+jpype1==1.7.1

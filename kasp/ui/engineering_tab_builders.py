@@ -343,20 +343,21 @@ def _populate_health(table, results):
     for label, props in [("Giriş", inlet), ("Çıkış", outlet)]:
         if not props:
             continue
+        # Saglik bilgisi dogrudan kopruden okunur; raw_props yalnizca geriye donuk yedek
         raw = props.get("raw_props", {})
         r = table.rowCount()
         table.insertRow(r)
         table.setItem(r, 0, QTableWidgetItem(label))
         table.setItem(r, 1, QTableWidgetItem(_fmt(props.get("Z", "—"))))
         table.setItem(r, 2, QTableWidgetItem(props.get("phase", raw.get("phase", "—"))))
-        health = raw.get("thermo_health", "HEALTHY")
+        health = props.get("thermo_health", raw.get("thermo_health", "HEALTHY"))
         item = QTableWidgetItem(health)
         if health == "CRITICAL":
             item.setForeground(Qt.red)
         elif health == "WARNING":
             item.setForeground(Qt.darkYellow)
         table.setItem(r, 3, item)
-        reasons = raw.get("health_reasons", [])
+        reasons = props.get("health_reasons", raw.get("health_reasons", []))
         table.setItem(r, 4, QTableWidgetItem("; ".join(reasons) if reasons else "—"))
 
 

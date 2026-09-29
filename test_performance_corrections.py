@@ -77,11 +77,13 @@ class _PerfEngine:
     def _create_gas_object(self, gas_comp, eos_method):
         return {"gas_comp": gas_comp, "eos_method": eos_method}
 
-    def convert_pressure_to_pa(self, value, unit):
+    def convert_pressure_to_pa(self, value, unit, ambient_pressure_pa=None, altitude_m=None):
         if unit == "kPa":
             return value * 1000.0
         if unit == "bar(a)":
             return value * 100000.0
+        if unit == "bar(g)":
+            return value * 100000.0 + (ambient_pressure_pa or 101325.0)
         return value
 
     def convert_temperature_to_k(self, value, unit):

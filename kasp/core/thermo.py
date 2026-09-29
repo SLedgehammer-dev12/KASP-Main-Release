@@ -37,13 +37,14 @@ from kasp.core.thermo_support import (
 )
 
 # Eski yardımcılar ve Sabitler
-from kasp.core.exceptions import AdvancedThermodynamicError
+from kasp.core.exceptions import AdvancedThermodynamicError, CalculationCancelled
 from kasp.utils.monitoring import PerformanceMonitor
 from kasp.core.settings import EngineSettings
 
 from kasp.core.constants import (
     SUPPORTED_GASES, LHV_DATA, MOLAR_MASSES, WATER_PRODUCED,
-    R_UNIVERSAL_J_MOL_K, STD_PRESS_PA, NORMAL_TEMP_K, STANDARD_TEMP_K
+    R_UNIVERSAL_J_MOL_K, STD_PRESS_PA, NORMAL_TEMP_K, STANDARD_TEMP_K,
+    API_617_DRIVER_MARGIN_PCT,
 )
 
 # Uncertainty Analysis (Optional)
@@ -109,11 +110,22 @@ class ThermoEngine:
         """Legacy dictionary bekleyen eski kod kısımları için köprü (Bridge)."""
         state = self.thermo_solver.get_properties(p_pa, t_k, gas_obj, eos_method)
         speed_of_sound = state.raw_props.get('speed_of_sound')
-        if speed_of_sound is None:
-            try:
-                speed_of_sound = math.sqrt(max(state.k * p_pa / state.density, 0.0))
-            except Exception:
-                speed_of_sound = None
+        if speed_of_sound is None or not math.isfinite(speed_of_sound) or speed_of_sound <= 0:
+            if getattr(state, "speed_of_sound", 0.0) and math.isfinite(state.speed_of_sound) and state.speed_of_sound > 0:
+                speed_of_sound = state.speed_of_sound
+            else:
+                try:
+                    if state.density > 0 and p_pa > 0 and state.k > 0:
+                        speed_of_sound = math.sqrt(max(state.k * p_pa / state.density, 0.0))
+                except Exception:
+                    speed_of_sound = None
+                if speed_of_sound is None or not math.isfinite(speed_of_sound) or speed_of_sound <= 0:
+                    speed_of_sound = math.sqrt(
+                        max(1.0, state.k)
+                        * (8314.462618 / max(1e-3, state.MW))
+                        * max(1.0, state.Z)
+                        * max(1.0, t_k)
+                    )
         return {
             'H': state.H,
             'S': state.S,
@@ -125,9 +137,28 @@ class ThermoEngine:
             'M_kg_mol': state.MW / 1000.0,
             'fallback_used': state.raw_props.get('fallback', False),
             'mu': state.raw_props.get('mu', 1.1e-5),
-            'a': speed_of_sound if speed_of_sound is not None else 0.0,
+            'a': float(speed_of_sound) if speed_of_sound is not None else 0.0,
             'phase': state.phase,
+            # Faz/saglik bilgisi sonuc koprusune tasinir (P0-4)
+            'thermo_health': state.raw_props.get('thermo_health', 'HEALTHY'),
+            'health_reasons': list(state.raw_props.get('health_reasons', []) or []),
+            'fallback': bool(state.raw_props.get('fallback', False)),
+            'fallback_layer': state.raw_props.get('fallback_layer'),
+            'raw_phase': state.raw_props.get('raw_phase', state.phase),
         }
+
+    def clear_cache(self):
+        """Termodinamik ozellik onbellegini temizler (UI 'Onbellegi Temizle' aksiyonu)."""
+        solver = self.thermo_solver
+        with solver._cache_lock:
+            solver._property_cache.clear()
+            solver._h_int_cache.clear()
+            solver._cache_hits = 0
+            solver._cache_misses = 0
+        with getattr(solver, "_as_lock", solver._cache_lock):
+            solver._package_cache.clear()
+        self.logger.info("Termodinamik onbellek temizlendi.")
+        return True
 
     # -------------------------------------------------------------------------
     # 2. BİRİM DÖNÜŞÜM METOTLARI
@@ -337,7 +368,13 @@ class ThermoEngine:
                  gas_obj=gas_obj,
                  eos=inputs['eos_method']
              )
-             actual_isen_eff = isen_head_kj_kg / actual_head_kj_kg if actual_head_kj_kg > 0 else 0
+             perf_test_warnings = []
+             raw_isen_eff = isen_head_kj_kg / actual_head_kj_kg if actual_head_kj_kg > 0 else 0.0
+             if isen_head_kj_kg <= 0 or actual_head_kj_kg <= 0 or raw_isen_eff > 1.0 or raw_isen_eff < 0.0:
+                 perf_test_warnings.append(
+                     f"İzentropik verim fiziksel sınırlar dışında ({raw_isen_eff * 100.0:.1f}%); [0, 100]% aralığına sınırlandırıldı."
+                 )
+             actual_isen_eff = max(0.0, min(1.0, raw_isen_eff))
              true_poly_head_kj_kg = actual_head_kj_kg * actual_poly_eff
              
              mass_flow_kgs = self.convert_flow_to_kgs(float(inputs['flow']), inputs['flow_unit'], gas_obj, inputs['eos_method'])
@@ -359,7 +396,7 @@ class ThermoEngine:
              })
              
              return {
-                 'actual_poly_eff': min(max(actual_poly_eff, 0), 1),
+                 'actual_poly_eff': min(max(actual_poly_eff, 0.0), 1.0),
                  'expected_poly_eff': expected_poly_eff,
                  'deviation_poly_eff': dev_poly,
                  'actual_isentropic_eff': actual_isen_eff,
@@ -370,7 +407,8 @@ class ThermoEngine:
                  'expected_heat_rate': actual_heat_rate,
                  'deviation_heat_rate': dev_heat_rate,
                  'performance_status': status_obj,
-                 'actual_therm_eff': 0, 'expected_therm_eff':0, 'deviation_therm_eff':0
+                 'actual_therm_eff': 0, 'expected_therm_eff':0, 'deviation_therm_eff':0,
+                 'warnings': perf_test_warnings,
              }
         except Exception as e:
              self.logger.error(f"Performans testi hatası: {e}")
@@ -380,7 +418,13 @@ class ThermoEngine:
         """
         ASME PTC 10 / API 617 standartlarına göre mevcut saha şartları verildiğinde kompresör performansını hesaplar.
         """
-        from kasp.core.aerodynamics import reset_fallback_comparisons, set_current_stage, get_fallback_comparisons
+        from kasp.core.aerodynamics import (
+            clear_calculation_cancel,
+            reset_fallback_comparisons,
+            set_current_stage,
+            get_fallback_comparisons,
+        )
+        clear_calculation_cancel()
         reset_fallback_comparisons()
         set_current_stage("Performans")
         solver_method = inputs.get("solver_method", "auto")
@@ -418,7 +462,13 @@ class ThermoEngine:
             isen_dh = h2_isen - h1
             
             # Verim ve Head hesapları (ASME PTC 10 / API 617 Doğrudan oranlama)
-            isen_eff = isen_dh / actual_dh
+            perf_warnings = []
+            raw_isen_eff = isen_dh / actual_dh if actual_dh > 0 else 0.0
+            if isen_dh <= 0 or actual_dh <= 0 or raw_isen_eff > 1.0 or raw_isen_eff < 0.0:
+                perf_warnings.append(
+                    f"İzentropik verim fiziksel sınırlar dışında ({raw_isen_eff * 100.0:.1f}%); [0, 100]% aralığına sınırlandırıldı."
+                )
+            isen_eff = max(0.0, min(1.0, raw_isen_eff))
             
             R_sp = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
             poly_eff = CompressorAerodynamics.calculate_polytropic_efficiency(
@@ -427,6 +477,7 @@ class ThermoEngine:
                 gas_obj=gas_obj,
                 eos=eos
             )
+            poly_eff = max(0.0, min(1.0, poly_eff))
             poly_head_j_kg = poly_eff * actual_dh
             
             # 3. Güç Hesapları
@@ -440,32 +491,51 @@ class ThermoEngine:
             motor_power_kw = shaft_power_kw / mech_eff
             
             # 4. Sürücü (Türbin/Yakıt) Hesapları
+            fuel_composition = inputs.get('fuel_gas_comp') or inputs['gas_comp']
             lhv_kj_kg, hhv_kj_kg = self._calculate_heating_values(
-                inputs['gas_comp'], 
+                fuel_composition, 
                 source=inputs.get('lhv_source', 'kasp'),
                 gas_obj=gas_obj,
                 eos_method=eos
             )
             if lhv_kj_kg <= 0:
-                lhv_kj_kg = 50000.0 # Varsayılan yakıt ısıl değeri kJ/kg (Metan'a yakın)
+                lhv_kj_kg = 0.0
                 
             turb_eff = 0.0
             fuel_cons_kg_h = 0.0
             
             if driver_mode == 'turb_eff':
-                turb_eff = driver_val / 100.0
-                if turb_eff > 0:
+                raw_turb_eff = driver_val / 100.0
+                if raw_turb_eff > 1.0 or raw_turb_eff < 0.0:
+                    perf_warnings.append(
+                        f"Türbin verimi fiziksel sınırlar dışında ({raw_turb_eff * 100.0:.1f}%); [0, 100]% aralığına sınırlandırıldı."
+                    )
+                turb_eff = max(0.0, min(1.0, raw_turb_eff))
+                if turb_eff > 0 and lhv_kj_kg > 0:
                     fuel_kw = motor_power_kw / turb_eff
                     fuel_cons_kg_h = (fuel_kw * 3600.0) / lhv_kj_kg
             else:
-                fuel_cons_kg_h = driver_val
+                fuel_cons_kg_h = max(0.0, float(driver_val))
                 if fuel_cons_kg_h > 0:
-                    fuel_kw = (fuel_cons_kg_h * lhv_kj_kg) / 3600.0
-                    turb_eff = motor_power_kw / fuel_kw if fuel_kw > 0 else 0.0
+                    if lhv_kj_kg <= 0 and not inputs.get('fuel_gas_comp'):
+                        lhv_kj_kg = 50000.0  # Dış yakıt gazı belirtilmemişse varsayılan (Metan'a yakın)
+                        perf_warnings.append(
+                            "Proses gazı inert olduğundan dış yakıt gazı alt ısıl değeri 50000 kJ/kg varsayıldı."
+                        )
+                    if lhv_kj_kg > 0:
+                        fuel_kw = (fuel_cons_kg_h * lhv_kj_kg) / 3600.0
+                        raw_turb_eff = motor_power_kw / fuel_kw if fuel_kw > 0 else 0.0
+                        if raw_turb_eff > 1.0 or raw_turb_eff < 0.0:
+                            perf_warnings.append(
+                                f"Hesaplanan türbin verimi fiziksel sınırlar dışında ({raw_turb_eff * 100.0:.1f}%); [0, 100]% aralığına sınırlandırıldı."
+                            )
+                        turb_eff = max(0.0, min(1.0, raw_turb_eff))
+                    else:
+                        fuel_cons_kg_h = 0.0
 
             actual_heat_rate = (
                 fuel_cons_kg_h * lhv_kj_kg / max(shaft_power_kw, 1e-9)
-                if fuel_cons_kg_h > 0
+                if fuel_cons_kg_h > 0 and lhv_kj_kg > 0
                 else 0.0
             )
             corrected = apply_site_corrections(
@@ -487,7 +557,15 @@ class ThermoEngine:
                 'corrected_power_kw': corrected["corrected_power_kw"],
                 'corrected_heat_rate': corrected["corrected_heat_rate_kj_kwh"],
                 'correction_factors': corrected["correction_factors"],
+                'warnings': perf_warnings,
             }
+            if hasattr(self.thermo_solver, "_fallback_tracker"):
+                nonconv = self.thermo_solver._fallback_tracker.solver_nonconverged_info()
+                if nonconv:
+                    details = ", ".join(f"{k} (artık={v:.2f} J/kg·K)" for k, v in nonconv.items())
+                    results.setdefault("warnings", []).append(
+                        f"İzentropik kök çözücü tolerans içinde yakınsamadı: {details}."
+                    )
             results["fallback_comparison"] = get_fallback_comparisons()
             return results
         except Exception as e:
@@ -503,7 +581,14 @@ class ThermoEngine:
             state_in = self.thermo_solver.get_properties(p1_pa, t1_k, gas_obj, eos_method)
             state_out = self.thermo_solver.get_properties(p2_pa, t2_k, gas_obj, eos_method)
             R_sp = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
-            return CompressorAerodynamics.calculate_polytropic_efficiency(state_in, state_out, R_sp)
+            return CompressorAerodynamics.calculate_polytropic_efficiency(
+                state_in,
+                state_out,
+                R_sp,
+                thermo_solver=self.thermo_solver,
+                gas_obj=gas_obj,
+                eos=eos_method,
+            )
         except Exception as e:
             self.logger.warning(f"Bağımsız politropik verim hesabı hatası: {e}")
             return 0.0
@@ -521,26 +606,44 @@ class ThermoEngine:
 
     def analyze_operating_envelope(self, compressor_data, operating_conditions):
         try:
-            surge_flow = compressor_data.get('surge_flow', 0)
-            stonewall_flow = compressor_data.get('stonewall_flow', 0)
-            op_flow = operating_conditions.get('flow', 0)
-            
-            surge_dist = ((op_flow - surge_flow) / surge_flow * 100) if surge_flow > 0 else 0
-            sw_dist = ((stonewall_flow - op_flow) / op_flow * 100) if stonewall_flow > 0 else 0
-            
+            surge_flow = float(compressor_data.get('surge_flow') or 0.0)
+            stonewall_flow = float(compressor_data.get('stonewall_flow') or 0.0)
+            op_flow = float(operating_conditions.get('flow') or 0.0)
+
+            if surge_flow <= 0 and stonewall_flow in (500.0, 1000.0, 9999.0):
+                stonewall_flow = 0.0
+
+            if op_flow <= 0 or (surge_flow <= 0 and stonewall_flow <= 0):
+                return {
+                    'surge_distance_percent': None,
+                    'stonewall_distance_percent': None,
+                    'safe_operating_margin': None,
+                    'operating_region': 'UNKNOWN',
+                    'recommendations': ["ℹ️ Surge/stonewall eğrisi verisi mevcut değil"],
+                }
+
+            surge_dist = ((op_flow - surge_flow) / surge_flow * 100.0) if surge_flow > 0 else None
+            sw_dist = ((stonewall_flow - op_flow) / op_flow * 100.0) if stonewall_flow > 0 else None
+
             region = 'SAFE'
-            if surge_dist < 10 or sw_dist < 5: region = 'CRITICAL'
-            elif surge_dist < 15 or sw_dist < 8: region = 'WARNING'
-            
+            if (surge_dist is not None and surge_dist < 10.0) or (sw_dist is not None and sw_dist < 5.0):
+                region = 'CRITICAL'
+            elif (surge_dist is not None and surge_dist < 15.0) or (sw_dist is not None and sw_dist < 8.0):
+                region = 'WARNING'
+
             recs = []
-            if surge_dist < 10: recs.append("🚨 SURGE RİSKİ - Debiyi artırın")
-            if sw_dist < 5: recs.append("🚨 STONEWALL RİSKİ - Debiyi düşürün")
-            if not recs: recs.append("✅ Güvenli çalışma bölgesi")
-            
+            if surge_dist is not None and surge_dist < 10.0:
+                recs.append("🚨 SURGE RİSKİ - Debiyi artırın")
+            if sw_dist is not None and sw_dist < 5.0:
+                recs.append("🚨 STONEWALL RİSKİ - Debiyi düşürün")
+            if not recs:
+                recs.append("✅ Güvenli çalışma bölgesi")
+
+            available_margins = [m for m in (surge_dist, sw_dist) if m is not None]
             return {
-                'surge_distance_percent': surge_dist,
-                'stonewall_distance_percent': sw_dist,
-                'safe_operating_margin': min(surge_dist, sw_dist),
+                'surge_distance_percent': surge_dist if surge_dist is not None else 0.0,
+                'stonewall_distance_percent': sw_dist if sw_dist is not None else 0.0,
+                'safe_operating_margin': min(available_margins) if available_margins else 0.0,
                 'operating_region': region,
                 'recommendations': recs
             }
@@ -686,7 +789,13 @@ class ThermoEngine:
 
         intercooler_dp = float(inputs.get("intercooler_dp_pct", 0.0)) / 100.0
         ic_t_raw = float(inputs.get("intercooler_t", 40.0))
-        ic_t_k = ic_t_raw + 273.15 if ic_t_raw < 200 else ic_t_raw
+        ic_unit = inputs.get("intercooler_t_unit", inputs.get("t_in_unit", "°C"))
+        if ic_t_raw > 200.0 and ic_unit in ("°C", "Â°C"):
+            ic_t_k = ic_t_raw
+        elif "intercooler_t_unit" not in inputs and ic_unit == "K" and ic_t_raw < 200.0:
+            ic_t_k = ic_t_raw + 273.15
+        else:
+            ic_t_k = self.convert_temperature_to_k(ic_t_raw, ic_unit)
         pressure_ratio_total = p_out_pa / p_in_pa
 
         requested_max_iter = int(inputs.get("method_max_iter", 100))
@@ -769,6 +878,8 @@ class ThermoEngine:
         def recalc_poly_eff(perturbed_measurements):
             """Pertürbe edilmiş ölçümlerle tasarım hesaplamasını yeniden çalıştırır."""
             modified_inputs = dict(inputs)
+            if "intercooler_t_unit" not in modified_inputs and "t_in_unit" in inputs:
+                modified_inputs["intercooler_t_unit"] = inputs["t_in_unit"]
             modified_inputs.update({
                 "p_in": float(perturbed_measurements["p_in"]),
                 "p_in_unit": "bar",
@@ -783,8 +894,10 @@ class ThermoEngine:
             try:
                 recalc_result = self.calculate_design_performance(modified_inputs)
                 return recalc_result.get("actual_poly_efficiency", 0.0)
-            except Exception:
-                return results["actual_poly_efficiency"]
+            except Exception as error:
+                # Basarisiz pertürbasyonu "sifir duyarlilik" gibi gosterme; yukari ilet (P3-21)
+                self.logger.warning(f"Belirsizlik pertürbasyon hesabi basarisiz: {error}")
+                raise
 
         try:
             uncertainty_result = self.uncertainty_analyzer.analyze_uncertainty(
@@ -843,7 +956,7 @@ class ThermoEngine:
             raise ValueError("Mekanik verim sifir veya negatif olamaz.")
 
         motor_kw = total_shaft_kw / mech_eff
-        unit_kw = motor_kw * 1.04
+        unit_kw = motor_kw * (1.0 + API_617_DRIVER_MARGIN_PCT / 100.0)
 
         fuel_composition = inputs.get("fuel_gas_comp") or inputs.get("gas_comp") or inputs.get("gas_composition") or {}
         fuel_gas_obj = self._create_gas_object(fuel_composition, context.get("eos", "pr"))
@@ -891,7 +1004,12 @@ class ThermoEngine:
 
     def calculate_design_performance(self, inputs):
         start_time = datetime.datetime.now()
-        from kasp.core.aerodynamics import reset_fallback_comparisons, get_fallback_comparisons
+        from kasp.core.aerodynamics import (
+            clear_calculation_cancel,
+            reset_fallback_comparisons,
+            get_fallback_comparisons,
+        )
+        clear_calculation_cancel()
         reset_fallback_comparisons()
         try:
             fallback_tracking = None
@@ -989,16 +1107,38 @@ class ThermoEngine:
                 energy["inlet_properties"],
                 energy["outlet_properties"],
             )
+            if "solver_nonconverged" not in results and hasattr(self.thermo_solver, "_fallback_tracker"):
+                nonconv = self.thermo_solver._fallback_tracker.solver_nonconverged_info()
+                if nonconv:
+                    results["solver_nonconverged"] = dict(nonconv)
+                    details = ", ".join(f"{k} (artık={v:.2f} J/kg·K)" for k, v in nonconv.items())
+                    results.setdefault("warnings", []).append(
+                        f"İzentropik kök çözücü tolerans içinde yakınsamadı: {details}."
+                    )
 
             self.performance_monitor.log_performance(
                 "design_performance",
                 (datetime.datetime.now() - start_time).total_seconds(),
             )
             results["fallback_comparison"] = get_fallback_comparisons()
+            requested_eos = context.get("eos") if isinstance(context, dict) else None
+            if requested_eos:
+                results["requested_eos"] = requested_eos
+            effective_eos = None
             if eos_chain is not None and getattr(eos_chain, "_locked_eos", None):
-                results["_effective_eos"] = eos_chain._locked_eos
+                effective_eos = eos_chain._locked_eos
+                results["_effective_eos"] = effective_eos
+            elif requested_eos:
+                results["_effective_eos"] = requested_eos
+            results["effective_eos"] = results.get("_effective_eos")
+            if requested_eos and effective_eos and effective_eos != requested_eos:
+                results.setdefault("warnings", []).append(
+                    f"İstenen EOS '{requested_eos}' kullanılamadı; hesaplama '{effective_eos}' ile yapıldı."
+                )
             return results
 
+        except CalculationCancelled:
+            raise
         except Exception as error:
             self.logger.error(f"Design performance error: {error}", exc_info=True)
             raise AdvancedThermodynamicError(f"Hesaplama hatasi (V4.5): {error}")
@@ -1031,6 +1171,8 @@ class ThermoEngine:
 
             try:
                 results = self.calculate_design_performance(inputs_temp)
+            except CalculationCancelled:
+                raise
             except Exception as error:
                 self.logger.error(f"Tutarlilik iter {iteration + 1} hatasi: {error}")
                 break

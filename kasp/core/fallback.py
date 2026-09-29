@@ -7,6 +7,7 @@ SolverChain:   CoolProp flash → fd_nr → aj_nr → brent → k-tabanli formul
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from kasp.core.mixture import GasMixtureBuilder
@@ -16,21 +17,82 @@ logger = logging.getLogger(__name__)
 FALLBACK_EOS_ORDER = ["thermopack", "neqsim", "pr", "srk", "aga8"]
 FALLBACK_SOLVER_ORDER = ["fd_nr", "aj_nr", "brent"]
 
+# Izentropik sicaklik kok cozuculeri icin entropi artigi toleransi (J/kg/K)
+ISENTROPIC_RESIDUAL_TOL = 5.0
+
 
 class FallbackTracker:
-    """Run bazinda fallback durumunu izler. begin_run_tracking ile sifirlanir."""
+    """Run bazinda fallback durumunu izler. begin_run_tracking ile sifirlanir.
+
+    Durum thread-local tutulur: ayni cozucuyu paylasan eszamanli kosular
+    birbirinin kirik-EOS listesini silmez/karistirmaz (P4-13). Disaridan
+    dogrudan oznitelik erisimi (`tracker._broken_eos` vb.) calismaya devam eder.
+    """
 
     def __init__(self):
-        self._broken_eos: dict[str, str] = {}
-        self._broken_solvers: set[str] = set()
-        self.eos_chain_log: list[dict[str, str]] = []
-        self.solver_chain_log: list[dict[str, str]] = []
+        self._local = threading.local()
+
+    def _state(self) -> dict[str, Any]:
+        state = getattr(self._local, "state", None)
+        if state is None:
+            state = {
+                "broken_eos": {},
+                "broken_solvers": set(),
+                "nonconverged_solvers": {},
+                "eos_chain_log": [],
+                "solver_chain_log": [],
+            }
+            self._local.state = state
+        return state
+
+    @property
+    def _broken_eos(self) -> dict[str, str]:
+        return self._state()["broken_eos"]
+
+    @_broken_eos.setter
+    def _broken_eos(self, value: dict[str, str]) -> None:
+        self._state()["broken_eos"] = value
+
+    @property
+    def _broken_solvers(self) -> set[str]:
+        return self._state()["broken_solvers"]
+
+    @_broken_solvers.setter
+    def _broken_solvers(self, value: set[str]) -> None:
+        self._state()["broken_solvers"] = value
+
+    @property
+    def _nonconverged_solvers(self) -> dict[str, float]:
+        return self._state()["nonconverged_solvers"]
+
+    @_nonconverged_solvers.setter
+    def _nonconverged_solvers(self, value: dict[str, float]) -> None:
+        self._state()["nonconverged_solvers"] = value
+
+    @property
+    def eos_chain_log(self) -> list[dict[str, str]]:
+        return self._state()["eos_chain_log"]
+
+    @eos_chain_log.setter
+    def eos_chain_log(self, value: list[dict[str, str]]) -> None:
+        self._state()["eos_chain_log"] = value
+
+    @property
+    def solver_chain_log(self) -> list[dict[str, str]]:
+        return self._state()["solver_chain_log"]
+
+    @solver_chain_log.setter
+    def solver_chain_log(self, value: list[dict[str, str]]) -> None:
+        self._state()["solver_chain_log"] = value
 
     def reset(self):
-        self._broken_eos.clear()
-        self._broken_solvers.clear()
-        self.eos_chain_log.clear()
-        self.solver_chain_log.clear()
+        """Yalnizca cagiran thread'in durumunu sifirlar."""
+        state = self._state()
+        state["broken_eos"].clear()
+        state["broken_solvers"].clear()
+        state["nonconverged_solvers"].clear()
+        state["eos_chain_log"].clear()
+        state["solver_chain_log"].clear()
 
     def mark_eos_broken(self, eos: str, reason: str = ""):
         self._broken_eos[eos] = reason
@@ -46,6 +108,13 @@ class FallbackTracker:
 
     def is_solver_broken(self, solver: str) -> bool:
         return solver in self._broken_solvers
+
+    def mark_solver_nonconverged(self, solver: str, residual: float):
+        """Tolerans disi artiga ragmen kabul edilen cozuculeri isaretler (P0-3)."""
+        self._nonconverged_solvers[solver] = float(residual)
+
+    def solver_nonconverged_info(self) -> dict[str, float]:
+        return dict(self._nonconverged_solvers)
 
     def log_eos_fallback(self, from_eos: str, to_eos: str, reason: str):
         entry = {"from": from_eos, "to": to_eos, "reason": reason}
@@ -139,7 +208,13 @@ class EosChain:
         if self._locked_eos is not None:
             if not self._tracker.is_eos_broken(self._locked_eos):
                 go = self._build_gas_obj(self._locked_eos)
-                return self._solver._dispatch(P_pa, T_k, go, self._locked_eos)
+                state = self._solver._dispatch(P_pa, T_k, go, self._locked_eos)
+                if self._locked_fallback:
+                    state.raw_props["fallback"] = True
+                    state.raw_props["fallback_layer"] = "eos"
+                    state.raw_props["fallback_from"] = preferred_eos
+                    state.raw_props["fallback_to"] = self._locked_eos
+                return state
             # Kilitli EOS kirildi → hata firlat, stage yeniden baslatilsin
             raise EosChainBrokenError(
                 f"Kilitli EOS ({self._locked_eos}) calismiyor: "
@@ -229,26 +304,33 @@ class SolverChain:
         from kasp.core.aerodynamics import CompressorAerodynamics
 
         if solver_method != "auto":
-            return self._run_single(
+            # Kullanici secimi: yalnizca o cozucu denenir, ancak artigi dogrulanir
+            T, residual = self._run_single(
                 state_in, p_out, thermo_solver, gas_obj, eos, solver_method
             )
+            self._validate_residual(solver_method, residual, preferred=solver_method)
+            return T
 
         first_error = None
+        candidates: list[tuple[float, str, float]] = []  # (residual, method, T)
         for method in FALLBACK_SOLVER_ORDER:
             if self._tracker.is_solver_broken(method):
                 continue
 
             try:
-                T = self._run_single(
+                T, residual = self._run_single(
                     state_in, p_out, thermo_solver, gas_obj, eos, method
                 )
-                if method != FALLBACK_SOLVER_ORDER[0]:
-                    logger.warning(
-                        "🔄 [Solver fallback] %s → %s: izentropik cozucu basarisiz. Sonraki deneniyor.",
-                        FALLBACK_SOLVER_ORDER[0],
-                        method,
-                    )
-                return T
+                candidates.append((abs(residual), method, T))
+
+                if abs(residual) <= ISENTROPIC_RESIDUAL_TOL:
+                    if method != FALLBACK_SOLVER_ORDER[0]:
+                        logger.warning(
+                            "🔄 [Solver fallback] %s → %s: izentropik cozucu tolerans disi. Sonraki kabul edildi.",
+                            FALLBACK_SOLVER_ORDER[0],
+                            method,
+                        )
+                    return T
             except Exception as exc:
                 first_error = exc
                 self._tracker.mark_solver_broken(method)
@@ -258,33 +340,57 @@ class SolverChain:
                     exc,
                 )
 
+        if candidates:
+            # Hicbir cozucu toleransi saglamadi: en kucuk artiga sahip olani isaretleyerek dondur
+            candidates.sort(key=lambda item: item[0])
+            residual, method, T = candidates[0]
+            self._tracker.mark_solver_nonconverged(method, residual)
+            logger.warning(
+                "⚠️ [Solver] Hicbir cozucu tolerans icinde yakinsamadi. En iyi sonuc %s (artık=%.3f J/kg/K) isaretlendi.",
+                method,
+                residual,
+            )
+            return T
+
         logger.warning(
             "🔶 [Solver fallback] Tum cozuculer basarisiz. Son care: k-tabanli formul."
         )
         self._tracker.log_solver_fallback("all", "k_formula", str(first_error or ""))
         return self._k_based_fallback(state_in, p_out)
 
+    def _validate_residual(self, method: str, residual, *, preferred: str):
+        if residual is None:
+            return
+        if abs(residual) > ISENTROPIC_RESIDUAL_TOL:
+            self._tracker.mark_solver_nonconverged(method, abs(residual))
+            logger.warning(
+                "⚠️ [Solver] %s tolerans disi artık (%.3f J/kg/K > %.1f) kabul edildi (isaretlendi).",
+                method,
+                abs(residual),
+                ISENTROPIC_RESIDUAL_TOL,
+            )
+
     def _run_single(
         self, state_in, p_out: float, thermo_solver, gas_obj, eos: str, method: str
-    ) -> float:
+    ) -> tuple[float, float]:
         from kasp.core.aerodynamics import CompressorAerodynamics
 
         if method == "fd_nr":
-            T, _, _ = CompressorAerodynamics.calculate_isentropic_temp_fd_nr(
+            T, _, residual = CompressorAerodynamics.calculate_isentropic_temp_fd_nr(
                 state_in, p_out, thermo_solver, gas_obj, eos
             )
         elif method == "aj_nr":
-            T, _, _ = CompressorAerodynamics.calculate_isentropic_temp_aj_nr(
+            T, _, residual = CompressorAerodynamics.calculate_isentropic_temp_aj_nr(
                 state_in, p_out, thermo_solver, gas_obj, eos
             )
         elif method == "brent":
-            T, _, _ = CompressorAerodynamics.calculate_isentropic_temp_brent(
+            T, _, residual = CompressorAerodynamics.calculate_isentropic_temp_brent(
                 state_in, p_out, thermo_solver, gas_obj, eos
             )
         else:
             raise ValueError(f"Bilinmeyen cozucu: {method}")
 
-        return T
+        return T, residual
 
     def _k_based_fallback(self, state_in, p_out: float) -> float:
         k = state_in.k if state_in.k > 1.0 else 1.3

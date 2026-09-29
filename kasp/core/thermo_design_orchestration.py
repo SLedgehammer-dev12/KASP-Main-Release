@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import math
 
-from kasp.core.aerodynamics import CompressorAerodynamics
+from kasp.core.aerodynamics import CompressorAerodynamics, is_calculation_cancel_requested
 from kasp.core.constants import R_UNIVERSAL_J_MOL_K
 from kasp.core.thermo_design_support import build_stage_result
 from kasp.core.fallback import EosChainBrokenError
+from kasp.core.exceptions import CalculationCancelled
 
 
 class ThermoDesignOrchestrator:
@@ -140,6 +141,8 @@ class ThermoDesignOrchestrator:
         final_t_out_k = t_in_k
 
         for stage in range(1, num_stages + 1):
+            if is_calculation_cancel_requested():
+                raise CalculationCancelled("Kullanıcı hesaplamayı iptal etti.")
             # Stage basinda EOS lock-in'i sifirla (yeni stage, yeni EOS sansi)
             if eos_chain is not None:
                 eos_chain.reset_lock()
@@ -158,6 +161,8 @@ class ThermoDesignOrchestrator:
             # Method hesaplamasi — EosChainBrokenError veya Metot 4 hatasinda yeniden dene
             retries = 0
             while True:
+                if is_calculation_cancel_requested():
+                    raise CalculationCancelled("Kullanıcı hesaplamayı iptal etti.")
                 try:
                     if method_key in ("incremental", "huntington_rk45"):
                         t_out_k, poly_head, z_avg, history = method_callback(
@@ -224,11 +229,6 @@ class ThermoDesignOrchestrator:
             if state_out.raw_props.get("fallback", False):
                 fallback_sources.append("stage_outlet")
 
-            stage_delta_h_kj = (state_out.H - state_in.H) / 1000.0
-            # Fiziksel kontrol: Δh pozitif olmalı (sıkıştırma ısıtır). Negatif/0 ise referans uyumsuzluğu -> polytropic head ile düzelt
-            if stage_delta_h_kj <= 0 or not math.isfinite(stage_delta_h_kj):
-                self.logger.warning(f"⚠️ Kademe {stage}: Δh={stage_delta_h_kj:.1f} kJ/kg non-fiziksel, head/η ile düzeltildi.")
-                stage_delta_h_kj = poly_head / max(0.3, poly_eff_tgt) if poly_head > 0 else abs(stage_delta_h_kj)
             r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
 
             # Schultz Düzeltme Katsayısı (ASME PTC 10) - direct_hs ve huntington_rk45 zaten gerçek Z/Δh integrali kullandığı için f_t=1.0
@@ -246,11 +246,31 @@ class ThermoDesignOrchestrator:
                 )
             poly_head = f_t * poly_head
 
+            stage_delta_h_kj = (state_out.H - state_in.H) / 1000.0
+            # Fiziksel kontrol: Δh pozitif olmalı (sıkıştırma ısıtır). Negatif/0 ise referans uyumsuzluğu.
+            # Deger gizlice duzeltilmez; isaretlenir ve sonuc INVALID kabul edilir (mark-and-continue).
+            energy_balance_ok = True
+            invalid_stage_power = False
+            delta_h_source = "enthalpy"
+            if stage_delta_h_kj <= 0 or not math.isfinite(stage_delta_h_kj):
+                energy_balance_ok = False
+                invalid_stage_power = True
+                delta_h_source = "invalid_zeroed"
+                self.logger.warning(
+                    f"⚠️ Kademe {stage}: Δh={stage_delta_h_kj:.1f} kJ/kg non-fiziksel, "
+                    f"0.0 olarak sınırlandırıldı (sonuc INVALID isaretlendi)."
+                )
+                stage_delta_h_kj = 0.0
+
             # Gaz gücü: Termodinamik 1. Yasaya göre ṁ·Δh_actual
-            stage_gas_power_kw = mass_flow_per_unit * stage_delta_h_kj
+            stage_gas_power_kw = mass_flow_per_unit * stage_delta_h_kj if energy_balance_ok else 0.0
             # Tutarlılık metriği: polytropik head/η ile gerçek entalpi farkı arasındaki fark
             # eff düşük (<0.25) ise pcons beklenen büyük sapma - uyarı değil
-            raw_pcons = mass_flow_per_unit * (poly_head / poly_eff_tgt - stage_delta_h_kj)
+            raw_pcons = (
+                mass_flow_per_unit * (poly_head / poly_eff_tgt - stage_delta_h_kj)
+                if energy_balance_ok
+                else 0.0
+            )
             # Eğer eff çok düşükse pcons'u 0'a baskıla (tasarım dışı çalışma)
             # Gerçek eff hesaplandıktan sonra düzeltilecek
             power_consistency_check_kw = raw_pcons
@@ -284,6 +304,13 @@ class ThermoDesignOrchestrator:
                 if history.get("deviation_pct", 0) > 50:
                     analysis_scope = "NOT_SELECTABLE"
                     compressor_selectable = False
+            # Enerji dengesi bozuksa INVALID en yuksek kapsamdir (diger kontrolleri gecersiz kilar)
+            if not energy_balance_ok:
+                selection_warnings.append(
+                    f"Non-fiziksel enerji dengesi (Δh<=0); Δh '{delta_h_source}' ile sıfırlandı"
+                )
+                analysis_scope = "INVALID"
+                compressor_selectable = False
             if selection_warnings:
                 self.logger.warning(f"⚠️ Kademe {stage} seçim uyarısı: {'; '.join(selection_warnings)}")
                 history["selection_warnings"] = selection_warnings
@@ -311,6 +338,9 @@ class ThermoDesignOrchestrator:
                     compressor_selectable=compressor_selectable,
                     selection_warnings=selection_warnings,
                     analysis_scope=analysis_scope,
+                    energy_balance_ok=energy_balance_ok,
+                    delta_h_source=delta_h_source,
+                    invalid_stage_power=invalid_stage_power,
                 )
             )
 

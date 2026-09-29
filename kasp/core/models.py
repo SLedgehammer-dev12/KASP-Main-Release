@@ -68,6 +68,7 @@ class TurbineRecommendation:
     selection_score: float      # 0-100 ağırlıklı final skoru
     efficiency_rating: str      # 'Çok Yüksek', 'Yüksek' vb.
     recommendation_level: str   # 5 Yıldızlı metin
+    correction_source: str = "generic_formula"  # 'oem_curve' veya 'generic_formula'
 
 @dataclass
 class SelectionResult:

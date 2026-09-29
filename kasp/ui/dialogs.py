@@ -78,8 +78,9 @@ class CompressorEditDialog(QDialog):
             "manufacturer": self.manufacturer_edit.text(),
             "model": self.model_edit.text(),
             "max_pressure_ratio": self.max_pr_spin.value(),
-            "min_flow_kgs": self.min_flow_spin.value(),
-            "max_flow_kgs": self.max_flow_spin.value(),
+            # Arayuz kg/h ister; veri modeli kg/s kullanir (P1-10)
+            "min_flow_kgs": self.min_flow_spin.value() / 3600.0,
+            "max_flow_kgs": self.max_flow_spin.value() / 3600.0,
             "performance_map_data": map_data,
         }
 
@@ -778,7 +779,7 @@ class ChangePasswordDialog(QDialog):
 
         self._new_pw = QLineEdit()
         self._new_pw.setEchoMode(QLineEdit.Password)
-        self._new_pw.setPlaceholderText("En az 4 karakter")
+        self._new_pw.setPlaceholderText("En az 8 karakter, büyük/küçük harf ve rakam")
         layout.addRow("Yeni Şifre:", self._new_pw)
 
         self._confirm_pw = QLineEdit()
@@ -804,8 +805,8 @@ class ChangePasswordDialog(QDialog):
         if not old or not new:
             self._error_label.setText("Tüm alanlar zorunludur.")
             return
-        if len(new) < 4:
-            self._error_label.setText("Yeni şifre en az 4 karakter olmalıdır.")
+        if len(new) < 8:
+            self._error_label.setText("Yeni şifre en az 8 karakter olmalıdır.")
             return
         if new != confirm:
             self._error_label.setText("Yeni şifre ve tekrarı eşleşmiyor.")

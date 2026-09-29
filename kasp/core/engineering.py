@@ -51,11 +51,19 @@ def _extract_raw_properties(output: dict) -> dict:
     return props
 
 
-def run_eos_shootout(engine, base_inputs: dict) -> list[dict]:
-    """Tüm EOS motorlarını aynı girdilerle çalıştırır, sonuçları karşılaştırır."""
+def run_eos_shootout(engine, base_inputs: dict,
+                     progress_cb=None, cancel_cb=None) -> list[dict]:
+    """Tüm EOS motorlarını aynı girdilerle çalıştırır, sonuçları karşılaştırır.
+
+    Args:
+        progress_cb: (done, total, label, item) callback'i her EOS bittiginde.
+        cancel_cb: () -> bool; True dondururse kosu iptal edilir.
+    """
     results = []
     reference = None
-    for eos in ALL_EOS_METHODS:
+    for idx, eos in enumerate(ALL_EOS_METHODS):
+        if cancel_cb and cancel_cb():
+            break
         inputs = dict(base_inputs)
         inputs["eos_method"] = eos
         t0 = time.perf_counter()
@@ -63,7 +71,7 @@ def run_eos_shootout(engine, base_inputs: dict) -> list[dict]:
             output = engine.calculate_design_performance(inputs)
             elapsed = time.perf_counter() - t0
             raw = _extract_raw_properties(output)
-            results.append({
+            item = {
                 "eos": eos,
                 "label": ALL_EOS_LABELS.get(eos, eos),
                 "success": True,
@@ -76,16 +84,20 @@ def run_eos_shootout(engine, base_inputs: dict) -> list[dict]:
                 "fallback_used": output.get("fallback_used", None),
                 "raw_props": raw,
                 "error": None,
-            })
+            }
             if eos == "coolprop" and reference is None:
                 reference = output
         except Exception as e:
-            results.append({
+            item = {
                 "eos": eos,
                 "label": ALL_EOS_LABELS.get(eos, eos),
                 "success": False,
                 "error": str(e),
-            })
+            }
+
+        results.append(item)
+        if progress_cb:
+            progress_cb(idx + 1, len(ALL_EOS_METHODS), item["label"], item)
 
     # Referansa göre sapma hesapla
     if reference:
@@ -125,17 +137,25 @@ def run_eos_shootout(engine, base_inputs: dict) -> list[dict]:
     return results
 
 
-def run_method_shootout(engine, base_inputs: dict) -> list[dict]:
-    """Tüm sıkıştırma metotlarını aynı girdilerle çalıştırır."""
+def run_method_shootout(engine, base_inputs: dict,
+                        progress_cb=None, cancel_cb=None) -> list[dict]:
+    """Tüm sıkıştırma metotlarını aynı girdilerle çalıştırır.
+
+    Args:
+        progress_cb: (done, total, label, item) callback'i her Metot bittiginde.
+        cancel_cb: () -> bool; True dondururse kosu iptal edilir.
+    """
     results = []
-    for method in ALL_METHOD_LABELS:
+    for idx, method in enumerate(ALL_METHOD_LABELS):
+        if cancel_cb and cancel_cb():
+            break
         inputs = dict(base_inputs)
         inputs["method"] = method
         t0 = time.perf_counter()
         try:
             output = engine.calculate_design_performance(inputs)
             elapsed = time.perf_counter() - t0
-            results.append({
+            item = {
                 "method": method,
                 "label": METHOD_NAMES.get(method, method),
                 "success": True,
@@ -146,12 +166,17 @@ def run_method_shootout(engine, base_inputs: dict) -> list[dict]:
                 "convergence": output.get("method_converged", None),
                 "elapsed_s": elapsed,
                 "error": None,
-            })
+            }
         except Exception as e:
-            results.append({
+            item = {
                 "method": method,
                 "label": METHOD_NAMES.get(method, method),
                 "success": False,
                 "error": str(e),
-            })
+            }
+
+        results.append(item)
+        if progress_cb:
+            progress_cb(idx + 1, len(ALL_METHOD_LABELS), item["label"], item)
+
     return results

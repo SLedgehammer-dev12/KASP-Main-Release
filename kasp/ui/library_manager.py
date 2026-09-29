@@ -197,6 +197,10 @@ class LibraryManagerWindow(QDialog):
 
     def add_compressor(self):
         """Yeni kompresör ekle"""
+        from kasp.security import Session
+        if not Session.authorize("write"):
+            QMessageBox.warning(self, "Yetki Yok", "Kompresör ekleme yetkiniz yok.")
+            return
         dialog = CompressorEditDialog(self)
         if dialog.exec() == QDialog.Accepted:
             compressor_data = dialog.get_compressor_data()
@@ -208,6 +212,10 @@ class LibraryManagerWindow(QDialog):
 
     def delete_compressor(self):
         """Seçili kompresörü sil"""
+        from kasp.security import Session
+        if not Session.authorize("write"):
+            QMessageBox.warning(self, "Yetki Yok", "Kompresör silme yetkiniz yok.")
+            return
         current_row = self.compressor_table.currentRow()
         if current_row < 0:
             QMessageBox.warning(self, "Uyarı", "⚠️ Lütfen silmek için bir kompresör seçin")

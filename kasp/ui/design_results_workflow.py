@@ -157,6 +157,14 @@ def get_selected_unit_value(unit, *keys, default=None):
     return default
 
 
+def format_margin_percent(value):
+    """Surge/stonewall marji None ise 'hesaplanamadi' gosterir (P1-7)."""
+    try:
+        return f"{float(value):.1f}%"
+    except (TypeError, ValueError):
+        return "— (hesaplanamadı)"
+
+
 def describe_selected_turbine(unit):
     return {
         "turbine_name": get_selected_unit_value(unit, "turbine_name", "turbine", default="Bilinmiyor"),
@@ -165,7 +173,7 @@ def describe_selected_turbine(unit):
         "site_heat_rate": get_selected_unit_value(unit, "site_heat_rate", default=0.0),
         "efficiency_rating": get_selected_unit_value(unit, "efficiency_rating", default="-"),
         "power_margin": get_selected_unit_value(unit, "power_margin_percent", default=0.0),
-        "surge_margin": get_selected_unit_value(unit, "surge_margin_percent", "surge_margin", default=0.0),
+        "surge_margin": get_selected_unit_value(unit, "surge_margin_percent", "surge_margin", default=None),
         "recommendation": get_selected_unit_value(unit, "recommendation_level", default="-"),
     }
 
@@ -175,7 +183,7 @@ def build_selected_turbine_labels(details):
         "turbine_name": str(details["turbine_name"]),
         "power": f"{details['available_power']:.0f} kW (ISO: {details['iso_power']:.0f} kW)",
         "efficiency": f"Isi Orani: {details['site_heat_rate']:.0f} kJ/kWh ({details['efficiency_rating']})",
-        "margin": f"Guc: {details['power_margin']:.1f}%, Surge: {details['surge_margin']:.1f}%",
+        "margin": f"Guc: {details['power_margin']:.1f}%, Surge: {format_margin_percent(details['surge_margin'])}",
         "recommendation": str(details["recommendation"]),
     }
 
@@ -256,10 +264,125 @@ class DesignResultsPresenter:
         self.window.summary_text.setText(build_design_summary_text(summary, results))
 
         self.populate_detailed_tables(results)
-        self.graph_manager.generate_all_graphs(self.window.last_design_inputs, results, selected_units)
+        self.populate_turbine_table(selected_units)
+        # Grafik uretimi worker thread'de (P3-20)
+        self._start_graph_generation(results, selected_units)
+
+    def clear_results_ui(self):
+        self.window.last_raw_results = None
+        self.window.last_design_results_raw = {}
+        self.window.last_selected_units = []
+        self.window._graph_error = None
+
+        for label in getattr(self.window, "result_labels", {}).values():
+            if label is not None and hasattr(label, "setText"):
+                label.setText("—")
+
+        if hasattr(self.window, "summary_text") and self.window.summary_text is not None:
+            self.window.summary_text.clear()
+
+        for group_attr in ("consistency_info_group", "fallback_info_group"):
+            group = getattr(self.window, group_attr, None)
+            if group is not None and hasattr(group, "setVisible"):
+                group.setVisible(False)
+
+        for table_attr in (
+            "turbine_table",
+            "thermo_table",
+            "power_table",
+            "fuel_table",
+            "fallback_table",
+            "dimless_table",
+            "uncertainty_table",
+        ):
+            table = getattr(self.window, table_attr, None)
+            if table is not None and hasattr(table, "setRowCount"):
+                table.setRowCount(0)
+
+        for label_attr in (
+            "selected_turbine_label",
+            "turbine_power_label",
+            "turbine_efficiency_label",
+            "turbine_margin_label",
+            "turbine_recommendation_label",
+        ):
+            lbl = getattr(self.window, label_attr, None)
+            if lbl is not None and hasattr(lbl, "setText"):
+                lbl.setText("—")
+
+        self._dispose_current_graphs()
+        if hasattr(self.graph_manager, "clear_graphs"):
+            try:
+                self.graph_manager.clear_graphs()
+            except Exception:
+                self.graph_manager.current_graphs = {}
+        elif hasattr(self.graph_manager, "current_graphs"):
+            self.graph_manager.current_graphs = {}
+
+        if hasattr(self.window, "graph_layout") and hasattr(self.window, "default_graph_label"):
+            self.refresh_current_graph()
+
+    def _dispose_current_graphs(self):
+        old_graphs = getattr(self.graph_manager, "current_graphs", None) or {}
+        for canvas in list(old_graphs.values()):
+            if canvas is None:
+                continue
+            toolbar = getattr(canvas, "_toolbar", None)
+            if toolbar is not None:
+                try:
+                    toolbar.setParent(None)
+                    toolbar.deleteLater()
+                except Exception:
+                    pass
+            try:
+                canvas.setParent(None)
+                if hasattr(canvas, "deleteLater"):
+                    canvas.deleteLater()
+            except Exception:
+                pass
+
+    def _start_graph_generation(self, results, selected_units):
+        from PyQt5.QtCore import QThread
+        from kasp.utils.workers import GraphGenerationWorker
+
+        thread = QThread(self.window)
+        worker = GraphGenerationWorker(
+            self.graph_manager,
+            self.window.last_design_inputs,
+            results,
+            selected_units,
+            self.window,
+        )
+        worker.moveToThread(thread)
+        self._graph_thread = thread
+        self._graph_worker = worker
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_graphs_ready)
+        worker.error.connect(self._on_graphs_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.start()
+
+    def _on_graphs_ready(self, headless_graphs):
+        try:
+            self._dispose_current_graphs()
+            wrapped = self.graph_manager.wrap_headless_graphs(
+                headless_graphs, parent=getattr(self.window, "graph_widget", None)
+            )
+            if wrapped:
+                self.graph_manager.current_graphs = wrapped
+        except Exception as exc:
+            self.window._graph_error = f"Grafik canvas hatasi: {exc}"
         self.window._graph_error = getattr(self.graph_manager, "_graph_error", None)
         self.refresh_current_graph()
-        self.populate_turbine_table(selected_units)
+
+    def _on_graphs_error(self, message):
+        self.window._graph_error = message
+        try:
+            self.refresh_current_graph()
+        except Exception:
+            pass
 
     def update_single_result_unit(self, key, new_unit):
         if not getattr(self.window, "last_raw_results", None):
@@ -329,7 +452,7 @@ class DesignResultsPresenter:
             self.window.turbine_table.setItem(row, 2, QTableWidgetItem(f"{details['available_power']:.0f}"))
             self.window.turbine_table.setItem(row, 3, QTableWidgetItem(f"{details['site_heat_rate']:.0f}"))
             self.window.turbine_table.setItem(row, 4, QTableWidgetItem(str(details["efficiency_rating"])))
-            self.window.turbine_table.setItem(row, 5, QTableWidgetItem(f"{details['surge_margin']:.1f}%"))
+            self.window.turbine_table.setItem(row, 5, QTableWidgetItem(format_margin_percent(details['surge_margin'])))
             self.window.turbine_table.setItem(row, 6, QTableWidgetItem(f"{score:.1f}"))
             self.window.turbine_table.setItem(row, 7, QTableWidgetItem(str(details["recommendation"])))
 
@@ -464,12 +587,21 @@ class DesignResultsPresenter:
 
     def refresh_current_graph(self, graph_label=None):
         current_graph_name = graph_label or self._get_current_graph_label()
+        active_graphs = set((getattr(self.graph_manager, "current_graphs", None) or {}).values())
+        active_toolbars = {getattr(c, "_toolbar", None) for c in active_graphs} - {None}
 
         for index in reversed(range(self.window.graph_layout.count())):
             item = self.window.graph_layout.takeAt(index)
             widget = item.widget()
             if widget:
                 widget.setParent(None)
+                if (
+                    widget is not self.window.default_graph_label
+                    and widget not in active_graphs
+                    and widget not in active_toolbars
+                    and hasattr(widget, "deleteLater")
+                ):
+                    widget.deleteLater()
 
         self.window.default_graph_label.setParent(self.window.graph_widget)
         self.window.default_graph_label.setVisible(True)
@@ -546,6 +678,10 @@ class DesignResultsPresenter:
                 "3 panelli: η yakınsaması, T çıkış sıcaklığı, logaritmik kalıntı (residual).",
                 "3-panel dashboard: η convergence, T outlet temperature, logarithmic residual."
             ),
+            "Cache Performansı": (
+                "Termodinamik özellik önbelleği (LRU cache) isabet/ıskalama oranları ve bellek kullanım istatistikleri.",
+                "Thermodynamic property cache (LRU) hit/miss ratios and memory utilization statistics."
+            ),
         }
         # EN label fallback
         en_labels = {
@@ -553,6 +689,7 @@ class DesignResultsPresenter:
             "Power Flow (Sankey)": "Güç Dağılımı (Sankey)", "k-Z Pressure Path": "k-Z Basınç Yolu",
             "Stage Overview": "Kademe Özeti", "Turbine Radar": "Türbin Radarı",
             "Convergence Dashboard": "Yakınsama Dashboard",
+            "Cache Performance": "Cache Performansı",
         }
         tr_key = en_labels.get(label, label)
         pair = desc_map.get(tr_key)

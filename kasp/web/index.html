@@ -244,10 +244,12 @@
                                                 Yöntemi</label>
                                             <select v-model="inputs.method"
                                                 class="w-full rounded-lg px-3 py-2 text-xs input-dark">
-                                                <option value="Metot 1: Ortalama Özellikler">Metot 1: Ortalama</option>
-                                                <option value="Metot 2: Endpoint (Uç Nokta)">Metot 2: Endpoint</option>
-                                                <option value="Metot 3: Artımlı Basınç (Incremental)">Metot 3: Artımlı
-                                                </option>
+                                                <option value="Metot 5: Huntington-RK45 Diferansiyel">Metot 5: Huntington-RK45</option>
+                                                <option value="Metot 4: Doğrudan H-S">Metot 4: Doğrudan H-S</option>
+                                                <option value="Metot 6: Schultz 3-Üslü Gerçek Gaz">Metot 6: Schultz 3-Üslü</option>
+                                                <option value="Metot 2: Uç Nokta">Metot 2: Uç Nokta</option>
+                                                <option value="Metot 3: Artımlı Basınç">Metot 3: Artımlı Basınç</option>
+                                                <option value="Metot 1: Ortalama Özellikler">Metot 1: Ortalama Özellikler</option>
                                             </select>
                                         </div>
                                     </div>
@@ -357,7 +359,7 @@
                                         <th class="px-4 py-3">P_out</th>
                                         <th class="px-4 py-3">T_in</th>
                                         <th class="px-4 py-3">T_out</th>
-                                        <th class="px-4 py-3">Güç (kW)</th>
+                                        <th class="px-4 py-3">Güç ({{ displayResults.units.power }})</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-slate-800">
@@ -493,8 +495,8 @@
                     t_in: 19.0, t_in_unit: '°C',
                     flow: 1985000, flow_unit: 'Sm³/h',
                     gas_comp: {}, // Will be populated from default_composition API
-                    poly_eff: 78.0,
-                    num_stages: 2,
+                    poly_eff: 90.0,
+                    num_stages: 1,
                     num_units: 1,
                     intercooler_t: 40.0,
                     intercooler_dp_pct: 2.0,
@@ -546,8 +548,6 @@
                         conv.power_shaft_total /= 1000.0;
                         conv.power_shaft_per_unit /= 1000.0;
                         conv.fuel_total /= 1000.0;
-                        // Stages usually kept in kW even for large machines, or we can convert? 
-                        // Let's keep stages in kW for now or consistency? use MW for consistency
                         conv.stages = r.stages.map(s => ({
                             ...s,
                             p_in_disp: s.p_in / 100000,

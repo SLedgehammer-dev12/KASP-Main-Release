@@ -29,8 +29,17 @@ def run_test():
         print(f"power_motor_per_unit_kw: {results.get('power_motor_per_unit_kw')}")
         print(f"power_unit_kw: {results.get('power_unit_kw')}")
 
+        assert results['mass_flow_per_unit_kgs'] > 0
+        assert results['head_kj_kg'] > 0
+        assert results['power_gas_per_unit_kw'] > 0
+        assert results['power_shaft_per_unit_kw'] > results['power_gas_per_unit_kw']
+        assert results['power_unit_kw'] > results['power_shaft_per_unit_kw']
+        return results
+
     except Exception as e:
         print(f"Calculation failed: {e}")
+        raise
 
 if __name__ == '__main__':
     run_test()
+

@@ -2,16 +2,20 @@ from dataclasses import dataclass, field
 import logging
 import re
 from kasp.security import (
-    DEFAULT_PASSWORD,
+    check_lockout,
+    generate_initial_admin_password,
     generate_recovery_key,
     hash_password,
     normalize_recovery_key,
     normalize_security_answer,
+    record_attempt,
     reset_lockout_state,
     verify_password,
 )
 
 logger = logging.getLogger(__name__)
+
+_DUMMY_HASH = hash_password("kasp-dummy-timing-guard")
 
 DEFAULT_SECURITY_QUESTIONS = [
     "İlk evcil hayvanınızın adı nedir?",
@@ -58,13 +62,16 @@ class UserManager:
     def authenticate(self, username: str, password: str):
         user_dict = self.db.get_user_by_username(username)
         if not user_dict:
+            verify_password(password or "", _DUMMY_HASH)
             logger.info(f"Auth basarisiz: '{username}' kullanici adi bulunamadi.")
             return None
         if not user_dict.get("is_active", 1):
+            verify_password(password or "", _DUMMY_HASH)
             logger.info(f"Auth basarisiz: '{username}' hesabi pasif.")
             return None
         stored_hash = user_dict.get("password_hash", "")
         if not stored_hash:
+            verify_password(password or "", _DUMMY_HASH)
             logger.warning(f"Auth basarisiz: '{username}' hash degiskeni bos.")
             return None
         if not verify_password(password, stored_hash):
@@ -187,17 +194,29 @@ class UserManager:
         self, username: str, answer: str, new_password: str
     ) -> tuple[bool, str | None]:
         """Güvenlik sorusu cevabını doğrulayıp yeni şifreyi tanımlar."""
-        user_dict = self.db.get_user_by_username(username.strip())
+        username = username.strip()
+        locked, lock_msg = check_lockout(username)
+        if locked:
+            return False, f"Çok fazla hatalı deneme. {lock_msg}"
+
+        user_dict = self.db.get_user_by_username(username)
         if not user_dict:
+            verify_password(normalize_security_answer(answer), _DUMMY_HASH)
+            record_attempt(success=False, username=username)
             return False, "Kullanıcı bulunamadı."
         if not user_dict.get("is_active", 1):
+            verify_password(normalize_security_answer(answer), _DUMMY_HASH)
             return False, "Hesap pasif durumda. Sistem yöneticinize başvurun."
         
         stored_hash = user_dict.get("security_answer_hash", "")
         if not stored_hash:
+            verify_password(normalize_security_answer(answer), _DUMMY_HASH)
             return False, "Bu hesap için tanımlı güvenlik sorusu cevabı bulunmuyor."
 
         if not verify_password(normalize_security_answer(answer), stored_hash):
+            just_locked, msg = record_attempt(success=False, username=username)
+            if just_locked:
+                return False, f"Çok fazla hatalı deneme. {msg}"
             return False, "Güvenlik sorusu cevabı hatalı."
 
         pw_error = validate_password_policy(new_password)
@@ -207,7 +226,7 @@ class UserManager:
         new_hash = hash_password(new_password)
         ok = self.db.update_user(user_dict["id"], password_hash=new_hash, must_change_password=0)
         if ok:
-            reset_lockout_state()
+            record_attempt(success=True, username=username)
             logger.info(f"Kullanıcı '{username}' güvenlik sorusu ile şifresini başarıyla sıfırladı.")
             return True, None
         return False, "Şifre güncellenemedi."
@@ -226,18 +245,34 @@ class UserManager:
     def verify_recovery_key_and_reset(
         self, username: str, recovery_key: str, new_password: str
     ) -> tuple[bool, str | None]:
-        """Acil durum kurtarma anahtarı ile şifreyi sıfırlar."""
-        user_dict = self.db.get_user_by_username(username.strip())
+        """Acil durum kurtarma anahtarı ile şifreyi sıfırlar.
+
+        Anahtar tek kullanımlıktır: başarılı kullanımdan sonra geçersizleştirilir ve
+        yerine yeni bir kurtarma anahtarı üretilir (mesajla döndürülür).
+        """
+        username = username.strip()
+        locked, lock_msg = check_lockout(username)
+        if locked:
+            return False, f"Çok fazla hatalı deneme. {lock_msg}"
+
+        user_dict = self.db.get_user_by_username(username)
         if not user_dict:
+            verify_password(normalize_recovery_key(recovery_key), _DUMMY_HASH)
+            record_attempt(success=False, username=username)
             return False, "Kullanıcı bulunamadı."
         if not user_dict.get("is_active", 1):
+            verify_password(normalize_recovery_key(recovery_key), _DUMMY_HASH)
             return False, "Hesap pasif durumda."
 
         stored_hash = user_dict.get("recovery_key_hash", "")
         if not stored_hash:
+            verify_password(normalize_recovery_key(recovery_key), _DUMMY_HASH)
             return False, "Bu hesap için tanımlı bir kurtarma anahtarı bulunmuyor."
 
         if not verify_password(normalize_recovery_key(recovery_key), stored_hash):
+            just_locked, msg = record_attempt(success=False, username=username)
+            if just_locked:
+                return False, f"Çok fazla hatalı deneme. {msg}"
             return False, "Geçersiz kurtarma anahtarı."
 
         pw_error = validate_password_policy(new_password)
@@ -247,15 +282,23 @@ class UserManager:
         new_hash = hash_password(new_password)
         ok = self.db.update_user(user_dict["id"], password_hash=new_hash, must_change_password=0)
         if ok:
-            reset_lockout_state()
-            logger.info(f"Kullanıcı '{username}' kurtarma anahtarı ile şifresini sıfırladı.")
-            return True, None
+            # Tek kullanimlik: anahtari gecersizlestir ve yenisini uret
+            new_key, key_err = self.generate_and_save_recovery_key(user_dict["id"])
+            record_attempt(success=True, username=username)
+            logger.info(f"Kullanıcı '{username}' kurtarma anahtarı ile şifresini sıfırladı; anahtar yenilendi.")
+            if key_err or not new_key:
+                return True, "Kurtarma anahtarı kullanıldı ve geçersiz kılındı. Yeni anahtar üretilemedi; yöneticinize başvurun."
+            return True, (
+                "Kurtarma anahtarı kullanıldı ve geçersiz kılındı.\n"
+                f"Yeni kurtarma anahtarınız: {new_key}\n"
+                "Bunu güvenli bir yere kaydedin."
+            )
         return False, "Şifre güncellenemedi."
 
     def cli_emergency_reset_admin(self, custom_password: str = None) -> tuple[bool, str, str]:
         """CLI acil durum aracı: Admin şifresini sıfırlar, yeni kurtarma anahtarı üretir."""
         admin_dict = self.db.get_user_by_username("admin")
-        pw = custom_password or DEFAULT_PASSWORD
+        pw = custom_password or generate_initial_admin_password()
         pw_hash = hash_password(pw)
         
         if not admin_dict:

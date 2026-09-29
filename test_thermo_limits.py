@@ -89,18 +89,37 @@ def test_unsupported_gas_for_aga8_fallback():
     assert state.Z > 0.0
     assert state.density > 0.0
 
-def test_extreme_z_factor_warning(caplog):
+def test_extreme_z_factor_warning(caplog, monkeypatch):
     """Ensure warnings are emitted when the Z-factor is exceptionally low or high."""
     solver = ThermodynamicSolver()
-    
-    # Mocking extremely high pressure to trigger a weird state or mock get_properties to force warning
     p_pa = 5.0e7
     t_k = 150.0
     gas_comp = {"METHANE": 0.8, "ETHANE": 0.2}
     gas_obj = GasMixtureBuilder.build_thermo_data(GasMixtureBuilder.validate_and_normalize(gas_comp))
-    
+
+    # Force an extreme Z value (< 0.5) from _solve_thermo_eos to deterministically test the warning guard
+    monkeypatch.setattr(
+        solver,
+        "_solve_thermo_eos",
+        lambda p, t, g, eos: solver._build_state(
+            P_pa=p,
+            T_k=t,
+            H=-100000.0,
+            S=1200.0,
+            Z=0.22,
+            k=1.33,
+            MW=18.8,
+            Cp=2400.0,
+            Cv=1800.0,
+            density=350.0,
+            phase="gas",
+            fallback=False,
+        ),
+    )
+
     with caplog.at_level(logging.WARNING):
         state = solver.get_properties(p_pa, t_k, gas_obj, "pr")
-        # Check if extremely high pressure / low T yields unusual Z and issues a warning
-        if state.Z < 0.5 or state.Z > 1.5:
-            assert any("olağandışı z faktörü" in record.message.lower() for record in caplog.records)
+
+    assert state.Z < 0.5
+    assert any("olağandışı" in record.message.lower() for record in caplog.records)
+

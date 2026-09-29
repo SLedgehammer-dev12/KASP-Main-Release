@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import logging
 
 from kasp.core.exceptions import UnitConversionError
 from kasp.core.constants import R_UNIVERSAL_J_MOL_K
@@ -25,8 +26,10 @@ def normalize_efficiency_reference(value, default=0.0):
 
 
 def percent_deviation(actual, expected):
-    if expected in (None, 0):
+    if expected is None or actual is None:
         return 0.0
+    if expected == 0:
+        return 0.0 if actual == 0 else float("inf")
     return ((actual - expected) / expected) * 100.0
 
 
@@ -37,7 +40,9 @@ MOLAR_FLOW_UNITS = {"kgmol/h", "kmol/h"}
 
 def convert_pressure_to_pa(value, unit, ambient_pressure_pa=None, altitude_m=None):
     try:
-        UnitSystem.validate_pressure_value(value, unit)
+        UnitSystem.validate_pressure_value(
+            value, unit, ambient_pressure_pa=ambient_pressure_pa, altitude_m=altitude_m
+        )
         return UnitSystem.convert_pressure(value, unit, "Pa", ambient_pressure_pa=ambient_pressure_pa, altitude_m=altitude_m)
     except UnitConversionError as error:
         raise UnitConversionError(f"Basinc donusum hatasi: {error}", value, unit)
@@ -63,7 +68,7 @@ def _resolve_reference_density(thermo_solver, pressure_pa, temperature_k, gas_ob
     infer_mw = getattr(thermo_solver, "infer_mw_g_mol", None)
     mw_g_mol = infer_mw(gas_obj) if infer_mw is not None else None
     if mw_g_mol and mw_g_mol > 0 and temperature_k > 0:
-        logger = getattr(thermo_solver, "logger", None)
+        logger = getattr(thermo_solver, "logger", None) or logging.getLogger(__name__)
         if logger and eos_error:
             logger.warning(
                 "EOS yoğunluk hesaplanamadı, ideal gaz (MW) fallback kullanılıyor: %s", eos_error
@@ -164,10 +169,15 @@ def _convert_power_value(value: float, from_unit: str, to_unit: str) -> float:
 
 
 def _convert_head_value(value: float, from_unit: str, to_unit: str) -> float:
+    # 1 Btu/lb = 2.326 kJ/kg  ->  1 kJ/kg = 0.4299226... Btu/lb
     if from_unit == "kJ/kg" and to_unit == "ft-lbf/lbm":
         return value * 334.55256555
     if from_unit == "ft-lbf/lbm" and to_unit == "kJ/kg":
         return value / 334.55256555
+    if from_unit == "kJ/kg" and to_unit == "Btu/lb":
+        return value * 0.4299226139
+    if from_unit == "Btu/lb" and to_unit == "kJ/kg":
+        return value / 0.4299226139
     raise UnitConversionError(f"Desteklenmeyen head donusumu: {from_unit} -> {to_unit}")
 
 

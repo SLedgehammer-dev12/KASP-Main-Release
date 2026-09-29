@@ -218,23 +218,25 @@ class ThermoMethodSuite:
                 raise RuntimeError(f"Çıkış özellikleri hesaplanamadı (Metot 2, iter {iteration}): {error}")
 
             # k ve poly_eff sınırla - eff 0 olmamalı
-            k2_clamped = max(1.15, min(1.8, float(k2) if math.isfinite(k2) else 1.4))
+            k2_clamped = max(1.02, min(1.8, float(k2) if math.isfinite(k2) else 1.4))
             poly_eff_clamped = max(0.3, min(0.99, float(poly_eff) if math.isfinite(poly_eff) else 0.75))
             n_minus_1_over_n = (k2_clamped - 1) / (k2_clamped * poly_eff_clamped)
             if abs(n_minus_1_over_n) < 1e-10:
                 history["termination_reason"] = "near_zero_exponent"
                 break
-            # n fiziksel aralık kontrolü (tipik 0.1-0.35)
-            n_minus_1_over_n = max(0.05, min(0.45, n_minus_1_over_n))
+            # n fiziksel aralık kontrolü (tipik 0.02-0.45)
+            n_minus_1_over_n = max(0.02, min(0.45, n_minus_1_over_n))
 
             t2_new = t_in * (p_out / p_in) ** n_minus_1_over_n
             if not math.isfinite(t2_new) or t2_new <= 0:
                 t2_new = t_in * 1.2
-            t2_guess = t2_old + 0.8 * (t2_new - t2_old)
-            if t2_guess <= t_in:
-                t2_guess = t_in * 1.01
+            t2_unclamped = t2_old + 0.8 * (t2_new - t2_old)
+            if t2_unclamped <= t_in:
+                t2_unclamped = t_in * 1.01
             # Fiziksel üst sınır (PR<=8 için T_out < T_in*2.8)
-            t2_guess = min(t2_guess, t_in * 2.8)
+            upper_bound = t_in * 2.8
+            hit_upper_clamp = t2_unclamped >= upper_bound
+            t2_guess = min(t2_unclamped, upper_bound)
 
             history["pressure"].append(p_out)
             history["temperature"].append(t2_guess)
@@ -243,8 +245,14 @@ class ThermoMethodSuite:
             history["iteration"].append(iteration + 1)
 
             if abs(t2_guess - t2_old) < tolerance:
+                if hit_upper_clamp:
+                    history["converged"] = False
+                    history["termination_reason"] = "upper_clamp_hit"
+                    break
                 state_out_final = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
                 z2_final = state_out_final.Z
+                k2_final = max(1.02, min(1.8, float(state_out_final.k) if math.isfinite(state_out_final.k) else 1.4))
+                n_final_conv = max(0.02, min(0.45, (k2_final - 1) / (k2_final * poly_eff_clamped)))
                 z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, z2_final)
                 r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
                 poly_head = self._calculate_polytropic_head(
@@ -252,7 +260,7 @@ class ThermoMethodSuite:
                     r_specific,
                     t_in,
                     p_out / p_in,
-                    n_minus_1_over_n,
+                    n_final_conv,
                 )
 
                 self.logger.debug(f"✓ Metot 2 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K")
@@ -263,7 +271,9 @@ class ThermoMethodSuite:
         self.logger.warning(f"⚠ Metot 2: Yakınsama sağlanamadı ({max_iter} iter).")
         z_avg_final = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, Z2)
         r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
-        n_final = (k2 - 1) / (k2 * poly_eff)
+        poly_eff_clamped = max(0.3, min(0.99, float(poly_eff) if math.isfinite(poly_eff) else 0.75))
+        k2_clamped_final = max(1.02, min(1.8, float(k2) if math.isfinite(k2) else 1.4))
+        n_final = max(0.02, min(0.45, (k2_clamped_final - 1) / (k2_clamped_final * poly_eff_clamped)))
         poly_head = self._calculate_polytropic_head(
             z_avg_final,
             r_specific,
@@ -356,8 +366,10 @@ class ThermoMethodSuite:
             raise RuntimeError(f"İzentropik çıkış özellikleri hesaplanamadı (Metot 4): {error}")
 
         delta_h_isen = h2_isen - h1
+        fallback_used = False
 
         if delta_h_isen <= 0:
+            fallback_used = True
             self.logger.warning(
                 f"⚠ Metot 4: ΔH_isen negatif ({delta_h_isen:.1f} J/kg). k-tabanlı izentropik fallback kullanılıyor."
             )
@@ -481,7 +493,16 @@ class ThermoMethodSuite:
 
         z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(z1, z2)
 
-        ln_tr = math.log(t2_guess / t_in) if t2_guess > t_in else 1e-10
+        if t2_guess <= t_in:
+            self.logger.warning(
+                "⚠ Metot 4: Çıkış sıcaklığı giriş sıcaklığından küçük/eşit (T_out=%.1f K <= T_in=%.1f K).",
+                t2_guess,
+                t_in,
+            )
+            hs_converged = False
+            ln_tr = 1e-10
+        else:
+            ln_tr = math.log(t2_guess / t_in)
         ln_pr = math.log(p_out / p_in)
 
         if abs(ln_pr) < 1e-10:
@@ -514,6 +535,7 @@ class ThermoMethodSuite:
             "inner_iteration_limit": max_iter,
             "outer_iteration_limit": outer_iterations,
             "converged": hs_converged,
+            "fallback_used": fallback_used,
         }
 
         self.logger.info(
@@ -604,6 +626,11 @@ class ThermoMethodSuite:
         t_list = [t_in]
         p_list = [p_in]
 
+        # Yakinsama dogrulama isaretleri (P0-2)
+        reached_outlet = False
+        tolerance_forced = False
+        termination_reason = "converged"
+
         try:
             if not adaptive:
                 # Fixed-step RK4 fallback
@@ -630,6 +657,8 @@ class ThermoMethodSuite:
                     z_list.append(z_next)
                     t_list.append(t_current)
                     p_list.append(p_next)
+                reached_outlet = True
+                termination_reason = "fixed_step"
             else:
                 # Adaptive RKF45 (Runge-Kutta-Fehlberg)
                 h = total_dp / max(step_count, 10)
@@ -640,6 +669,10 @@ class ThermoMethodSuite:
 
                 while (p_current < p_out - 1e-6) and (iter_count < max_iterations):
                     iter_count += 1
+                    from kasp.core.aerodynamics import is_calculation_cancel_requested
+                    from kasp.core.exceptions import CalculationCancelled
+                    if is_calculation_cancel_requested():
+                        raise CalculationCancelled("Kullanıcı hesaplamayı iptal etti.")
                     if p_current + h > p_out:
                         h = p_out - p_current
 
@@ -676,6 +709,9 @@ class ThermoMethodSuite:
                     tol_effective = max(tol, 1e-6) * (1.0 + abs(t_current) * 1e-4)
 
                     if err <= tol_effective or h <= h_min:
+                        if err > tol_effective:
+                            # h_min'a dayandi; hata toleransin uzerinde kabul edildi
+                            tolerance_forced = True
                         # Accept step
                         dh = h * (
                             (16.0 / 135.0) * v1 + (6656.0 / 12825.0) * v3 + (28561.0 / 56430.0) * v4 - (9.0 / 50.0) * v5 + (2.0 / 55.0) * v6
@@ -699,6 +735,19 @@ class ThermoMethodSuite:
                         scale = max(0.1, min(0.5, scale))
                         h = max(h_min, h * scale)
 
+                # Iterasyon sinirina takildiysa p_out'a ulasilmadi
+                reached_outlet = p_current >= p_out - 1e-6
+
+            # Yakinsama dogrulamasi: p_out'a ulasma ve tolerans zorlamasi kontrol edilir
+            if not reached_outlet:
+                converged = False
+                termination_reason = "max_iterations"
+            elif tolerance_forced:
+                converged = False
+                termination_reason = "h_min_tolerance_exceeded"
+            else:
+                converged = True
+
             poly_head_kj_kg = poly_head_total / 1000.0
             z_avg = float(np.mean(z_list))
             
@@ -708,13 +757,19 @@ class ThermoMethodSuite:
                 "temperature": t_list,
                 "z_factor": z_list,
                 "step_count": len(p_list) - 1,
-                "converged": True,
-                "termination_reason": "converged",
+                "converged": converged,
+                "termination_reason": termination_reason,
             }
-            self.logger.info(
-                f"✓ Metot 5 (Huntington-RK45) tamamlandı: T_out={t_current:.1f} K ({t_current-273.15:.1f}°C), "
-                f"H_poly={poly_head_kj_kg:.2f} kJ/kg, Z_avg={z_avg:.4f}, Adım={len(p_list)-1}"
-            )
+            if not converged:
+                self.logger.warning(
+                    f"⚠️ Metot 5 (Huntington-RK45) yakinsamadi: neden={termination_reason}, "
+                    f"p={p_current/1e5:.2f}/{p_out/1e5:.2f} bar, adim={len(p_list)-1}"
+                )
+            else:
+                self.logger.info(
+                    f"✓ Metot 5 (Huntington-RK45) tamamlandı: T_out={t_current:.1f} K ({t_current-273.15:.1f}°C), "
+                    f"H_poly={poly_head_kj_kg:.2f} kJ/kg, Z_avg={z_avg:.4f}, Adım={len(p_list)-1}"
+                )
             return t_current, poly_head_kj_kg, z_avg, history
         except Exception as exc:
             self.logger.warning(f"Metot 5 RK45 hatası: {exc}")

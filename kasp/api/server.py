@@ -1,19 +1,24 @@
 """
 KASP V4 API - LEGACY/EXPERIMENTAL
 
-UYARI: Bu sunucu legacy/experimental olarak işaretlenmiştir.
-Üretim ortamında kullanılmamalıdır. Kimlik doğrulama ve hız sınırlama yoktur.
+UYARI: Bu sunucu legacy/experimental olarak işaretlenmiştir. Varsayılan olarak
+KAPALIDIR; yalnızca KASP_API_ENABLE=1 ve KASP_API_TOKEN ayarlandığında başlar.
+Kimlik doğrulama (Bearer token) ve hız sınırlama uygulanır.
 """
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+import hmac
+import os
+import sys
+import time
+import logging
+from collections import defaultdict
 from typing import Dict, List, Optional
+
+from fastapi import FastAPI, HTTPException, Request, Header, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import uvicorn
-import os
-import sys
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +26,72 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from kasp.core.thermo import ThermoEngine
+from kasp.core.properties import COOLPROP_LOADED
 from kasp.core.constants import SUPPORTED_GASES, UNIT_OPTIONS, DEFAULT_COMPOSITION
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+API_ENABLED = _env_flag("KASP_API_ENABLE", False)
+API_TOKEN = (os.environ.get("KASP_API_TOKEN") or "").strip()
+_RAW_ORIGINS = os.environ.get("KASP_API_ALLOWED_ORIGINS", "")
+ALLOWED_ORIGINS = [o.strip() for o in _RAW_ORIGINS.split(",") if o.strip()] or [
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+]
+try:
+    RATE_LIMIT_PER_MIN = max(1, int(os.environ.get("KASP_API_RATE_LIMIT", "60")))
+except ValueError:
+    RATE_LIMIT_PER_MIN = 60
 
 app = FastAPI(
     title="KASP V4 API",
-    description="Legacy/Experimental API - not for production use",
+    description="Legacy/Experimental API - requires Bearer token; not for production use",
     version="0.1.0-legacy"
 )
 
-logger.warning("⚠️ KASP V4 API (LEGACY) başlatıldı. Üretim kullanımı için tasarlanmamıştır.")
+if not API_ENABLED:
+    logger.warning("KASP V4 API (LEGACY) devre dışı. Etkinleştirmek için KASP_API_ENABLE=1 ayarlayın.")
+else:
+    logger.warning("⚠️ KASP V4 API (LEGACY) başlatıldı. Üretim kullanımı için tasarlanmamıştır.")
+
+
+def require_auth(authorization: Optional[str] = Header(default=None)):
+    """Bearer token doğrulaması (sabit-zamanlı karşılaştırma)."""
+    if not API_TOKEN:
+        raise HTTPException(status_code=503, detail="API token yapılandırılmamış (KASP_API_TOKEN).")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Yetkilendirme başlığı gerekli (Bearer).")
+    provided = authorization.split(" ", 1)[1].strip()
+    if not hmac.compare_digest(provided, API_TOKEN):
+        raise HTTPException(status_code=403, detail="Geçersiz API token.")
+
+
+_rate_buckets: Dict[str, list] = defaultdict(list)
+
+
+def rate_limit(request: Request):
+    """IP bazlı dakikalık sabit pencere hız sınırı."""
+    client_host = request.client.host if request.client else "unknown"
+    now = time.time()
+    # Evict stale IP buckets periodically
+    for ip in list(_rate_buckets.keys()):
+        _rate_buckets[ip] = [t for t in _rate_buckets[ip] if now - t < 60.0]
+        if not _rate_buckets[ip] and ip != client_host:
+            del _rate_buckets[ip]
+    bucket = _rate_buckets[client_host]
+    if len(bucket) >= RATE_LIMIT_PER_MIN:
+        raise HTTPException(status_code=429, detail="Hız sınırı aşıldı.")
+    bucket.append(now)
+
+
+_PROTECTED = [Depends(require_auth), Depends(rate_limit)]
+
 
 @app.get("/api/constants")
 async def get_constants():
@@ -46,55 +108,56 @@ app.mount("/static", StaticFiles(directory=os.path.abspath(os.path.join(os.path.
 async def read_index():
     return FileResponse(os.path.abspath(os.path.join(os.path.dirname(__file__), "../web/index.html")))
 
-# CORS - allow_origins="*" ile allow_credentials=True uyumsuz; credentials=False
+# CORS - yalnizca yapilandirilmis origin'ler (varsayilan: yerel)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 engine = ThermoEngine()
 
 class DesignInputs(BaseModel):
     project_name: str = "Web Project"
-    p_in: float
+    p_in: float = Field(..., allow_inf_nan=False)
     p_in_unit: str = "bar(a)"
-    t_in: float
+    t_in: float = Field(..., allow_inf_nan=False)
     t_in_unit: str = "°C"
-    p_out: float
+    p_out: float = Field(..., allow_inf_nan=False)
     p_out_unit: str = "bar(a)"
-    flow: float
+    flow: float = Field(..., gt=0, allow_inf_nan=False)
     flow_unit: str = "kg/s"
     gas_comp: Dict[str, float]
     eos_method: str = "coolprop"
     method: str = "Metot 1: Ortalama Özellikler"
-    poly_eff: float
-    mech_eff: float = 98.0
-    therm_eff: float = 35.0
-    num_units: int = 1
-    num_stages: int = 1
-    intercooler_t: float = 40.0
-    intercooler_dp_pct: float = 2.0
+    poly_eff: float = Field(..., gt=0, le=100, allow_inf_nan=False)
+    mech_eff: float = Field(default=98.0, gt=0, le=100, allow_inf_nan=False)
+    therm_eff: float = Field(default=35.0, gt=0, le=100, allow_inf_nan=False)
+    num_units: int = Field(default=1, ge=1, le=100)
+    num_stages: int = Field(default=1, ge=1, le=20)
+    intercooler_t: float = Field(default=40.0, allow_inf_nan=False)
+    intercooler_dp_pct: float = Field(default=2.0, ge=0, lt=100, allow_inf_nan=False)
     consistency_check: bool = True
 
-@app.post("/api/calculate/design")
+@app.post("/api/calculate/design", dependencies=_PROTECTED)
 async def calculate_design(inputs: DesignInputs):
     try:
         # Convert Pydantic model to dict
-        input_data = inputs.dict()
-        results = engine.calculate_design_performance(input_data)
+        input_data = inputs.model_dump() if hasattr(inputs, "model_dump") else inputs.dict()
+        # Tutarlilik modu secimi calculate_design_performance_with_mode ile uygulanir (P1)
+        input_data["use_consistency_iteration"] = bool(inputs.consistency_check)
+        results = engine.calculate_design_performance_with_mode(input_data)
         return results
     except Exception as e:
-        import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error("API calculation error: %s", e, exc_info=True)
+        raise HTTPException(status_code=400, detail="Hesaplama sırasında bir hata oluştu. Lütfen girdi parametrelerini kontrol edin.")
 
-@app.post("/api/calculate/benchmark")
+@app.post("/api/calculate/benchmark", dependencies=_PROTECTED)
 async def calculate_benchmark(inputs: DesignInputs):
     results = []
-    base_data = inputs.dict()
+    base_data = inputs.model_dump() if hasattr(inputs, "model_dump") else inputs.dict()
     
     eos_options = ['coolprop', 'pr', 'srk']
     method_options = ['Metot 1: Ortalama Özellikler', 'Metot 2: Endpoint Yaklaşımı', 'Metot 3: Artımlı Basınç']
@@ -129,18 +192,33 @@ async def calculate_benchmark(inputs: DesignInputs):
                     "engine_version": res.get('engine_version', 'legacy')
                 })
             except Exception as e:
+                logger.error("API benchmark calculation error (%s / %s): %s", eos, method, e, exc_info=True)
                 results.append({
                     "eos": eos,
                     "method": method,
                     "status": "error",
-                    "error": str(e)
+                    "error": "Hesaplama hatası oluştu."
                 })
                 
     return results
 
 @app.get("/api/health")
 async def health():
-    return {"status": "healthy", "coolprop_loaded": True}
+    return {
+        "status": "healthy",
+        "api_enabled": API_ENABLED,
+        "coolprop_loaded": bool(COOLPROP_LOADED),
+    }
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    if not API_ENABLED:
+        logger.warning(
+            "KASP API devre dışı. Etkinleştirmek için KASP_API_ENABLE=1 ve KASP_API_TOKEN ayarlayın."
+        )
+        raise SystemExit(0)
+    if not API_TOKEN:
+        logger.error("KASP_API_TOKEN ayarlı değil; API başlatılmıyor (güvenlik).")
+        raise SystemExit(1)
+    host = os.environ.get("KASP_API_HOST", "127.0.0.1")
+    port = int(os.environ.get("KASP_API_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
