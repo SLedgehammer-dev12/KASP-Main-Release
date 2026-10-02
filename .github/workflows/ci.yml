@@ -27,15 +27,8 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install -r requirements.txt
       - name: Run test suite
-        shell: bash
         run: |
-          set +e
-          xvfb-run -a python3 -m pytest -v --tb=short > pytest_output.log 2>&1
-          TEST_EXIT=$?
-          tail -n 30 pytest_output.log | while IFS= read -r line; do
-            echo "::error::$line"
-          done
-          exit $TEST_EXIT
+          xvfb-run -a python3 -m pytest -v --tb=short
 
   tests-win:
     runs-on: windows-latest
@@ -54,15 +47,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
       - name: Run test suite
-        shell: bash
         run: |
-          set +e
-          python -m pytest -v --tb=short > pytest_output.log 2>&1
-          TEST_EXIT=$?
-          tail -n 30 pytest_output.log | while IFS= read -r line; do
-            echo "::error::$line"
-          done
-          exit $TEST_EXIT
+          python -m pytest -v --tb=short
 
   tests-mac:
     runs-on: macos-latest
@@ -81,13 +67,6 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install -r requirements.txt
       - name: Run test suite
-        shell: bash
         run: |
-          set +e
-          python3 -m pytest -v --tb=short > pytest_output.log 2>&1
-          TEST_EXIT=$?
-          tail -n 30 pytest_output.log | while IFS= read -r line; do
-            echo "::error::$line"
-          done
-          exit $TEST_EXIT
+          python3 -m pytest -v --tb=short
 
