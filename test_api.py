@@ -6,7 +6,13 @@ KASP_API_TOKEN ortam degiskeni gerektirir; yoksa 503 doner.
 
 import pytest
 import os
-from fastapi.testclient import TestClient
+
+try:
+    from fastapi.testclient import TestClient
+    HAS_TESTCLIENT = True
+except (ImportError, RuntimeError):
+    TestClient = None
+    HAS_TESTCLIENT = False
 
 
 def test_api_import():
@@ -18,6 +24,8 @@ def test_api_import():
 @pytest.fixture
 def client():
     """TestClient fixture."""
+    if not HAS_TESTCLIENT:
+        pytest.skip("fastapi.testclient (httpx) yüklü değil")
     from kasp.api.server import app
     return TestClient(app)
 
