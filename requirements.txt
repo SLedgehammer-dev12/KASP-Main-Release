@@ -14,7 +14,7 @@ pyinstaller>=6.0,<7
 ccp-performance>=0.3.0
 thermopack>=2.2.0
 neqsim>=3.0
-pythonnet>=3.0.0
+pythonnet>=3.0.0; sys_platform == 'win32'
 certifi>=2024.0
 jpype1>=1.5.0
 httpx>=0.27.0

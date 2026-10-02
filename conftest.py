@@ -57,3 +57,23 @@ except ImportError:
         if test_file not in collect_ignore:
             collect_ignore.append(test_file)
 
+
+_session_exitstatus = 0
+
+
+def pytest_sessionfinish(session, exitstatus):
+    global _session_exitstatus
+    _session_exitstatus = exitstatus
+
+
+def pytest_unconfigure(config):
+    """Bypass C++ library destructor segfaults (CoolProp/ccp/PyQt5) during Python exit in CI."""
+    if os.environ.get("CI") or os.environ.get("KASP_TEST_MODE"):
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(int(_session_exitstatus))
+
+
