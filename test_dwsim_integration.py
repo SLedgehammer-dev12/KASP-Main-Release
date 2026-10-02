@@ -63,8 +63,8 @@ def test_dwsim_steam_tables_auto_detect_water():
 
     try:
         import clr
-    except ImportError:
-        pytest.skip("pythonnet (clr) yüklü değil — DWSIM testi atlanıyor")
+    except (ImportError, RuntimeError):
+        pytest.skip("pythonnet (clr) veya .NET runtime yüklü değil — DWSIM testi atlanıyor")
 
     if solver._load_dwsim_dll():
         gas_data = {
@@ -92,8 +92,8 @@ def test_dwsim_viscosity_property():
 
     try:
         import clr
-    except ImportError:
-        pytest.skip("pythonnet yüklü değil")
+    except (ImportError, RuntimeError):
+        pytest.skip("pythonnet (clr) veya .NET runtime yüklü değil")
 
     if solver._load_dwsim_dll():
         gas_data = {
@@ -120,8 +120,8 @@ def test_dwsim_thermal_conductivity():
 
     try:
         import clr
-    except ImportError:
-        pytest.skip("pythonnet yüklü değil")
+    except (ImportError, RuntimeError):
+        pytest.skip("pythonnet (clr) veya .NET runtime yüklü değil")
 
     if solver._load_dwsim_dll():
         gas_data = {
@@ -150,8 +150,8 @@ def test_thermo_engine_dwsim_design():
 
     try:
         import clr
-    except ImportError:
-        pytest.skip("pythonnet yüklü değil")
+    except (ImportError, RuntimeError):
+        pytest.skip("pythonnet (clr) veya .NET runtime yüklü değil")
 
     solver = ThermodynamicSolver()
     if not solver._load_dwsim_dll():

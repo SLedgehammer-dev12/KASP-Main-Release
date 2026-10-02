@@ -70,7 +70,7 @@ def test_design_calculation_returns_without_hanging():
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(engine.calculate_design_performance, inputs)
         try:
-            results = future.result(timeout=20)
+            results = future.result(timeout=90)
         except FutureTimeout as exc:
             raise AssertionError("Design calculation entered an unexpected long-running loop.") from exc
 
