@@ -53,6 +53,21 @@ def test_aero_margins_computed_with_flow():
     assert margins["stonewall_margin_pct"] == pytest.approx((12.0 - 6.0) / 6.0 * 100.0)
 
 
+def test_placeholder_turbine_aero_margins_none():
+    turbec = {
+        "manufacturer": "Turbec (Ansaldo)",
+        "model": "T100-PH",
+        "min_flow_kgs": 0,
+        "max_flow_kgs": 1000,
+        "surge_flow": 0.03,
+        "stonewall_flow": 0.3,
+    }
+    margins = TurbineSelector._calculate_aero_margins(turbec, 1.09716)
+    assert margins["surge_margin_pct"] is None
+    assert margins["stonewall_margin_pct"] is None
+    assert margins["available"] is False
+
+
 # ── P1-8: OEM curves + score clamp ───────────────────────────────────────────
 
 def test_correction_uses_oem_curve_when_present():

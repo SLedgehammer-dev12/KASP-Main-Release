@@ -117,6 +117,8 @@ def build_stage_result(
     energy_balance_ok=True,
     delta_h_source="enthalpy",
     invalid_stage_power=False,
+    liquid_knockout_kg_h=0.0,
+    mass_flow_kgs=None,
 ):
     return {
         "stage": stage,
@@ -133,6 +135,8 @@ def build_stage_result(
         "delta_h_source": delta_h_source,
         "energy_balance_ok": bool(energy_balance_ok),
         "invalid_stage_power": bool(invalid_stage_power),
+        "liquid_knockout_kg_h": float(liquid_knockout_kg_h or 0.0),
+        "mass_flow_kgs": float(mass_flow_kgs) if mass_flow_kgs is not None else None,
         "power_consistency_check_kw": power_consistency_check_kw,
         "z_avg": z_avg,
         "method_history": method_history,
@@ -232,19 +236,26 @@ def build_design_results_payload(
     for st in invalid_stages:
         warnings.append(
             f"Kademe {st.get('stage')}: Non-fiziksel enerji dengesi (delta_h<=0); "
-            f"delta_h '{st.get('delta_h_source', 'bilinmiyor')}' ile ikame edildi. Sonuc gecersiz sayilmalidir."
+            f"delta_h '{st.get('delta_h_source', 'bilinmiyor')}' ile sifirlandi, head/guc toplamina "
+            f"KATILMADI. Sonuc gecersiz sayilmalidir."
         )
     if not_selectable_stages:
         for st in not_selectable_stages:
             sw = "; ".join(st.get("selection_warnings", []))
             warnings.append(f"Kademe {st.get('stage')}: Kompresör seçilemez - {sw} (T_in artışı veya farklı akışkan önerilir)")
         warnings.append("Ağır C6+ hidrokarbonlarda düşük sıcaklık + yüksek PR kombinasyonu faz zarfına yakın - proses şartları gözden geçirilmeli")
+    total_knockout = sum(float(s.get("liquid_knockout_kg_h", 0.0) or 0.0) for s in staged_results)
+    if total_knockout > 0.01:
+        warnings.append(
+            f"Ara soğutucularda toplam {total_knockout:.2f} kg/h sıvı ayrıştırıldı (Knockout Drum aktif)."
+        )
     return {
         "t_out": final_t_out_k - 273.15,
         "head_kj_kg": total_poly_head_kj_kg,
         "compression_ratio": p_out_pa / p_in_pa,
         "design_poly_efficiency": poly_eff_tgt,
         "actual_poly_efficiency": actual_poly_eff_total,
+        "liquid_knockout_total_kg_h": round(total_knockout, 2),
         "power_gas_per_unit_kw": total_stage_gas_power_kw,
         "power_shaft_per_unit_kw": total_shaft_kw,
         "power_motor_per_unit_kw": motor_kw,

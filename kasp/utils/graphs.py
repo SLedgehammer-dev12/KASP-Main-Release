@@ -1027,7 +1027,8 @@ class GraphManager:
         comp = composition or inputs.get("gas_comp", {})
         eos = eos_method or inputs.get("eos_method", "coolprop")
         # Fallback sonrasi etkin EOS'u kullan (CCP→thermopack gibi durumlarda gereksiz fallback onlenir)
-        eos = results.get("_effective_eos", eos)
+        # Hem 'effective_eos' hem '_effective_eos' anahtari desteklenir (tablo-grafik tutarliligi icin, P0)
+        eos = results.get("effective_eos") or results.get("_effective_eos") or eos
 
         self._graph_error = None
         if not headless and self.current_graphs:

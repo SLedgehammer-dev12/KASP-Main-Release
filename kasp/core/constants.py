@@ -115,7 +115,9 @@ LHV_DATA = {
     'NONANE':         44540,
     'DECANE':         44500,
     'HYDROGEN':      119960,
-    'HYDROGENSULFIDE':16450,
+    # H2S LHV = 517.93 kJ/mol / 34.082 g/mol ≈ 15196 kJ/kg (ISO 6976/GPA 2172).
+    # Önceki 16450 değeri HHV'ye karşılık geliyordu; ekşi gazda yakıt debisini ~%8 yanlış hesaplıyordu.
+    'HYDROGENSULFIDE':15196,
     # İnertler yanmaz → 0
     'NITROGEN':           0,
     'CARBONDIOXIDE':      0,
@@ -177,4 +179,88 @@ NORMAL_TEMP_K         = 273.15      # K   (0 °C)
 STANDARD_TEMP_K       = 288.15      # K   (15 °C)
 GRAVITATIONAL_ACC     = 9.80665     # m/s²
 API_617_DRIVER_MARGIN_PCT = 4.0     # API 617 minimum driver margin (%)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kritik Sıcaklıklar (K), Kritik Basınçlar (Pa) ve Asantrik Faktörler (ω)
+# ─────────────────────────────────────────────────────────────────────────────
+CRITICAL_TEMPS_K = {
+    'METHANE':        190.56,
+    'ETHANE':         305.32,
+    'PROPANE':        369.83,
+    'ISOBUTANE':      407.85,
+    'BUTANE':         425.12,
+    'ISOPENTANE':     460.35,
+    'PENTANE':        469.70,
+    'HEXANE':         507.60,
+    'HEPTANE':        540.20,
+    'OCTANE':         568.70,
+    'NONANE':         594.60,
+    'DECANE':         617.70,
+    'HYDROGEN':        33.19,
+    'HYDROGENSULFIDE':373.20,
+    'NITROGEN':       126.19,
+    'CARBONDIOXIDE':  304.13,
+    'WATER':          647.10,
+    'OXYGEN':         154.58,
+    'ARGON':          150.86,
+    'HELIUM':           5.19,
+    'NEON':            44.40,
+    'KRYPTON':        209.40,
+    'XENON':          289.70,
+    'AIR':            132.53,
+}
+
+CRITICAL_PRESS_PA = {
+    'METHANE':        45.99e5,
+    'ETHANE':         48.72e5,
+    'PROPANE':        42.48e5,
+    'ISOBUTANE':      36.40e5,
+    'BUTANE':         37.96e5,
+    'ISOPENTANE':     33.81e5,
+    'PENTANE':        33.70e5,
+    'HEXANE':         30.25e5,
+    'HEPTANE':        27.40e5,
+    'OCTANE':         24.90e5,
+    'NONANE':         22.90e5,
+    'DECANE':         21.10e5,
+    'HYDROGEN':       13.13e5,
+    'HYDROGENSULFIDE':89.40e5,
+    'NITROGEN':       33.96e5,
+    'CARBONDIOXIDE':  73.77e5,
+    'WATER':         220.64e5,
+    'OXYGEN':         50.43e5,
+    'ARGON':          48.98e5,
+    'HELIUM':          2.27e5,
+    'NEON':           27.60e5,
+    'KRYPTON':        55.00e5,
+    'XENON':          58.40e5,
+    'AIR':            37.86e5,
+}
+
+ACENTRIC_FACTORS = {
+    'METHANE':        0.011,
+    'ETHANE':         0.099,
+    'PROPANE':        0.152,
+    'ISOBUTANE':      0.186,
+    'BUTANE':         0.200,
+    'ISOPENTANE':     0.229,
+    'PENTANE':        0.251,
+    'HEXANE':         0.301,
+    'HEPTANE':        0.349,
+    'OCTANE':         0.398,
+    'NONANE':         0.443,
+    'DECANE':         0.492,
+    'HYDROGEN':      -0.216,
+    'HYDROGENSULFIDE':0.094,
+    'NITROGEN':       0.037,
+    'CARBONDIOXIDE':  0.224,
+    'WATER':          0.344,
+    'OXYGEN':         0.022,
+    'ARGON':          0.001,
+    'HELIUM':        -0.390,
+    'NEON':          -0.029,
+    'KRYPTON':        0.005,
+    'XENON':          0.004,
+    'AIR':            0.033,
+}
 

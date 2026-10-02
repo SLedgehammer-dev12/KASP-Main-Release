@@ -542,12 +542,16 @@ class DesignResultsPresenter:
 
         if dimless:
             dim_data = [
-                ("ψ (Basınç katsayısı)", str(dimless["psi"])),
+                ("ψ (Kademe Basınç katsayısı)", str(dimless["psi"])),
                 ("φ (Debi katsayısı)", str(dimless["phi"])),
                 ("Re (Reynolds sayısı)", str(dimless["Re"])),
-                ("Ma (Mach sayısı)", str(dimless["Ma"])),
+                ("Ma (Çark ucu Mach)", str(dimless["Ma"])),
                 ("U_tahmini (m/s)", str(dimless["U_est_m_s"])),
                 ("RPM_tahmini", str(dimless["RPM_est"])),
+                ("D_ref (m)", str(dimless.get("D_ref_m", "-"))),
+                ("Ns (Balje Özgül Hız, rad)", str(dimless.get("Ns", "-"))),
+                ("Ds (Balje Özgül Çap)", str(dimless.get("Ds", "-"))),
+                ("H_kademe (kJ/kg)", str(dimless.get("head_stage_kj_kg", "-"))),
             ]
         else:
             dim_data = [("—", "Hesaplanamadı")]

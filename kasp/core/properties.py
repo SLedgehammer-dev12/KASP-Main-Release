@@ -42,6 +42,88 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PR/SRK ikili etkileşim katsayıları (kij) — literatür derlemesi.
+# Varsayılan kij=0 ekşi/asidik/H2'li ve CO2'li gazlarda Z ve entalpide %1-8
+# sistematik sapma yaratır. Aşağıdaki değerler yaygın PR EOS derlemelerinden
+# (Aspen/PPDS tipi) alınmıştır; kaynak: Soave 1972, Peng-Robinson 1976/1978 ve
+# çok-bileşenli doğalgaz/asidik gaz kij tabloları. Değerler yaklaşıktır.
+_KEY = lambda a: str(a).replace(" ", "").upper()
+_PR_SRK_KIJ = {
+    ("CARBONDIOXIDE", "METHANE"): 0.100,
+    ("CARBONDIOXIDE", "ETHANE"): 0.130,
+    ("CARBONDIOXIDE", "PROPANE"): 0.125,
+    ("CARBONDIOXIDE", "BUTANE"): 0.120,
+    ("CARBONDIOXIDE", "ISOBUTANE"): 0.120,
+    ("CARBONDIOXIDE", "NITROGEN"): -0.017,
+    ("CARBONDIOXIDE", "HYDROGENSULFIDE"): 0.100,
+    ("CARBONDIOXIDE", "HYDROGEN"): 0.060,
+    ("METHANE", "HYDROGENSULFIDE"): 0.080,
+    ("ETHANE", "HYDROGENSULFIDE"): 0.080,
+    ("PROPANE", "HYDROGENSULFIDE"): 0.070,
+    ("BUTANE", "HYDROGENSULFIDE"): 0.060,
+    ("ISOBUTANE", "HYDROGENSULFIDE"): 0.060,
+    ("NITROGEN", "METHANE"): 0.031,
+    ("NITROGEN", "ETHANE"): 0.050,
+    ("NITROGEN", "PROPANE"): 0.080,
+    ("NITROGEN", "BUTANE"): 0.100,
+    ("NITROGEN", "ISOBUTANE"): 0.100,
+    ("NITROGEN", "HYDROGENSULFIDE"): 0.170,
+    ("HYDROGEN", "METHANE"): 0.030,
+    ("HYDROGEN", "ETHANE"): 0.045,
+    ("HYDROGEN", "PROPANE"): 0.060,
+    ("HYDROGEN", "NITROGEN"): 0.100,
+    ("WATER", "METHANE"): 0.450,
+    ("WATER", "ETHANE"): 0.400,
+    ("WATER", "CARBONDIOXIDE"): 0.120,
+    ("WATER", "HYDROGENSULFIDE"): 0.100,
+}
+# Yüksek sapma riskli bileşenler (kij ve polarite duyarlılığı)
+_HIGH_ERROR_COMPONENTS = {"CARBONDIOXIDE", "HYDROGENSULFIDE", "HYDROGEN", "WATER", "H2S", "CO2"}
+
+
+_NORM_ALIASES = {
+    "CO2": "CARBONDIOXIDE",
+    "CH4": "METHANE",
+    "N2": "NITROGEN",
+    "H2S": "HYDROGENSULFIDE",
+    "C2H6": "ETHANE",
+    "C3H8": "PROPANE",
+    "IC4H10": "ISOBUTANE",
+    "NC4H10": "BUTANE",
+    "C4H10": "BUTANE",
+    "H2": "HYDROGEN",
+    "H2O": "WATER",
+}
+
+
+def _build_kij_matrix(ids) -> list[list[float]] | None:
+    """PR/SRK için NxN kij matrisi üretir (simetrik). Değer yoksa 0.0.
+
+    Tüm çiftler 0 ise `None` döndürür (thermo varsayılanı kullanılır).
+    """
+    n = len(ids)
+    if n <= 1:
+        return None
+    normalized = [_NORM_ALIASES.get(_KEY(i), _KEY(i)) for i in ids]
+    matrix = [[0.0] * n for _ in range(n)]
+    any_nonzero = False
+    for i in range(n):
+        for j in range(i + 1, n):
+            key = tuple(sorted((normalized[i], normalized[j])))
+            kij = _PR_SRK_KIJ.get(key)
+            if kij is None:
+                # Alt/çapraz anahtar (ör. H2S/CO2 alias) denemesi
+                kij = _PR_SRK_KIJ.get((normalized[i], normalized[j]))
+            if kij is None:
+                kij = _PR_SRK_KIJ.get((normalized[j], normalized[i]))
+            if kij is not None:
+                matrix[i][j] = matrix[j][i] = float(kij)
+                any_nonzero = True
+    return matrix if any_nonzero else None
+
+
 class ThermodynamicSolver:
     """Core Thermodynamic calculations with Thread-Safe Caching."""
     
@@ -634,11 +716,26 @@ class ThermodynamicSolver:
         molar_mass = MW_g_mol / 1000.0  # kg/mol
         
         EOS_CLASS = PRMIX if eos_method == 'pr' else SRKMIX
-        eos = EOS_CLASS(
+        # PR/SRK ikili etkileşim katsayıları (kij) — literatür tablosundan.
+        kijs = _build_kij_matrix(ids)
+        if kijs is None:
+            # Yüksek-sapma riskli bileşen var ama kij yoksa kullanıcıyı uyar (sessiz kij=0 yerine)
+            normalized = {_KEY(i) for i in ids}
+            risky = normalized & _HIGH_ERROR_COMPONENTS
+            if risky:
+                logger.warning(
+                    "PR/SRK kij=0 kullanılıyor ancak yüksek-sapma riskli bileşen(ler) mevcut: %s. "
+                    "Z/entalpi belirsizliği artabilir.",
+                    ", ".join(sorted(risky)),
+                )
+        eos_kwargs = dict(
             T=T_k, P=P_pa,
             Tcs=constants.Tcs, Pcs=constants.Pcs,
             omegas=constants.omegas, zs=zs
         )
+        if kijs is not None:
+            eos_kwargs["kijs"] = kijs
+        eos = EOS_CLASS(**eos_kwargs)
         
         # Z Factor Fallback and V_m
         phase_str = 'gas'
@@ -727,10 +824,18 @@ class ThermodynamicSolver:
         try:
             if phase_str == 'liquid':
                 speed_of_sound = getattr(eos, 'speed_of_sound_l', None)
+                if (speed_of_sound is None or speed_of_sound <= 0) and hasattr(eos, 'dP_dV_l'):
+                    dp_dv = getattr(eos, 'dP_dV_l', None)
+                    if dp_dv is not None and dp_dv < 0 and V_m > 0 and molar_mass > 0 and Cv_real > 0:
+                        speed_of_sound = math.sqrt((Cp_real / Cv_real) * (-dp_dv) * (V_m ** 2) / molar_mass)
             else:
                 speed_of_sound = getattr(eos, 'speed_of_sound_g', None)
+                if (speed_of_sound is None or speed_of_sound <= 0) and hasattr(eos, 'dP_dV_g'):
+                    dp_dv = getattr(eos, 'dP_dV_g', None)
+                    if dp_dv is not None and dp_dv < 0 and V_m > 0 and molar_mass > 0 and Cv_real > 0:
+                        speed_of_sound = math.sqrt((Cp_real / Cv_real) * (-dp_dv) * (V_m ** 2) / molar_mass)
         except Exception as e:
-            logger.debug("Speed of sound not available: %s", e)
+            logger.debug("Speed of sound calculation error: %s", e)
 
         state = self._build_state(
             P_pa=P_pa,
@@ -759,7 +864,13 @@ class ThermodynamicSolver:
         return state
 
     def _solve_aga8(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
-        """pyaga8 (GERG-2008) standardını kullanarak özellikleri çözer."""
+        """AGA8-DC92 Detail (ISO 12213-2) standardını kullanarak özellikleri çözer.
+
+        Not: pyaga8.Detail/Composition AGA8-DC92 (Starling-Savidge 1992) metodudur;
+        GERG-2008 (Kunz-Wagner 2012) farklı korelasyondur — isimlendirme buna göre düzeltildi.
+        Geçerlilik penceresi (yakl. T=143–473 K, P≤30 MPa, doğalgaz kompozisyonu) dışında
+        çağrıldığında uyarı üretilir.
+        """
         import pyaga8
         
         ids, zs = self._extract_thermo_components(gas_data)
@@ -803,6 +914,16 @@ class ThermodynamicSolver:
         # MPa ve K birimleri
         detail.pressure = P_pa / 1e6
         detail.temperature = T_k
+
+        aga8_warnings = []
+        if not (143.0 <= T_k <= 473.0):
+            msg = f"AGA8-DC92 (ISO 12213-2) sıcaklık aralığı dışı: T={T_k:.1f} K (önerilen 143–473 K). Sonuç ekstrapole."
+            logger.warning(msg)
+            aga8_warnings.append(msg)
+        if detail.pressure > 30.0:
+            msg = f"AGA8-DC92 (ISO 12213-2) basınç aralığı dışı: P={detail.pressure:.1f} MPa (önerilen ≤30 MPa). Sonuç ekstrapole."
+            logger.warning(msg)
+            aga8_warnings.append(msg)
         
         detail.calc_density()
         detail.calc_properties()
@@ -832,7 +953,7 @@ class ThermodynamicSolver:
         if Z < 0.3:
             phase_str = 'liquid'
             
-        return self._build_state(
+        state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
             H=H,
@@ -847,6 +968,10 @@ class ThermodynamicSolver:
             fallback=False,
             speed_of_sound=speed_of_sound
         )
+        if aga8_warnings:
+            state.raw_props.setdefault("health_reasons", []).extend(aga8_warnings)
+            state.raw_props["thermo_health"] = "WARNING"
+        return state
 
     def _get_thermopack_eos(self, tp_components_tuple, eos_model='PR'):
         cache_key = (tp_components_tuple, eos_model)
@@ -1152,7 +1277,9 @@ class ThermodynamicSolver:
         rho_ideal = P_pa / (R_specific * T_k * Z_ideal) if T_k > 0 and R_specific > 0 else 1.0
         
         H_ideal = Cp_ideal * (T_k - 298.15)
-        S_ideal = Cp_ideal * math.log(T_k / 273.15) - R_specific * math.log(P_pa / STD_PRESS_PA) if T_k > 0 else 0
+        # S referansı da H ile aynı olmalı (T_ref=298.15 K, P_ref=STD_PRESS_PA → S=0).
+        # Önceki log(T/273.15) paydası PR yoluyla ~Cp·ln(298.15/273.15)≈90 J/kgK süreksizlik yaratıyordu.
+        S_ideal = Cp_ideal * math.log(T_k / 298.15) - R_specific * math.log(P_pa / STD_PRESS_PA) if T_k > 0 else 0
         
         state = self._build_state(
             P_pa=P_pa,
@@ -1506,11 +1633,21 @@ class ThermodynamicSolver:
         for comp_name, mol_frac in neqsim_comp.items():
             system.addComponent(comp_name, float(mol_frac))
         try:
+            # NeqSim mixing rule 2 = klasik van der Waals one-fluid (kij tabanlı).
+            # CPA (SystemSrkCPA) için kullanılan standart kuraldır; alternatif (örn. Huron-Vidal)
+            # gerekirse bu değer konfigüre edilmelidir.
             system.setMixingRule(2)
         except Exception as e:
-            logger.debug("NeqSim setMixingRule failed: %s", e)
+            logger.warning("NeqSim setMixingRule(2) başarısız; varsayılan mixing rule ile devam: %s", e)
         system.init(0)
         system.init(1)
+
+        # Yakınsama kontrolü — yakınsamadıysa sonuç güvenilmez, açıkça uyar
+        try:
+            if hasattr(system, "isSolved") and not system.isSolved():
+                logger.warning("NeqSim TP-flash yakınsamadı (isSolved=False); sonuç belirsiz.")
+        except Exception as e:
+            logger.debug("NeqSim convergence check skipped: %s", e)
 
         # Gaz fazını seç (varsa), yoksa ilk faz
         try:

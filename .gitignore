@@ -9,6 +9,7 @@ venv/
 build/
 dist/
 *.log
+*.log.*
 *.db
 kasp_database.db
 *.db-journal

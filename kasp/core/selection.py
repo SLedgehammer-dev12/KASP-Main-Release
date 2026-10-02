@@ -194,30 +194,47 @@ class TurbineSelector:
         """
         surge_flow = turbine.get('surge_flow', 0)
         stonewall_flow = turbine.get('stonewall_flow', 0)
-        min_flow = turbine.get('min_flow_kgs', 0)
-        max_flow = turbine.get('max_flow_kgs', 0)
+        min_flow = turbine.get('min_flow_kgs')
+        max_flow = turbine.get('max_flow_kgs')
 
         if TurbineSelector._is_placeholder_bounds(surge_flow, stonewall_flow):
             surge_flow = 0
             stonewall_flow = 0
-        if TurbineSelector._is_placeholder_bounds(min_flow, max_flow):
-            min_flow = 0
-            max_flow = 0
+        if min_flow is not None and max_flow is not None:
+            if TurbineSelector._is_placeholder_bounds(min_flow, max_flow):
+                min_flow = 0
+                max_flow = 0
+                surge_flow = 0
+                stonewall_flow = 0
+
+        # Mikro-ölçek veya geçersiz debi kontrolü
+        if surge_flow and surge_flow <= 0.05:
+            surge_flow = 0
+        if stonewall_flow and stonewall_flow <= 0.05:
+            stonewall_flow = 0
 
         if not op_flow or op_flow <= 0 or not surge_flow or surge_flow <= 0:
             return {'surge_margin_pct': None, 'stonewall_margin_pct': None, 'available': False}
-            
+
+        # Eğer işletme debisi boğulma debisinin (stonewall) aşırı üzerindeyse veri uyumsuzdur
+        if stonewall_flow and stonewall_flow > 0 and op_flow > 2.0 * stonewall_flow:
+            return {'surge_margin_pct': None, 'stonewall_margin_pct': None, 'available': False}
+
         surge_margin = ((op_flow - surge_flow) / surge_flow) * 100.0
+        # Standart dışı aşırı sapmalarda (örn. > 500%) marjı geçersiz kıl
+        if surge_margin > 500.0:
+            surge_margin = None
+
         stonewall_margin = (
             ((stonewall_flow - op_flow) / op_flow * 100.0)
             if (stonewall_flow and stonewall_flow > 0 and stonewall_flow not in (500, 1000, 9999))
             else None
         )
-        
+
         return {
             'surge_margin_pct': surge_margin, 
             'stonewall_margin_pct': stonewall_margin,
-            'available': stonewall_margin is not None,
+            'available': (surge_margin is not None and stonewall_margin is not None),
         }
 
     @staticmethod

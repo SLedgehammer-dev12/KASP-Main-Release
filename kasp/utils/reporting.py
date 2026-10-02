@@ -349,9 +349,10 @@ class ReportGenerator:
                     story.append(Spacer(1, 20))
                     story.append(Paragraph("5A. TERMODİNAMİK DİYAGRAMLAR", styles['Heading2']))
                     
-                    # Generate T-s diagram
+                    # Generate T-s diagram — tablo ile aynı fizik: etkin (fallback sonrası) EOS kullanılır
+                    diagram_eos = str(eff_eos) if eff_eos else req_eos
                     ts_canvas = self.graph_generator.create_ts_diagram(
-                        inputs, results, inputs['gas_comp'], inputs['eos_method']
+                        inputs, results, inputs['gas_comp'], diagram_eos
                     )
                     if ts_canvas is not None:
                         # Save T-s diagram to BytesIO
@@ -367,9 +368,9 @@ class ReportGenerator:
                         story.append(Spacer(1, 12))
                         self.logger.info("T-s diagram embedded in PDF report")
                     
-                    # Generate P-v diagram
+                    # Generate P-v diagram — etkin EOS
                     pv_canvas = self.graph_generator.create_pv_diagram(
-                        inputs, results, inputs['gas_comp'], inputs['eos_method']
+                        inputs, results, inputs['gas_comp'], diagram_eos
                     )
                     if pv_canvas is not None:
                         # Save P-v diagram to BytesIO
@@ -497,13 +498,14 @@ class ReportGenerator:
         story.append(Paragraph("10. STANDART UYUMLULUK", styles['Heading2']))
         
         compliance_text = """
-        <b>Endüstri Standardı Uyumluluk:</b><br/>
-        • Hesaplama metodları ASME PTC-10 standardına uygundur<br/>
-        • Performans düzeltmeleri ISO 2314 standardına uygundur<br/>
-        • Türbin seçimi API 616 gereksinimlerine uygundur<br/>
-        • Kompresör analizi API 617 standartlarına uygundur<br/>
-        • Raporlama formatı endüstri standartlarına uygundur<br/><br/>
-        
+        <b>Endüstri Standardı Uyumluluk Durumu (referans-temelli, sertifikalı değil):</b><br/>
+        • Head/verim hesap metodları ASME PTC-10 §4 yaklaşımlarına dayanır — KISMİ<br/>
+        • Saha düzeltmeleri ISO 2314/ASME PTC-22 referans-koşul tarzındadır; OEM eğrisi değildir — KISMİ<br/>
+        • Türbin seçimi API 616/API 617 marj yaklaşımlarına dayanır; tam uyum doğrulaması yapılmamıştır — KISMİ<br/>
+        • Rotordinamik (lateral/torsional) analiz için gerçek FEA yapılmamıştır — UYGULANMADI<br/>
+        • Belirsizlik analizi yalnızca Tip-B enstrüman katkısını içerir (Tip-A ve model belirsizliği hariç) — KISMİ<br/>
+        • Bu rapor bir performans kabul/sertifikasyon belgesi DEĞİLDİR.<br/><br/>
+
         <b>Referans Standartlar:</b><br/>
         • ASME PTC-10: Compressors and Exhausters<br/>
         • ASME PTC-22: Gas Turbines<br/>
@@ -524,9 +526,10 @@ class ReportGenerator:
                 
                 # Standard measurement uncertainties per ASME PTC 10
                 uncertainty_intro = """
-                <b>Ölçüm Belirsizliği Analizi (ASME PTC 10 Appendix B):</b><br/>
-                Tüm performans hesaplamaları ASME PTC 10 standardına uygun belirsizlik analizi ile doğrulanmıştır.
-                RSS (Root-Sum-Square) metodu kullanılarak hesaplanan birleşik belirsizlik, %95 güven aralığında raporlanmıştır.<br/><br/>
+                <b>Ölçüm Belirsizliği Analizi (ASME PTC 10 Appendix B — kısmi):</b><br/>
+                Birleşik belirsizlik yalnızca Tip-B enstrüman katkısıyla RSS (Root-Sum-Square) yöntemiyle
+                hesaplanmıştır. Tip-A (tekrarlanabilirlik), akışkan-model (EOS) belirsizliği ve Welch-Satterthwaite
+                serbestlik derecesi düzeltmesi DAHİL DEĞİLDİR. Sonuçlar %95 güven aralığı varsayımıyla (k=2) raporlanır.<br/><br/>
                 """
                 story.append(Paragraph(uncertainty_intro, styles['Normal']))
                 story.append(Spacer(1, 10))

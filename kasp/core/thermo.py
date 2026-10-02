@@ -26,6 +26,7 @@ from kasp.core.thermo_design_support import (
     build_uncertainty_measurements,
     build_uncertainty_payload,
     compute_stage_pressure_ratio,
+    optimize_stage_pressure_ratios,
     select_design_method_key,
 )
 from kasp.core.thermo_methods import ThermoMethodSuite
@@ -206,6 +207,138 @@ class ThermoEngine:
             standard_temp_k=self.STANDARD_TEMP_K,
             normal_temp_k=self.NORMAL_TEMP_K,
         )
+    def calculate_fuel_gas_properties(self, composition, source='iso6976'):
+        """ISO 6976:2016 standardına uygun gerçek gaz yakıt özellikleri (LHV/HHV, Z0, Wobbe İndeksi).
+
+        Referans Koşulları:
+            Ölçüm: 15°C (288.15 K), 101.325 kPa (Standart m³ - Sm³)
+            Yanma: 15°C (288.15 K)
+        """
+        comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
+
+        # 15°C ideal gross / net values in kJ/mol according to ISO 6976:2016 Table 1
+        ISO6976_VALUES = {
+            'METHANE':        (891.56, 802.62),
+            'ETHANE':         (1562.14, 1429.35),
+            'PROPANE':        (2221.10, 2044.20),
+            'ISOBUTANE':      (2870.58, 2650.88),
+            'BUTANE':         (2880.44, 2660.74),
+            'ISOPENTANE':     (3531.68, 3270.28),
+            'PENTANE':        (3538.60, 3277.20),
+            'HEXANE':         (4197.20, 3894.10),
+            'HEPTANE':        (4855.80, 4511.00),
+            'OCTANE':         (5514.40, 5127.90),
+            'NONANE':         (6173.00, 5744.80),
+            'DECANE':         (6831.60, 6361.70),
+            'HYDROGEN':       (285.83, 241.83),
+            'HYDROGENSULFIDE':(561.43, 517.93),
+            'NITROGEN':       (0.0, 0.0),
+            'CARBONDIOXIDE':  (0.0, 0.0),
+            'WATER':          (0.0, 0.0),
+            'ARGON':          (0.0, 0.0),
+            'HELIUM':         (0.0, 0.0),
+            'OXYGEN':         (0.0, 0.0),
+            'NEON':           (0.0, 0.0),
+            'KRYPTON':        (0.0, 0.0),
+            'XENON':          (0.0, 0.0),
+            'AIR':            (0.0, 0.0),
+        }
+
+        # ISO 6976:2016 Table 2: 15°C için sıkıştırılabilirlik toplamsal faktörleri sqrt(b_i)
+        ISO6976_SUMMATION_FACTORS = {
+            'METHANE':        0.0447,
+            'ETHANE':         0.0922,
+            'PROPANE':        0.1338,
+            'ISOBUTANE':      0.1764,
+            'BUTANE':         0.1871,
+            'ISOPENTANE':     0.2280,
+            'PENTANE':        0.2510,
+            'HEXANE':         0.2950,
+            'HEPTANE':        0.3390,
+            'OCTANE':         0.3830,
+            'NONANE':         0.4270,
+            'DECANE':         0.4710,
+            'HYDROGEN':       -0.0050,
+            'HYDROGENSULFIDE':0.0894,
+            'NITROGEN':       0.0173,
+            'CARBONDIOXIDE':  0.0748,
+            'WATER':          0.0,
+            'ARGON':          0.0210,
+            'HELIUM':         0.0,
+            'OXYGEN':         0.0283,
+            'NEON':           0.0,
+            'KRYPTON':        0.0,
+            'XENON':          0.0,
+            'AIR':            0.0197,
+        }
+
+        total_lhv_molar = 0.0
+        total_hhv_molar = 0.0
+        total_mw = 0.0
+        sum_sqrt_b = 0.0
+
+        for comp, fraction in comp_frac.items():
+            comp_upper = comp.upper()
+            mw = MOLAR_MASSES.get(comp_upper, 0.0)
+            total_mw += fraction * mw
+
+            hhv_m, lhv_m = ISO6976_VALUES.get(comp_upper, (0.0, 0.0))
+            total_hhv_molar += hhv_m * fraction
+            total_lhv_molar += lhv_m * fraction
+
+            s_factor = ISO6976_SUMMATION_FACTORS.get(comp_upper, 0.0)
+            sum_sqrt_b += fraction * s_factor
+
+        if total_mw <= 0:
+            return {
+                "lhv_kj_kg": 0.0,
+                "hhv_kj_kg": 0.0,
+                "lhv_mj_sm3": 0.0,
+                "hhv_mj_sm3": 0.0,
+                "wobbe_gross_mj_sm3": 0.0,
+                "wobbe_net_mj_sm3": 0.0,
+                "z_std": 1.0,
+                "relative_density": 1.0,
+                "mw_g_mol": 0.0,
+            }
+
+        avg_molar_mass_kg = total_mw / 1000.0
+        lhv_mass = total_lhv_molar / avg_molar_mass_kg
+        hhv_mass = total_hhv_molar / avg_molar_mass_kg
+
+        # Gerçek gaz sıkıştırılabilirlik faktörü: Z = 1 - (sum x_i * sqrt(b_i))^2
+        z_mix_std = max(0.2, 1.0 - (sum_sqrt_b ** 2))
+
+        # İdeal ve gerçek molar hacim (15°C = 288.15 K, 101.325 kPa)
+        # R = 8.314462618 J/(mol*K)
+        v_molar_ideal = (8.314462618 * 288.15) / 101325.0
+        v_molar_real = z_mix_std * v_molar_ideal
+
+        # Hacimsel Isıl Değerler (MJ/Sm³)
+        lhv_vol_mj_sm3 = (total_lhv_molar / (v_molar_real * 1000.0)) if v_molar_real > 0 else 0.0
+        hhv_vol_mj_sm3 = (total_hhv_molar / (v_molar_real * 1000.0)) if v_molar_real > 0 else 0.0
+
+        # Bağıl yoğunluk d = (MW_mix / MW_air) * (Z_air / Z_mix)
+        mw_air = 28.9626
+        z_air = 0.9996
+        relative_density = (total_mw / mw_air) * (z_air / z_mix_std) if z_mix_std > 0 else 1.0
+
+        # Wobbe İndeksi (MJ/Sm³)
+        sqrt_d = math.sqrt(max(1e-4, relative_density))
+        wobbe_gross = hhv_vol_mj_sm3 / sqrt_d
+        wobbe_net = lhv_vol_mj_sm3 / sqrt_d
+
+        return {
+            "lhv_kj_kg": round(lhv_mass, 2),
+            "hhv_kj_kg": round(hhv_mass, 2),
+            "lhv_mj_sm3": round(lhv_vol_mj_sm3, 3),
+            "hhv_mj_sm3": round(hhv_vol_mj_sm3, 3),
+            "wobbe_gross_mj_sm3": round(wobbe_gross, 3),
+            "wobbe_net_mj_sm3": round(wobbe_net, 3),
+            "z_std": round(z_mix_std, 4),
+            "relative_density": round(relative_density, 4),
+            "mw_g_mol": round(total_mw, 3),
+        }
 
     def _calculate_heating_values(self, composition, source='kasp', gas_obj=None, eos_method=None):
         comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
@@ -245,24 +378,8 @@ class ThermoEngine:
         total_water_moles_produced = 0
         
         if source == 'iso6976':
-            for comp, fraction in comp_frac.items():
-                comp_upper = comp.upper()
-                mw = MOLAR_MASSES.get(comp_upper, 0)
-                total_molar_mass_mix += fraction * mw
-                
-                # Fetch molar gross/net values
-                hhv_molar, lhv_molar = ISO6976_VALUES.get(comp_upper, (0.0, 0.0))
-                total_hhv_energy_kj_per_mole += hhv_molar * fraction
-                total_lhv_energy_kj_per_mole += lhv_molar * fraction
-                
-            if total_molar_mass_mix == 0:
-                return 0.0, 0.0
-                
-            avg_molar_mass_kg = total_molar_mass_mix / 1000.0
-            lhv_mass_basis = total_lhv_energy_kj_per_mole / avg_molar_mass_kg
-            hhv_mass_basis = total_hhv_energy_kj_per_mole / avg_molar_mass_kg
-            
-            return lhv_mass_basis, hhv_mass_basis
+            iso_props = self.calculate_fuel_gas_properties(composition, source='iso6976')
+            return iso_props["lhv_kj_kg"], iso_props["hhv_kj_kg"]
 
         # Diğer kaynaklar (kasp veya thermo)
         for comp, fraction in comp_frac.items():
@@ -557,6 +674,7 @@ class ThermoEngine:
                 'corrected_power_kw': corrected["corrected_power_kw"],
                 'corrected_heat_rate': corrected["corrected_heat_rate_kj_kwh"],
                 'correction_factors': corrected["correction_factors"],
+                'fuel_gas_properties': self.calculate_fuel_gas_properties(fuel_composition),
                 'warnings': perf_warnings,
             }
             if hasattr(self.thermo_solver, "_fallback_tracker"):
@@ -788,6 +906,13 @@ class ThermoEngine:
         poly_eff_tgt = max(0.01, min(0.99, float(inputs.get("poly_eff", 85.0)) / 100.0))
 
         intercooler_dp = float(inputs.get("intercooler_dp_pct", 0.0)) / 100.0
+        # Ara-soğutucu basınç kaybı fiziksel aralık kontrolü (PTC 10 çok-kademeli testi).
+        # dp<0 → basınç kazancı (imkânsız), dp>=1 → negatif giriş basıncı. Sessizce 0'a sabitlenir.
+        if not math.isfinite(intercooler_dp) or intercooler_dp < 0.0 or intercooler_dp >= 0.5:
+            self.logger.warning(
+                "Ara-soğutucu basınç kaybı fiziksel aralık dışı (%.3f); 0.0 kabul edildi.", intercooler_dp
+            )
+            intercooler_dp = 0.0
         ic_t_raw = float(inputs.get("intercooler_t", 40.0))
         ic_unit = inputs.get("intercooler_t_unit", inputs.get("t_in_unit", "°C"))
         if ic_t_raw > 200.0 and ic_unit in ("°C", "Â°C"):
@@ -807,6 +932,7 @@ class ThermoEngine:
             "p_out_pa": p_out_pa,
             "eos": eos,
             "gas_obj": gas_obj,
+            "gas_comp": gas_comp,
             "eos_chain": eos_chain,
             "total_mass_flow_kgs": total_mass_flow_kgs,
             "num_units": num_units,
@@ -822,6 +948,22 @@ class ThermoEngine:
                 pressure_ratio_total,
                 intercooler_dp,
                 num_stages,
+            ),
+            "stage_ratios": (
+                optimize_stage_pressure_ratios(
+                    p_in_pa=p_in_pa,
+                    p_out_pa=p_out_pa,
+                    num_stages=num_stages,
+                    intercooler_dp=intercooler_dp,
+                    t_in_k=t_in_k,
+                    ic_t_k=ic_t_k,
+                )
+                if num_stages > 1 and (
+                    inputs.get("stage_pr_mode") == "equal_work"
+                    or inputs.get("equal_work_distribution", False)
+                    or (abs(t_in_k - ic_t_k) > 1.0 and inputs.get("optimize_stages", False))
+                )
+                else None
             ),
             "max_iter": max_iter,
             "tolerance": float(inputs.get("method_tolerance", 0.01)),
@@ -1047,6 +1189,8 @@ class ThermoEngine:
                     method_direct_hs_fn=self.method_suite.method_direct_hs,
                     method_huntington_fn=self.method_suite.method_huntington_rk45,
                     method_schultz_3exp_fn=self.method_suite.method_schultz_3exp,
+                    stage_ratios=context.get("stage_ratios"),
+                    gas_comp=context.get("gas_comp"),
                 )
 
                 # run_stage_loop temizledigi _active_eos_chain'i post-processing icin tekrar aktiflestir
@@ -1086,6 +1230,7 @@ class ThermoEngine:
                     )
 
                     self._add_fuel_standard_density(results, energy["fuel_composition"], context["eos"])
+                    results["fuel_gas_properties"] = self.calculate_fuel_gas_properties(energy["fuel_composition"])
                     self._add_uncertainty_result(
                         results,
                         inputs,

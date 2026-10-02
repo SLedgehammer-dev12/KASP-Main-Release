@@ -112,3 +112,4 @@ def setup_logging(log_widget_handler=None):
     logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
     logging.info("KASP v%s baslatildi. Logging yapilandirmasi tamamlandi.", APP_VERSION)
+    return root_logger

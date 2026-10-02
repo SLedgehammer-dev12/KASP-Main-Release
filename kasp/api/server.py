@@ -90,7 +90,7 @@ def rate_limit(request: Request):
     bucket.append(now)
 
 
-_PROTECTED = [Depends(require_auth), Depends(rate_limit)]
+_PROTECTED = [Depends(rate_limit), Depends(require_auth)]
 
 
 @app.get("/api/constants")

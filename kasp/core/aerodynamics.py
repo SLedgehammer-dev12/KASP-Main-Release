@@ -271,25 +271,32 @@ class CompressorAerodynamics:
              return (z_in + z_out) / 2.0
 
     @staticmethod
-    def calculate_mechanical_loss(inlet_vol_flow_m3s: float, shaft_power_kw: float = None) -> float:
+    def calculate_mechanical_loss(inlet_vol_flow_m3s: float, reference_power_kw: float = None) -> float:
         """
         ASME PTC 10 uyumlu Mekanik (Rulman/Conta) kayıp tahmini.
         ExxonMobil merkezkaç kompresör ampirik formülü: 0.65 * (ACMH)^0.45
-        Limitation: Kayıp şaft gücünün %10'unu geçemez.
+
+        Args:
+            inlet_vol_flow_m3s: Giriş hacimsel debisi (m³/s)
+            reference_power_kw: Tavan için referans güç. Çağrılarda GAZ gücü verilir;
+                tavan bu değerin %10'udur (PTC 10'da böyle bir genel kural yoktur —
+                bu bir iç tasarım sınırıdır).
+
+        Limitation: Kayıp, referans gücün %10'unu geçemez; küçük makinelerde taban 10 kW.
         """
         acmh_unit = max(1.0, inlet_vol_flow_m3s * 3600.0) # m3/h'a çevir
-        
+
         loss_kw = 0.65 * math.pow(acmh_unit, 0.45)
         loss_kw = max(10.0, loss_kw) # Min kayıp limiti
-        
+
         limit_pct = EngineSettings.PTC10_MECHANICAL_LOSS_LIMIT / 100.0 # 0.10
-        
-        if shaft_power_kw is not None and shaft_power_kw > 0.0:
-            max_allowed_loss = shaft_power_kw * limit_pct
+
+        if reference_power_kw is not None and reference_power_kw > 0.0:
+            max_allowed_loss = reference_power_kw * limit_pct
             if loss_kw > max_allowed_loss:
                 logger.debug(f"Mekanik kayıp sınırlandırıldı: {loss_kw:.1f}x -> {max_allowed_loss:.1f}")
                 loss_kw = max_allowed_loss
-                
+
         return loss_kw
 
     @staticmethod
@@ -304,20 +311,33 @@ class CompressorAerodynamics:
     @staticmethod
     def calculate_dimensionless_coeffs(results, inlet_props, mass_flow_kgs):
         try:
-            head_j_kg = float(results.get("head_kj_kg", 0)) * 1000.0
+            head_total_j_kg = float(results.get("head_kj_kg", 0)) * 1000.0
+            num_stages = max(
+                1,
+                int(
+                    results.get("num_stages")
+                    or len(results.get("stages") or results.get("staged_results") or [])
+                    or 1
+                ),
+            )
+            head_stage_j_kg = head_total_j_kg / num_stages
+
             rho = float(inlet_props.get("rho", 1.2))
             a_sound = float(inlet_props.get("a", 340.0))
             mu = float(inlet_props.get("mu", 1.8e-5))
 
             Q_m3s = mass_flow_kgs / rho if rho > 0 else 0
-            U_est = max(10.0, (head_j_kg / 0.55) ** 0.5)
+
+            # Santrifüj çark ucu çevresel hızı (kademe başına kafa ve hedef ψ≈0.50 ile)
+            psi_target = 0.50
+            U_est = max(10.0, (head_stage_j_kg / psi_target) ** 0.5)
 
             # Dinamik çap tahmini: tipik φ (0.03-0.06) ve U (<=450 m/s) kısıtlarıyla
             if Q_m3s > 0 and U_est > 0:
                 phi_target = 0.04  # orta aralık
                 D_est = (Q_m3s / (U_est * phi_target)) ** 0.5
-                # U kısıtı: tip speed <= 450 m/s
-                if U_est > 450:
+                # U kısıtı: tip speed <= 450 m/s (API 617 standart santrifüj çark sınırı)
+                if U_est > 450.0:
                     U_est = 450.0
                     D_est = (Q_m3s / (U_est * phi_target)) ** 0.5
                 # Çap sınırları: 0.15m - 1.8m (gerçekçi kompresör aralığı)
@@ -325,12 +345,22 @@ class CompressorAerodynamics:
             else:
                 D_ref = 0.5  # fallback
 
-            RPM_est = (U_est * 60.0) / (3.1416 * D_ref)
+            RPM_est = (U_est * 60.0) / (math.pi * D_ref)
 
-            psi = head_j_kg / (U_est ** 2) if U_est > 0 else 0
-            phi = Q_m3s / (U_est * (D_ref ** 2)) if U_est > 0 and D_ref > 0 else 0
-            Re = (rho * U_est * D_ref) / mu if mu > 0 else 0
-            Ma = U_est / a_sound if a_sound > 0 else 0
+            psi = head_stage_j_kg / (U_est ** 2) if U_est > 0 else 0.0
+            phi = Q_m3s / (U_est * (D_ref ** 2)) if U_est > 0 and D_ref > 0 else 0.0
+            Re = (rho * U_est * D_ref) / mu if mu > 0 else 0.0
+            Ma = U_est / a_sound if a_sound > 0 else 0.0
+
+            # Balje / Cordier boyutsuz parametreleri:
+            # Ns (Özgül Hız): ω·√Q / H^(3/4)
+            # Ds (Özgül Çap): D·H^(1/4) / √Q
+            Ns = None
+            Ds = None
+            if head_stage_j_kg > 0 and Q_m3s > 0 and D_ref > 0:
+                omega = (2.0 * U_est) / D_ref  # rad/s
+                Ns = round((omega * math.sqrt(Q_m3s)) / (head_stage_j_kg ** 0.75), 3)
+                Ds = round((D_ref * (head_stage_j_kg ** 0.25)) / math.sqrt(Q_m3s), 3)
 
             return {
                 "psi": round(psi, 4),
@@ -340,6 +370,10 @@ class CompressorAerodynamics:
                 "U_est_m_s": round(U_est, 1),
                 "RPM_est": str(int(round(RPM_est))),
                 "D_ref_m": round(D_ref, 3),
+                "Ns": Ns if Ns is not None else "-",
+                "Ds": Ds if Ds is not None else "-",
+                "head_stage_kj_kg": round(head_stage_j_kg / 1000.0, 2),
+                "num_stages": num_stages,
             }
         except Exception:
             return None

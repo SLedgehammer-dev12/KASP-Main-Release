@@ -39,6 +39,9 @@ def setup_logging(log_file='kasp_error.log', log_level=logging.INFO, max_bytes=5
         for h in root_logger.handlers:
             h.setLevel(log_level)
 
+    if logger is None:
+        logger = root_logger
+
     logger.info("KASP v%s - Logging yapilandirmasi (wrapper) tamamlandi.", 
                 getattr(sys.modules.get('release_metadata'), 'APP_VERSION', '?'))
     return logger

@@ -431,12 +431,17 @@ class UncertaintyAnalyzer:
         # Calculate expanded uncertainty
         expanded_unc = self.calculate_expanded_uncertainty(combined_unc)
         
-        # Calculate percentage breakdown
-        total_contribution = sum(abs(c) for c in contributions.values())
+        # Calculate percentage breakdown (ASME PTC 10 Appendix B / ISO GUM variance fraction)
+        sum_sq = combined_unc ** 2
         breakdown_percent = {}
-        if total_contribution > 0:
+        if sum_sq > 0:
             for param, contrib in contributions.items():
-                breakdown_percent[param] = (abs(contrib) / total_contribution) * 100
+                breakdown_percent[param] = ((contrib ** 2) / sum_sq) * 100.0
+        else:
+            total_contribution = sum(abs(c) for c in contributions.values())
+            if total_contribution > 0:
+                for param, contrib in contributions.items():
+                    breakdown_percent[param] = (abs(contrib) / total_contribution) * 100.0
         
         analysis = {
             'combined_uncertainty': combined_unc,
