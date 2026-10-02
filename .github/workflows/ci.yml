@@ -32,10 +32,9 @@ jobs:
           set +e
           xvfb-run -a python3 -m pytest -v --tb=short > pytest_output.log 2>&1
           TEST_EXIT=$?
-          echo "## Pytest Output (Linux)" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          tail -n 100 pytest_output.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 30 pytest_output.log | while IFS= read -r line; do
+            echo "::error::$line"
+          done
           exit $TEST_EXIT
 
   tests-win:
@@ -60,10 +59,9 @@ jobs:
           set +e
           python -m pytest -v --tb=short > pytest_output.log 2>&1
           TEST_EXIT=$?
-          echo "## Pytest Output (Windows)" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          tail -n 100 pytest_output.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 30 pytest_output.log | while IFS= read -r line; do
+            echo "::error::$line"
+          done
           exit $TEST_EXIT
 
   tests-mac:
@@ -88,9 +86,8 @@ jobs:
           set +e
           python3 -m pytest -v --tb=short > pytest_output.log 2>&1
           TEST_EXIT=$?
-          echo "## Pytest Output (macOS)" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          tail -n 100 pytest_output.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 30 pytest_output.log | while IFS= read -r line; do
+            echo "::error::$line"
+          done
           exit $TEST_EXIT
 
