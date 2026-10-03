@@ -4,6 +4,28 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.5.0] — 2026-10-02
+
+### Major: Thermodynamic Core & Industrial Standards (API 617 / ASME PTC 10)
+- **ASME PTC 10 & API 617 Compliance** — Fully standardized polytropic exponent evaluation, Schultz compressibility factor ($f_t$) integration, real-gas path integrals, and gas power balance verification. Centralized the API 617 4% driver margin (`API_617_DRIVER_MARGIN_PCT`).
+- **Physical Efficiency Clamping** — Clamped physically impossible isentropic and polytropic efficiencies (>100% or negative) to `[0.0, 1.0]` with explicit engineering warning logs.
+- **VLE Phase Envelope & Knockout Drum** — Enhanced condensation detection ($V_F < 1.0$) and minimum Gibbs free energy / fugacity phase stability checks.
+- **Accurate Aerodynamic Margins** — Eliminated anomalous surge margin values (e.g. 3500%+) caused by incorrect reference flows, enforcing robust aerodynamic boundaries.
+- **Inert Gas Fuel Consumption Fix** — Prevented false fuel consumption calculation for non-combustible gases (N₂, CO₂, etc.) when LHV <= 0.
+- **Thread-Safe Solvers** — Guarded CoolProp `AbstractState` instances with concurrency locks to prevent race conditions during parallel evaluations.
+
+### Security & Operational Hygiene
+- **Database & Artifact Isolation** — Untracked `kasp_database.db` from repository, added `*.db` to `.gitignore`, and purged production databases from PyInstaller specs to ensure customer data and admin hashes never ship in release binaries.
+- **Mandatory Password Reset Enforcement** — Fixed PBKDF2 verification for the initial admin credential, ensuring `must_change_password=1` triggers reliably.
+- **SQLite WAL Mode** — Activated `PRAGMA busy_timeout = 5000` and `PRAGMA journal_mode = WAL` to prevent database locks.
+
+### UI, Ergonomics & Quality of Life
+- **Stale State Elimination** — Automatically clears residual results, summary cards, and stage tables upon calculation failure, performance error, or creating a new project (`clear_results_ui`).
+- **UTF-8 Mojibake Elimination** — Cleaned up malformed Turkish character sequences in critical error and confirmation dialogs.
+- **Keyboard Shortcuts** — Added `F5` / `Ctrl+R` shortcut for instant calculation triggers.
+
+---
+
 ## [v2.4.2] — 2026-09-10
 
 ### Added & Improved

@@ -1,35 +1,80 @@
+# Byte-compiled / optimized / C-extensions
 __pycache__/
-.pytest_cache/
-*.pyc
-*.pyo
-*.pyd
-.Python
+*.py[cod]
+*$py.class
+*.so
+*.dylib
+
+# Virtual environments
 .venv/
 venv/
+ENV/
+env/
+.Python
+
+# PyInstaller / Build artifacts
 build/
 dist/
+*.spec.bak
+
+# Pytest / Test / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Logs & temporary files
 *.log
 *.log.*
+kasp_error.log
+*.tmp
+*.bak
+*~
+temp/
+tmp/
+scratch/
+
+# Database, Runtime storage & Lockout states
 *.db
 kasp_database.db
 *.db-journal
 *.db-wal
 *.db-shm
-.coverage
-htmlcov/
-.mypy_cache/
-.ruff_cache/
-.idea/
-.vscode/
-Thumbs.db
-.DS_Store
-*.tmp
-releases/
-scratch/
-.jdk/
-.opencode/
-git_yedek/
-.vscode/
+*.kasp
 deneme.kasp
 kasp_lockout.json*
-kasp_config.json
+
+# Backup & Scratch files
+*_backup_*.json
+TODO_*.md
+get_ui_inputs.py
+verify_eos.py
+
+# Legacy release specs and scripts (only current release v2.5.0 + local spec kept)
+KASP_release_v1.*.spec
+KASP_release_v2.[0-4].*.spec
+build_release_v1.*
+build_release_v2.[0-4].*
+v1.*_release_notes.md
+v2.[0-4].*_release_notes.md
+
+# Operating System & IDE
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# External tool & Local backups
+releases/
+git_yedek/
+.jdk/
+.opencode/
