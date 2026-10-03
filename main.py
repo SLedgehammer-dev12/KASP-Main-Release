@@ -195,11 +195,14 @@ def main():
         user_manager = UserManager(db)
 
         # İlk çalıştırma: Varsayılan admin olustur (rastgele tek-seferlik parola, P4-6)
-        initial_pw = generate_initial_admin_password()
-        initial_pw_hash = hash_password(initial_pw)
-        db.create_default_admin(initial_pw_hash)
-        # Mevcut kurulumlarda admin must_change_password=1 olmali (P4-6)
-        db.ensure_default_admin_must_change_password()
+        initial_pw = None
+        if db._is_users_table_empty():
+            initial_pw = generate_initial_admin_password()
+            initial_pw_hash = hash_password(initial_pw)
+            db.create_default_admin(initial_pw_hash)
+        else:
+            # Mevcut kurulumlarda admin must_change_password=1 olmali (P4-6)
+            db.ensure_default_admin_must_change_password()
         # Rastgele parola loglanmaz; kullaniciya LoginDialog'da gosterilir
 
         from kasp.ui.login_dialog import LoginDialog
