@@ -171,3 +171,103 @@ def test_pr_co2_design_produces_positive_head():
     assert res["t_out"] > inp["t_in"]
     # Enerji dengesi geçerli olmalı (INVALID değil)
     assert res.get("energy_balance_ok", True) is True
+
+
+# ─────────────────────────────────────────────────────────────────
+# v2.6.0 Termodinamik Güvenlik ve Kod Kalitesi Testleri
+# ─────────────────────────────────────────────────────────────────
+def test_consolidated_component_aliases():
+    from kasp.core.constants import normalize_component, ALIAS_MAP
+    # Formül tabanlı alias'lar
+    assert normalize_component("CH4") == "METHANE"
+    assert normalize_component("CO2") == "CARBONDIOXIDE"
+    assert normalize_component("c2h6") == "ETHANE"
+    assert normalize_component("C3H8") == "PROPANE"
+    assert normalize_component("IC4H10") == "ISOBUTANE"
+    assert normalize_component("nc4h10") == "BUTANE"
+    assert normalize_component("C4H10") == "BUTANE"
+    assert normalize_component("H2S") == "HYDROGENSULFIDE"
+    assert normalize_component("h2o") == "WATER"
+    assert "CH4" in ALIAS_MAP
+    assert "NC4H10" in ALIAS_MAP
+
+
+def test_reverse_thermo_id_map_cached():
+    from kasp.core.mixture import GasMixtureBuilder
+    assert hasattr(GasMixtureBuilder, "REVERSE_THERMO_ID_MAP")
+    assert GasMixtureBuilder.REVERSE_THERMO_ID_MAP["methane"] == "METHANE"
+    assert GasMixtureBuilder.REVERSE_THERMO_ID_MAP["carbon dioxide"] == "CARBONDIOXIDE"
+    assert GasMixtureBuilder.REVERSE_THERMO_ID_MAP["hydrogen sulfide"] == "HYDROGENSULFIDE"
+
+
+def test_engine_settings_default_efficiencies():
+    from kasp.core.settings import EngineSettings
+    assert EngineSettings.DEFAULT_MECHANICAL_EFFICIENCY_PCT == 98.0
+    assert EngineSettings.DEFAULT_THERMAL_EFFICIENCY_PCT == 35.0
+
+
+def test_kij_missing_risky_pairs_warning():
+    from kasp.core.properties import _check_missing_kij_pairs
+    # Methane ve Xenon arasında kij tablomuzda tanımlı değildir; Xenon riskli değildir -> boş
+    assert _check_missing_kij_pairs(["methane", "xenon"], None) == []
+    # CO2 ve Helium çifti: CO2 risklidir ve kij tablosunda CO2-Helium yoktur -> tespit edilmeli
+    missing = _check_missing_kij_pairs(["carbon dioxide", "helium"], None)
+    assert len(missing) == 1
+    assert "CARBONDIOXIDE-HELIUM" in missing or "HELIUM-CARBONDIOXIDE" in missing
+
+
+def test_invalid_stage_zeros_both_head_and_power():
+    from kasp.core.thermo_design_support import build_stage_result
+    # energy_balance_ok = False olduğunda head de power da 0.0 olmalı
+    res = build_stage_result(
+        stage=1,
+        p_in=100.0,
+        t_in=300.0,
+        p_out=200.0,
+        t_out=350.0,
+        head_kj_kg=0.0,  # orchestration katmanında sıfırlanmış olarak gelir
+        poly_eff_design=0.85,
+        poly_eff_diagnostic=0.82,
+        power_gas_kw=0.0,
+        delta_h_kj_kg=0.0,
+        power_consistency_check_kw=0.0,
+        z_avg=0.9,
+        method_history={},
+        energy_balance_ok=False,
+    )
+    assert res["head_kj_kg"] == 0.0
+    assert res["power_gas_kw"] == 0.0
+    assert res["energy_balance_ok"] is False
+
+
+def test_neqsim_not_solved_sets_critical_health(monkeypatch):
+    from kasp.core.properties import ThermodynamicSolver
+    solver = ThermodynamicSolver()
+
+    class FakePhase:
+        def getPhaseTypeName(self): return "Gas"
+        def getMolarMass(self): return 0.016
+        def getEnthalpy(self): return 1000.0
+        def getEntropy(self): return 50.0
+        def getCp(self): return 35.0
+        def getCv(self): return 25.0
+        def getDensity(self): return 1.2
+        def getZ(self): return 0.95
+        def getSoundSpeed(self): return 400.0
+        def getViscosity(self): return 1e-5
+
+    class FakeSystem:
+        def addComponent(self, name, frac): pass
+        def setMixingRule(self, rule): pass
+        def init(self, level): pass
+        def isSolved(self): return False  # Yakınsamadı!
+        def getNumberOfPhases(self): return 1
+        def getPhase(self, i): return FakePhase()
+
+    monkeypatch.setattr(solver, "_neqsim_loaded", True, raising=False)
+    monkeypatch.setattr(solver, "_neqsim_SystemSrkCPA", lambda t, p: FakeSystem(), raising=False)
+
+    state = solver._solve_neqsim(101325.0, 300.0, {"methane": 1.0})
+    assert state.raw_props.get("thermo_health") == "CRITICAL"
+    assert "neqsim_tp_flash_not_solved" in state.raw_props.get("health_reasons", [])
+

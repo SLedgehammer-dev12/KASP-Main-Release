@@ -1092,7 +1092,7 @@ class ThermoEngine:
         )
         total_shaft_kw = total_stage_gas_power_kw + mech_loss_kw
 
-        mech_eff_raw = float(inputs.get("mech_eff", 98.0))
+        mech_eff_raw = float(inputs.get("mech_eff", EngineSettings.DEFAULT_MECHANICAL_EFFICIENCY_PCT))
         mech_eff = mech_eff_raw / 100.0 if mech_eff_raw > 1.0 else mech_eff_raw
         if mech_eff <= 0:
             raise ValueError("Mekanik verim sifir veya negatif olamaz.")
@@ -1108,7 +1108,7 @@ class ThermoEngine:
             gas_obj=fuel_gas_obj,
             eos_method=context.get("eos", "pr")
         )
-        therm_raw = inputs.get("therm_eff", 0.35)
+        therm_raw = inputs.get("therm_eff", EngineSettings.DEFAULT_THERMAL_EFFICIENCY_PCT)
         therm_eff = therm_raw / 100.0 if therm_raw > 1.0 else therm_raw
 
         fuel_kw = motor_kw / therm_eff if therm_eff > 0 else 0.0

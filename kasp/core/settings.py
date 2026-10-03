@@ -11,6 +11,8 @@ class EngineSettings:
     MAX_CONSISTENCY_ITERATIONS = 20     # İzentropik / Polytropik döngülerde maks limit
     CONSISTENCY_TOLERANCE = 0.5         # Delta H ve T için hedef tolerans (J/kg veya K)
     PTC10_MECHANICAL_LOSS_LIMIT = 10.0  # Şaft limitinin %10'u (ASME PTC 10)
+    DEFAULT_MECHANICAL_EFFICIENCY_PCT = 98.0  # Varsayılan mekanik verim (%)
+    DEFAULT_THERMAL_EFFICIENCY_PCT = 35.0     # Varsayılan sürücü termal verimi (%)
     
     # ─── API 617 Emniyet Marjları ───
     API617_MIN_SURGE_MARGIN = 10.0      # %10'dan az surge mesafesi tehlikelidir

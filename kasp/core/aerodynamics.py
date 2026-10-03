@@ -273,14 +273,15 @@ class CompressorAerodynamics:
     @staticmethod
     def calculate_mechanical_loss(inlet_vol_flow_m3s: float, reference_power_kw: float = None) -> float:
         """
-        ASME PTC 10 uyumlu Mekanik (Rulman/Conta) kayıp tahmini.
-        ExxonMobil merkezkaç kompresör ampirik formülü: 0.65 * (ACMH)^0.45
+        Mekanik (Rulman/Conta) kayıp tahmini.
+        Ampirik model (ExxonMobil merkezkaç kompresör formülasyonu): 0.65 * (ACMH)^0.45
 
         Args:
             inlet_vol_flow_m3s: Giriş hacimsel debisi (m³/s)
             reference_power_kw: Tavan için referans güç. Çağrılarda GAZ gücü verilir;
-                tavan bu değerin %10'udur (PTC 10'da böyle bir genel kural yoktur —
-                bu bir iç tasarım sınırıdır).
+                tavan bu değerin %10'udur (KASP iç tasarım emniyet sınırı: EngineSettings.PTC10_MECHANICAL_LOSS_LIMIT).
+                Not: ASME PTC 10 standardı genel bir ampirik kayıp formülü tanımlamaz;
+                bu tavan sınırı endüstriyel uygulama ve KASP iç emniyeti amacıyla konulmuştur.
 
         Limitation: Kayıp, referans gücün %10'unu geçemez; küçük makinelerde taban 10 kW.
         """

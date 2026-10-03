@@ -43,6 +43,8 @@ class GasMixtureBuilder:
         "AIR": "air",
     }
 
+    REVERSE_THERMO_ID_MAP = {v.lower(): k for k, v in THERMO_ID_MAP.items()}
+
     NEQSIM_COMPONENT_MAP = {
         "METHANE": "methane",
         "ETHANE": "ethane",

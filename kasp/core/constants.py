@@ -45,16 +45,22 @@ SUPPORTED_GASES = {
 ALIAS_MAP = {
     'CO2':              'CARBONDIOXIDE',
     'CARBON DIOXIDE':   'CARBONDIOXIDE',
+    'CH4':              'METHANE',
     'H2S':              'HYDROGENSULFIDE',
     'HYDROGEN SULFIDE': 'HYDROGENSULFIDE',
     'H2O':              'WATER',
     'IBUTANE':          'ISOBUTANE',   # eski V4.2 anahtarı
+    'IC4H10':           'ISOBUTANE',
     'IPENTANE':         'ISOPENTANE',  # eski V4.2 anahtarı
     'N2':               'NITROGEN',
     'O2':               'OXYGEN',
     'H2':               'HYDROGEN',
     'AR':               'ARGON',
     'HE':               'HELIUM',
+    'C2H6':             'ETHANE',
+    'C3H8':             'PROPANE',
+    'NC4H10':           'BUTANE',
+    'C4H10':            'BUTANE',
 }
 
 def normalize_component(name: str) -> str:

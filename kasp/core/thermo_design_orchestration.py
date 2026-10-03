@@ -414,7 +414,7 @@ class ThermoDesignOrchestrator:
                     t_in=stage_t_in,
                     p_out=curr_p_out,
                     t_out=t_out_k,
-                    head_kj_kg=poly_head,
+                    head_kj_kg=poly_head if energy_balance_ok else 0.0,
                     poly_eff_design=poly_eff_tgt,
                     poly_eff_diagnostic=actual_poly_eff,
                     power_gas_kw=stage_gas_power_kw,

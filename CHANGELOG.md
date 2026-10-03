@@ -4,6 +4,22 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.5.1] — 2026-10-03
+
+### Thermodynamic Safety & Numerical Accuracy
+- **NeqSim Convergence Guard** — Enforced `thermo_health = "CRITICAL"` with `"neqsim_tp_flash_not_solved"` health reason when NeqSim flash solver reports `isSolved() == False`, preventing silent propagation of unconverged states.
+- **INVALID Stage Aerodynamic Consistency** — Ensured both polytropic head (`head_kj_kg = 0.0`) and gas power are zeroed simultaneously in `staged_results` whenever energy balance fails ($\Delta h \le 0$).
+- **Missing $k_{ij}$ Warning System** — Added detection of unparameterized pairs involving high-error polar and sour gas components ($CO_2, H_2S, H_2, H_2O$) in PR/SRK EOS, logging diagnostic warnings and recording `"missing_kij"` health tags.
+- **Supercritical Fluid Phase Detection** — Added backend phase verification (`eos.phase in ('s', 'supercritical')`) and pseudo-critical property checking ($T > T_{c,pseudo}$, $P > P_{c,pseudo}$) in cubic EOS to preserve supercritical phase distinction.
+
+### Code Quality & Architectural Consolidation
+- **Single Source of Truth Normalization** — Consolidated chemical formula aliases (`CH4`, `C2H6`, `C3H8`, `IC4H10`, `NC4H10`, `C4H10`, etc.) into `constants.py:ALIAS_MAP` and unified `properties.py:_NORM_ALIASES`.
+- **Cached Reverse Component Mapping** — Added `GasMixtureBuilder.REVERSE_THERMO_ID_MAP` to eliminate redundant dynamic dictionary allocations across 5 property solvers.
+- **Magic Number Elimination** — Moved default mechanical efficiency (98%) and thermal efficiency (35%) into `EngineSettings` in `settings.py`.
+- **Mechanical Loss Documentation** — Clarified ExxonMobil empirical formulation scope vs ASME PTC 10 internal design limitation in `calculate_mechanical_loss`.
+
+---
+
 ## [v2.5.0] — 2026-10-02
 
 ### Major: Thermodynamic Core & Industrial Standards (API 617 / ASME PTC 10)

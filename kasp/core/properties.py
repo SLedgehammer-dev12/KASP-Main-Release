@@ -16,7 +16,7 @@ from kasp.core.models import ThermodynamicState
 
 # Sabitler (GasMixtureBuilder veya API 617)
 from kasp.core.constants import (
-    MOLAR_MASSES, R_UNIVERSAL_J_MOL_K, STD_PRESS_PA, normalize_component
+    MOLAR_MASSES, R_UNIVERSAL_J_MOL_K, STD_PRESS_PA, normalize_component, ALIAS_MAP
 )
 
 # Kütüphane Yüklemeleri (Lazy/Optional Imports)
@@ -83,19 +83,8 @@ _PR_SRK_KIJ = {
 _HIGH_ERROR_COMPONENTS = {"CARBONDIOXIDE", "HYDROGENSULFIDE", "HYDROGEN", "WATER", "H2S", "CO2"}
 
 
-_NORM_ALIASES = {
-    "CO2": "CARBONDIOXIDE",
-    "CH4": "METHANE",
-    "N2": "NITROGEN",
-    "H2S": "HYDROGENSULFIDE",
-    "C2H6": "ETHANE",
-    "C3H8": "PROPANE",
-    "IC4H10": "ISOBUTANE",
-    "NC4H10": "BUTANE",
-    "C4H10": "BUTANE",
-    "H2": "HYDROGEN",
-    "H2O": "WATER",
-}
+# Normalizasyon sözlüğü (constants.ALIAS_MAP ile konsolide edildi)
+_NORM_ALIASES = ALIAS_MAP
 
 
 def _build_kij_matrix(ids) -> list[list[float]] | None:
@@ -122,6 +111,23 @@ def _build_kij_matrix(ids) -> list[list[float]] | None:
                 matrix[i][j] = matrix[j][i] = float(kij)
                 any_nonzero = True
     return matrix if any_nonzero else None
+
+
+def _check_missing_kij_pairs(ids, kijs) -> list[str]:
+    """Yüksek-sapma riskli bileşen içeren ve kij=0 kalan çiftleri listeler."""
+    n = len(ids)
+    if n <= 1:
+        return []
+    normalized = [_NORM_ALIASES.get(_KEY(i), _KEY(i)) for i in ids]
+    missing = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            ci, cj = normalized[i], normalized[j]
+            if ci in _HIGH_ERROR_COMPONENTS or cj in _HIGH_ERROR_COMPONENTS:
+                val = kijs[i][j] if kijs is not None else 0.0
+                if val == 0.0:
+                    missing.append(f"{ci}-{cj}")
+    return missing
 
 
 class ThermodynamicSolver:
@@ -502,7 +508,7 @@ class ThermodynamicSolver:
 
         comp_map = getattr(GasMixtureBuilder, "COMPONENT_MAP", SUPPORTED_GASES)
         rev_supported = {v.lower(): k for k, v in comp_map.items()}
-        rev_thermo = {v.lower(): k for k, v in GasMixtureBuilder.THERMO_ID_MAP.items()}
+        rev_thermo = GasMixtureBuilder.REVERSE_THERMO_ID_MAP
         rev_neqsim = {v.lower(): k for k, v in GasMixtureBuilder.NEQSIM_COMPONENT_MAP.items()}
 
         def _resolve_canonical(raw_name: str) -> str:
@@ -718,16 +724,14 @@ class ThermodynamicSolver:
         EOS_CLASS = PRMIX if eos_method == 'pr' else SRKMIX
         # PR/SRK ikili etkileşim katsayıları (kij) — literatür tablosundan.
         kijs = _build_kij_matrix(ids)
-        if kijs is None:
-            # Yüksek-sapma riskli bileşen var ama kij yoksa kullanıcıyı uyar (sessiz kij=0 yerine)
-            normalized = {_KEY(i) for i in ids}
-            risky = normalized & _HIGH_ERROR_COMPONENTS
-            if risky:
-                logger.warning(
-                    "PR/SRK kij=0 kullanılıyor ancak yüksek-sapma riskli bileşen(ler) mevcut: %s. "
-                    "Z/entalpi belirsizliği artabilir.",
-                    ", ".join(sorted(risky)),
-                )
+        missing_risky_pairs = _check_missing_kij_pairs(ids, kijs)
+        if missing_risky_pairs:
+            # Yüksek-sapma riskli bileşen içeren çift(ler)de kij=0 varsa kullanıcıyı uyar
+            logger.warning(
+                "PR/SRK kij=0 kullanılıyor ancak yüksek-sapma riskli çift(ler) mevcut: %s. "
+                "Z/entalpi belirsizliği artabilir.",
+                ", ".join(sorted(missing_risky_pairs)),
+            )
         eos_kwargs = dict(
             T=T_k, P=P_pa,
             Tcs=constants.Tcs, Pcs=constants.Pcs,
@@ -770,6 +774,19 @@ class ThermodynamicSolver:
             V_m = 8.314462 * T_k / P_pa
             phase_str = 'ideal'
             internal_fallback = True
+
+        # Süperkritik faz kontrolü (backend faz yetkisi ve psödo-kritik denetim)
+        eos_phase = getattr(eos, 'phase', None)
+        if eos_phase in ('s', 'supercritical'):
+            phase_str = 'supercritical'
+        elif not internal_fallback and phase_str != 'liquid':
+            try:
+                tc_pseudo = sum(zs[i] * constants.Tcs[i] for i in range(len(zs)))
+                pc_pseudo = sum(zs[i] * constants.Pcs[i] for i in range(len(zs)))
+                if T_k > tc_pseudo and P_pa > pc_pseudo:
+                    phase_str = 'supercritical'
+            except Exception:
+                pass
             
         D = molar_mass / V_m  # kg/m³
         
@@ -852,6 +869,12 @@ class ThermodynamicSolver:
             fallback=internal_fallback,
             speed_of_sound=speed_of_sound,
         )
+        if missing_risky_pairs:
+            state.raw_props.setdefault("health_reasons", []).append(
+                f"missing_kij({', '.join(sorted(missing_risky_pairs))})"
+            )
+            if state.raw_props.get("thermo_health") not in ("CRITICAL", "WARNING"):
+                state.raw_props["thermo_health"] = "WARNING"
         if internal_fallback:
             self._tag_internal_fallback(state, "eos_roots_unavailable")
         return state
@@ -1012,10 +1035,7 @@ class ThermodynamicSolver:
             'ARGON': 'AR',
         }
         
-        reverse_map = {
-            thermo_id.lower(): component
-            for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
-        }
+        reverse_map = GasMixtureBuilder.REVERSE_THERMO_ID_MAP
         
         tp_ids = []
         for component_id in ids:
@@ -1119,10 +1139,7 @@ class ThermodynamicSolver:
             'AIR': 'Air',
         }
         
-        reverse_map = {
-            thermo_id.lower(): component
-            for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
-        }
+        reverse_map = GasMixtureBuilder.REVERSE_THERMO_ID_MAP
         
         fluid = {}
         for c_id, fraction in zip(ids, zs):
@@ -1375,10 +1392,7 @@ class ThermodynamicSolver:
         ids, zs = self._extract_thermo_components(gas_data)
         
         from kasp.core.mixture import GasMixtureBuilder
-        reverse_map = {
-            thermo_id.lower(): component
-            for component, thermo_id in GasMixtureBuilder.THERMO_ID_MAP.items()
-        }
+        reverse_map = GasMixtureBuilder.REVERSE_THERMO_ID_MAP
         
         DWSIM_MAPPING = {
             'METHANE': 'Methane',
@@ -1618,7 +1632,7 @@ class ThermodynamicSolver:
             ids = gas_data.get("ids", gas_data.get("IDs", []))
             zs = gas_data.get("mol_fractions", gas_data.get("zs", []))
             comp_frac = {}
-            reverse_map = {v.lower(): k for k, v in GasMixtureBuilder.THERMO_ID_MAP.items()}
+            reverse_map = GasMixtureBuilder.REVERSE_THERMO_ID_MAP
             for cid, z in zip(ids, zs):
                 canonical = reverse_map.get(str(cid).lower(), str(cid).upper())
                 comp_frac[canonical] = comp_frac.get(canonical, 0) + float(z)
@@ -1643,8 +1657,10 @@ class ThermodynamicSolver:
         system.init(1)
 
         # Yakınsama kontrolü — yakınsamadıysa sonuç güvenilmez, açıkça uyar
+        neqsim_solved = True
         try:
             if hasattr(system, "isSolved") and not system.isSolved():
+                neqsim_solved = False
                 logger.warning("NeqSim TP-flash yakınsamadı (isSolved=False); sonuç belirsiz.")
         except Exception as e:
             logger.debug("NeqSim convergence check skipped: %s", e)
@@ -1701,7 +1717,7 @@ class ThermodynamicSolver:
         except Exception as e:
             logger.debug("NeqSim phase type name check failed: %s", e)
 
-        return self._build_state(
+        state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
             H=H,
@@ -1717,4 +1733,8 @@ class ThermodynamicSolver:
             speed_of_sound=speed_of_sound,
             mu=mu_val
         )
+        if not neqsim_solved:
+            state.raw_props["thermo_health"] = "CRITICAL"
+            state.raw_props.setdefault("health_reasons", []).append("neqsim_tp_flash_not_solved")
+        return state
 
