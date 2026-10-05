@@ -934,8 +934,8 @@ class ThermodynamicSolver:
         detail = pyaga8.Detail()
         detail.set_composition(comp)
         
-        # MPa ve K birimleri
-        detail.pressure = P_pa / 1e6
+        # pyaga8 birimleri: basınç kPa, sıcaklık K (P_pa/1e3)
+        detail.pressure = P_pa / 1e3
         detail.temperature = T_k
 
         aga8_warnings = []
@@ -943,8 +943,8 @@ class ThermodynamicSolver:
             msg = f"AGA8-DC92 (ISO 12213-2) sıcaklık aralığı dışı: T={T_k:.1f} K (önerilen 143–473 K). Sonuç ekstrapole."
             logger.warning(msg)
             aga8_warnings.append(msg)
-        if detail.pressure > 30.0:
-            msg = f"AGA8-DC92 (ISO 12213-2) basınç aralığı dışı: P={detail.pressure:.1f} MPa (önerilen ≤30 MPa). Sonuç ekstrapole."
+        if detail.pressure > 30000.0:
+            msg = f"AGA8-DC92 (ISO 12213-2) basınç aralığı dışı: P={detail.pressure / 1000.0:.1f} MPa (önerilen ≤30 MPa). Sonuç ekstrapole."
             logger.warning(msg)
             aga8_warnings.append(msg)
         
@@ -956,9 +956,9 @@ class ThermodynamicSolver:
         MW_g_mol = detail.mm # g/mol
         molar_mass = MW_g_mol / 1000.0 # kg/mol
         
-        # Yoğunluk: d (mol/cm³) -> kg/m³
-        # d * 1e6 * molar_mass
-        density = detail.d * 1e6 * molar_mass
+        # Yoğunluk: d (mol/L) -> kg/m³
+        # d [mol/L] * 1000 [L/m³] * molar_mass [kg/mol]
+        density = detail.d * 1e3 * molar_mass
         
         # Isı kapasiteleri: cp, cv (J/mol.K) -> J/kg.K
         Cp = detail.cp / molar_mass

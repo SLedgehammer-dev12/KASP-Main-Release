@@ -148,6 +148,55 @@ def test_aga8_out_of_range_warns(caplog):
         pytest.skip("pyaga8 mevcut değil veya pencere dışı kontrolü tetiklenmedi")
 
 
+def test_aga8_uses_kpa_and_matches_coolprop():
+    """AGA8 basıncı kPa olarak almalı: Z ve yoğunluk NIST AGA8-DETAIL referansıyla eşleşmeli.
+
+    Referans (saf metan, 5 MPa, 300 K): Z ≈ 0.9195, ρ ≈ 34.97 kg/m³.
+    Basınç yanlışlıkla MPa sanılırsa Z ≈ 1.0 ve ρ ≈ 32.2 (ideal gaz) çıkar.
+    """
+    pytest.importorskip("pyaga8", reason="pyaga8 gerekli")
+    from kasp.core.properties import ThermodynamicSolver
+    from kasp.core.mixture import GasMixtureBuilder
+
+    solver = ThermodynamicSolver()
+    gas_obj = GasMixtureBuilder.build_thermo_data(
+        GasMixtureBuilder.validate_and_normalize({"METHANE": 100.0})
+    )
+
+    aga8 = solver.get_properties(5.0e6, 300.0, gas_obj, "aga8")
+
+    assert aga8.raw_props.get("fallback") is False
+    # Gerçek gaz düzeltmesi aktif olmalı (ideal gaz Z≈1.0 değil)
+    assert 0.90 < aga8.Z < 0.935
+    assert abs(aga8.Z - 0.9195) < 0.005
+    assert abs(aga8.density - 34.97) < 0.5
+
+
+def test_aga8_pressure_warning_threshold_is_30_mpa(caplog):
+    """Basınç geçerlilik uyarısı 30 MPa üzerinde tetiklenmeli, 5 MPa'da değil (kPa birimi)."""
+    pytest.importorskip("pyaga8", reason="pyaga8 gerekli")
+    import logging
+    from kasp.core.properties import ThermodynamicSolver
+    from kasp.core.mixture import GasMixtureBuilder
+
+    solver = ThermodynamicSolver()
+    gas_obj = GasMixtureBuilder.build_thermo_data(
+        GasMixtureBuilder.validate_and_normalize({"METHANE": 100.0})
+    )
+
+    with caplog.at_level(logging.WARNING):
+        solver.get_properties(5.0e6, 300.0, gas_obj, "aga8")
+    assert not any("basınç aralığı dışı" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        try:
+            solver.get_properties(35.0e6, 300.0, gas_obj, "aga8")
+        except Exception:
+            pass
+    assert any("basınç aralığı dışı" in r.message for r in caplog.records)
+
+
 # ─────────────────────────────────────────────────────────────────
 # İç enerji/head INVALID kademe tutarlılığı (entegrasyon)
 # ─────────────────────────────────────────────────────────────────
