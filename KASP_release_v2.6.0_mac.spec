@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# macOS release spec for GitHub release v2.5.1.
+# macOS release spec for GitHub release v2.6.0.
 
 import sys
 from pathlib import Path

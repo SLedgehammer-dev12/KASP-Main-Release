@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Release spec for GitHub release v2.5.1 (Windows).
+# Release spec for GitHub release v2.6.0 (Windows).
 
 import sys
 from pathlib import Path

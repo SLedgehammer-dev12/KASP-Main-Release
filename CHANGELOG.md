@@ -4,6 +4,28 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.6.0] — 2026-10-05
+
+### Fixed
+- **AGA8-DC92 Critical Unit Fix** — pyaga8 is now given pressure in **kPa** (was MPa) and molar density is converted from **mol/L** (was treated as mol/cm³). This restores real-gas behaviour (Z, Cp/Cv, speed of sound) that was previously silently ideal-gas for all realistic pressures (~8% density error masked the bug).
+- **Web UI Authentication** — `kasp/web/index.html` now sends `Authorization: Bearer <token>` to the protected `/api/calculate/*` endpoints, provides a persisted token field, and surfaces `401/403` as a clear "Token gerekli" state.
+- **Release Build Metadata** — removed references to non-existent `build_release_v2.5.1.bat/.sh`; `build_release.py` now prints runnable `pyinstaller --clean <spec>` commands, with a drift test asserting referenced artifacts exist.
+- **Updater SHA256 Binding** — release-body hashes are now bound to the correct asset (or fail closed) instead of being cross-assigned between assets.
+- **Input-Safety Hardening** — polytropic-efficiency normalization, mole-fraction/percentage composition support, tolerant unit aliases, turbine-selection guards for zero/negative/non-finite power, and thread-safe catalog caching.
+- **Resilient UI/Reporting** — design/performance result presenters, PDF reports, graphs and project serialization tolerate missing/None/NaN fields; updater downloads write a `.part` file and rename atomically after SHA256 verification.
+
+### Added
+- **Benchmark Solver Mode** — explicit diagnostic benchmark option distinct from the automatic smart chain.
+- **Method Shootout Detail Panel** — selectable per-method detail with stage convergence, reference deltas and raw properties.
+- **Stage-by-Stage PDF Breakdown** — optional multi-stage table in design reports.
+- **Petrobras ccp Adapter** — resilient composition/unit normalization and KASP comparison utilities.
+- **Repository Index** — `PROJECT_INDEX.md` / `PROJECT_INDEX.json` with verified metrics; agent skill manifests under `.agents/skills/`.
+
+### Tests
+- Full suite: **405 passed, 12 skipped, 0 failed**.
+
+---
+
 ## [v2.5.1] — 2026-10-03
 
 ### Thermodynamic Safety & Numerical Accuracy
