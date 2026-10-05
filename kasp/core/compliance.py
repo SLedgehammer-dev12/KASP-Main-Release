@@ -3,9 +3,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_float(val, default=0.0, min_val=None, max_val=None):
+    """Sayısal girdileri güvenli bir şekilde float'a dönüştürür ve sınırları uygular."""
+    try:
+        if val is None:
+            res = float(default)
+        else:
+            res = float(val)
+        if not np.isfinite(res):
+            res = float(default)
+    except (TypeError, ValueError):
+        res = float(default)
+    if min_val is not None:
+        res = max(float(min_val), res)
+    if max_val is not None:
+        res = min(float(max_val), res)
+    return res
+
+
 class ASME_PTC10_Compliance:
     """ASME PTC-10 standartına uyum sınıfı"""
-    
+
     @staticmethod
     def calculate_uncertainty(measured_values, instrument_accuracy):
         """Ölçüm belirsizliği hesaplama - ASME PTC 10 Appendix B (göreli-RSS, basitleştirilmiş).
@@ -14,19 +33,23 @@ class ASME_PTC10_Compliance:
         hesabı için kasp.core.uncertainty.UncertaintyAnalyzer kullanılmalıdır.
         """
         uncertainties = {}
-        total_uncertainty = 0
+        total_uncertainty = 0.0
 
-        for param, value in measured_values.items():
-            if value is None or value == 0:
+        measured = dict(measured_values or {})
+        accuracies = dict(instrument_accuracy or {})
+
+        for param, value in measured.items():
+            val = _safe_float(value, 0.0)
+            if val == 0.0:
                 # Sıfır/bilinmeyen değerde göreli katkı tanımsız; güvenli tarafta 0 kabul et.
                 uncertainties[param] = 0.0
                 continue
-            accuracy = instrument_accuracy.get(param, 0.01)  # Varsayılan %1
-            uncertainty = value * accuracy
+            acc = _safe_float(accuracies.get(param, 0.01), 0.01)  # Varsayılan %1
+            uncertainty = abs(val * acc)
             uncertainties[param] = uncertainty
-            total_uncertainty += (uncertainty / value) ** 2
+            total_uncertainty += (uncertainty / val) ** 2
 
-        return np.sqrt(total_uncertainty)
+        return float(np.sqrt(total_uncertainty))
 
     @staticmethod
     def calculate_reynolds_correction_factor(
@@ -53,21 +76,23 @@ class ASME_PTC10_Compliance:
         Returns:
             (loss_ratio, ra_test, ra_spec)
         """
-        re_t = max(1e3, float(re_test or 1e6))
-        re_s = max(1e3, float(re_spec or 1e6))
-        ra_m = max(0.01e-6, float(ra_um or 1.6) * 1e-6)
-        b2 = max(0.001, float(b2_m or 0.02))
+        re_t = _safe_float(re_test, 1e6, min_val=1e3)
+        re_s = _safe_float(re_spec, 1e6, min_val=1e3)
+        ra_m = _safe_float(ra_um, 1.6, min_val=0.01) * 1e-6
+        b2 = _safe_float(b2_m, 0.02, min_val=0.001)
+        x_frac = _safe_float(x_fraction, 0.30, min_val=0.0, max_val=1.0)
+        n = _safe_float(n_exp, 0.12, min_val=0.01, max_val=0.50)
 
         # Yüzey pürüzlülüğü kriteri (PTC 10 Eq. 5.3-2)
         term_t = (4.8e6 * (b2 / ra_m)) / re_t
         term_s = (4.8e6 * (b2 / ra_m)) / re_s
-        ra_test = min(1.0, max(0.1, 0.066 + 0.934 * (term_t ** n_exp))) if term_t > 0 else 1.0
-        ra_spec = min(1.0, max(0.1, 0.066 + 0.934 * (term_s ** n_exp))) if term_s > 0 else 1.0
+        ra_test = min(1.0, max(0.1, 0.066 + 0.934 * (term_t ** n))) if term_t > 0 else 1.0
+        ra_spec = min(1.0, max(0.1, 0.066 + 0.934 * (term_s ** n))) if term_s > 0 else 1.0
 
         roughness_ratio = (ra_spec / ra_test) if ra_test > 0 else 1.0
-        re_ratio = (re_t / re_s) ** n_exp
+        re_ratio = (re_t / re_s) ** n
 
-        loss_ratio = (1.0 - x_fraction) + x_fraction * roughness_ratio * re_ratio
+        loss_ratio = (1.0 - x_frac) + x_frac * roughness_ratio * re_ratio
         return float(loss_ratio), float(ra_test), float(ra_spec)
 
     @staticmethod
@@ -76,11 +101,14 @@ class ASME_PTC10_Compliance:
         warnings = []
         is_valid = True
 
-        vr_test = float(test_data.get("volume_ratio", 1.0) or 1.0)
-        vr_spec = float(spec_data.get("volume_ratio", 1.0) or 1.0)
+        test_d = dict(test_data or {})
+        spec_d = dict(spec_data or {})
+
+        vr_test = _safe_float(test_d.get("volume_ratio", 1.0), 1.0, min_val=1e-6)
+        vr_spec = _safe_float(spec_d.get("volume_ratio", 1.0), 1.0, min_val=1e-6)
         vr_dev_pct = abs(vr_test - vr_spec) / vr_spec * 100.0 if vr_spec > 0 else 0.0
 
-        test_type = test_data.get("test_type", "Type 2")
+        test_type = str(test_d.get("test_type", "Type 2") or "Type 2")
         vr_limit_pct = 4.0 if test_type == "Type 1" else 5.0
         if vr_dev_pct > vr_limit_pct:
             warnings.append(
@@ -88,8 +116,8 @@ class ASME_PTC10_Compliance:
             )
             is_valid = False
 
-        mu_test = float(test_data.get("mach_number", 0.8) or 0.8)
-        mu_spec = float(spec_data.get("mach_number", 0.8) or 0.8)
+        mu_test = _safe_float(test_d.get("mach_number", 0.8), 0.8, min_val=0.0)
+        mu_spec = _safe_float(spec_d.get("mach_number", 0.8), 0.8, min_val=0.0)
         mu_diff = abs(mu_test - mu_spec)
         mu_limit = 0.02 if test_type == "Type 1" else 0.05
         if mu_diff > mu_limit:
@@ -98,7 +126,7 @@ class ASME_PTC10_Compliance:
             )
             is_valid = False
 
-        re_test = float(test_data.get("reynolds_number", 1e6) or 1e6)
+        re_test = _safe_float(test_d.get("reynolds_number", 1e6), 1e6, min_val=0.0)
         if re_test < 1e5:
             warnings.append(
                 f"Test makine Reynolds sayısı ({re_test:.2e}) ASME PTC 10 minimum limitinin (1.0e5) altında."
@@ -120,21 +148,23 @@ class ASME_PTC10_Compliance:
         Test koşullarında ölçülen politropik kafa, verim ve güç değerlerini
         belirtilen saha koşullarına ASME PTC 10 benzeşim ve sürtünme modellerine göre dönüştürür.
         """
-        corrected = measured_performance.copy()
+        measured = dict(measured_performance or {})
+        site = dict(site_conditions or {})
+        corrected = measured.copy()
 
         # Giriş verilerini normalize et (verim decimal 0.0 - 1.0)
-        raw_eff = float(measured_performance.get("efficiency", 0.80) or 0.80)
-        eff_test = raw_eff / 100.0 if raw_eff > 1.0 else raw_eff
-        head_test = float(measured_performance.get("head", 0.0) or 0.0)
+        raw_eff = _safe_float(measured.get("efficiency", 0.80), 0.80)
+        eff_test = raw_eff / 100.0 if raw_eff > 1.0 else max(1e-4, raw_eff)
+        head_test = _safe_float(measured.get("head", 0.0), 0.0)
 
-        speed_test = float(measured_performance.get("speed_rpm", site_conditions.get("speed_rpm", 3000.0)) or 3000.0)
-        speed_spec = float(site_conditions.get("speed_rpm", speed_test) or speed_test)
+        speed_test = _safe_float(measured.get("speed_rpm", site.get("speed_rpm", 3000.0)), 3000.0, min_val=1.0)
+        speed_spec = _safe_float(site.get("speed_rpm", speed_test), speed_test, min_val=1.0)
         speed_ratio = speed_spec / speed_test if speed_test > 0 else 1.0
 
-        re_test = float(measured_performance.get("reynolds_number", measured_performance.get("Re", 1e6)) or 1e6)
-        re_spec = float(site_conditions.get("reynolds_number", site_conditions.get("Re", re_test)) or re_test)
-        b2_m = float(site_conditions.get("b2_m", 0.02) or 0.02)
-        ra_um = float(site_conditions.get("roughness_ra_um", 1.6) or 1.6)
+        re_test = _safe_float(measured.get("reynolds_number", measured.get("Re", 1e6)), 1e6, min_val=1e3)
+        re_spec = _safe_float(site.get("reynolds_number", site.get("Re", re_test)), re_test, min_val=1e3)
+        b2_m = _safe_float(site.get("b2_m", 0.02), 0.02, min_val=0.001)
+        ra_um = _safe_float(site.get("roughness_ra_um", 1.6), 1.6, min_val=0.01)
 
         loss_ratio, ra_test, ra_spec = ASME_PTC10_Compliance.calculate_reynolds_correction_factor(
             re_test=re_test,
@@ -151,10 +181,10 @@ class ASME_PTC10_Compliance:
         head_spec = head_test * (speed_ratio ** 2) * eff_ratio
 
         # Güç düzeltmesi: P = (m_dot * H) / eta
-        mass_flow = float(site_conditions.get("mass_flow_kgs", measured_performance.get("mass_flow_kgs", 10.0)) or 10.0)
+        mass_flow = _safe_float(site.get("mass_flow_kgs", measured.get("mass_flow_kgs", 10.0)), 10.0, min_val=0.0)
         power_kw = (mass_flow * head_spec) / eff_spec if eff_spec > 0 else 0.0
 
-        validity = ASME_PTC10_Compliance.check_test_validity(measured_performance, site_conditions)
+        validity = ASME_PTC10_Compliance.check_test_validity(measured, site)
 
         corrected["head"] = round(head_spec, 2)
         corrected["efficiency"] = round(eff_spec * 100.0 if raw_eff > 1.0 else eff_spec, 4)
@@ -169,38 +199,55 @@ class ASME_PTC10_Compliance:
 
         return corrected
 
+
 class API_617_Compliance:
     """API Standard 617 uyum sınıfı"""
-    
+
     @staticmethod
-    def lateral_critical_speed_analysis(rotor_data):
+    def lateral_critical_speed_analysis(rotor_data=None):
         """
         Yanal kritik hız analizi - API 617 Bölüm 2
         V4.3 Fix 10: Bu metot basitleştirilmiş Jeffcott Rotor modeli kullanıyor.
-        'meets_api' sonucu her zaman True dönebilir; gerçek FEA analizi yapılmadıkça
-        bu sonucu nihai kabul etmeyin.
+        Gerçek rotor dinamiği analizi yapılmadığından 'meets_api' ve 'separation_margin'
+        her zaman None döner; API 617 uygunluk kararı bu metottan çıkarılamaz.
         """
         logger.warning(
             "⚠️ API 617 Lateral Critical Speed: Basitleştirilmiş Jeffcott Rotor modeli kullanılıyor. "
             "Gerçek FEA/rotor dinamiği analizi yapılmamıştır; sonuçlar yalnızca gösterge niteliğindedir."
         )
-        mass = rotor_data.get('mass', 100)
-        stiffness = rotor_data.get('stiffness', 1e6)
-        
-        natural_frequency = (1 / (2 * np.pi)) * np.sqrt(stiffness / mass)
-        critical_speed_rpm = natural_frequency * 60
-        
+        data = dict(rotor_data or {})
+        mass = _safe_float(data.get('mass', 100), 100.0)
+        stiffness = _safe_float(data.get('stiffness', 1e6), 1e6)
+
+        if mass <= 0 or stiffness <= 0:
+            logger.warning(f"Geçersiz rotor verisi: mass={mass}, stiffness={stiffness}. Varsayılan değerler kullanıldı.")
+            mass = max(1e-3, mass) if mass > 0 else 100.0
+            stiffness = max(1.0, stiffness) if stiffness > 0 else 1e6
+
+        natural_frequency = (1.0 / (2.0 * np.pi)) * np.sqrt(stiffness / mass)
+        critical_speed_rpm = natural_frequency * 60.0
+
+        # Yalnızca gösterge: |Nc - N| / N. API 617/684 gerekli ayrılma payı büyütme
+        # faktörüne (AF) bağlıdır; Jeffcott modeli AF üretmediği için uygunluk
+        # kararı VERİLMEZ (meets_api = None).
+        op_speed = _safe_float(data.get('operating_speed_rpm', data.get('speed_rpm')), 0.0)
+        indicative_margin = None
+        if op_speed > 0:
+            indicative_margin = round(abs(critical_speed_rpm - op_speed) / op_speed * 100.0, 2)
+
         return {
-            'first_critical_speed_rpm': critical_speed_rpm,
-            'separation_margin': None,  # Hesaplanmamıştır (gerçek FEA gerekir)
+            'first_critical_speed_rpm': round(critical_speed_rpm, 2),
+            'separation_margin': None,  # API 617 anlamında hesaplanmamıştır (AF gerekir)
+            'indicative_separation_margin_pct': indicative_margin,
             'meets_api': None,          # Bilinmiyor — gerçek analiz yapılmamıştır (True DEGIL)
-            'not_implemented': True,  # V4.3: Gerçek FEA analizi henüz implement edilmedi
+            'not_implemented': True,  # Gerçek FEA analizi henüz implement edilmedi
             'analysis_scope': 'NOT_IMPLEMENTED',
             'warning': 'Basitleştirilmiş Jeffcott Rotor modeli — gerçek API 617 analizinin yerini tutmaz; FEA analizi yapılmamıştır.'
         }
 
+
     @staticmethod
-    def torsional_analysis(shaft_data):
+    def torsional_analysis(shaft_data=None):
         """
         Burulma vibrasyonu analizi - API 617 Bölüm 3
         V4.3 Fix 10: Stub metot — gerçek analiz implement edilmedi.

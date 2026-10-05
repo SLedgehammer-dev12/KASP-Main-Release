@@ -18,8 +18,11 @@ class UnitSystem:
     METER_TO_FOOT = 3.28084
 
     UNITS = {
-        "pressure": ["bar(a)", "bar(g)", "bar", "Pa", "kPa", "MPa", "psia", "psig", "psi", "atm", "kg/cm²"],
-        "temperature": ["°C", "K", "°F", "°R"],
+        "pressure": [
+            "bar(a)", "bar(g)", "bar", "barg", "Pa", "kPa", "kpa", "MPa", "mpa",
+            "psia", "psig", "psi", "atm", "kg/cm²", "kg/cm2"
+        ],
+        "temperature": ["°C", "degC", "C", "K", "°F", "degF", "F", "°R"],
         "flow": ["kg/h", "kg/s", "m³/h", "Sm³/h", "Nm³/h", "MMSCFD", "MMSCMD", "ACMH", "kgmol/h", "kmol/h"],
         "power": ["kW", "MW", "hp", "Btu/h"],
         "length": ["mm", "m", "inch", "ft"],
@@ -30,13 +33,58 @@ class UnitSystem:
         "Â°C": "°C",
         "Â°F": "°F",
         "Â°R": "°R",
+        "°c": "°C",
+        "c": "°C",
+        "degc": "°C",
+        "deg_c": "°C",
+        "deg c": "°C",
+        "celsius": "°C",
+        "°f": "°F",
+        "f": "°F",
+        "degf": "°F",
+        "deg_f": "°F",
+        "deg f": "°F",
+        "fahrenheit": "°F",
+        "°r": "°R",
+        "r": "°R",
+        "degr": "°R",
+        "deg_r": "°R",
+        "deg r": "°R",
+        "rankine": "°R",
+        "k": "K",
+        "kelvin": "K",
     }
 
     PRESSURE_ALIASES = {
         "kg/cmÂ²": "kg/cm²",
+        "kg/cm²": "kg/cm²",
+        "kg/cm2": "kg/cm²",
+        "kg/cm^2": "kg/cm²",
+        "kgf/cm2": "kg/cm²",
+        "kgf/cm²": "kg/cm²",
+        "bar": "bar",
         "bara": "bar",
         "bar(a)": "bar",
         "bar_a": "bar",
+        "bar a": "bar",
+        "barg": "bar(g)",
+        "bar(g)": "bar(g)",
+        "bar_g": "bar(g)",
+        "bar g": "bar(g)",
+        "pa": "Pa",
+        "pascal": "Pa",
+        "kpa": "kPa",
+        "mpa": "MPa",
+        "psi": "psi",
+        "psia": "psi",
+        "psi(a)": "psi",
+        "psi_a": "psi",
+        "psi a": "psi",
+        "psig": "psig",
+        "psi(g)": "psig",
+        "psi_g": "psig",
+        "psi g": "psig",
+        "atm": "atm",
     }
 
     @classmethod
@@ -59,11 +107,23 @@ class UnitSystem:
 
     @classmethod
     def _canonical_pressure_unit(cls, unit):
-        return cls.PRESSURE_ALIASES.get(unit, unit)
+        if not unit:
+            return "Pa"
+        raw = str(unit).strip()
+        if raw in cls.PRESSURE_ALIASES:
+            return cls.PRESSURE_ALIASES[raw]
+        low = raw.lower()
+        return cls.PRESSURE_ALIASES.get(low, raw)
 
     @classmethod
     def _canonical_temperature_unit(cls, unit):
-        return cls.TEMPERATURE_ALIASES.get(unit, unit)
+        if not unit:
+            return "K"
+        raw = str(unit).strip()
+        if raw in cls.TEMPERATURE_ALIASES:
+            return cls.TEMPERATURE_ALIASES[raw]
+        low = raw.lower()
+        return cls.TEMPERATURE_ALIASES.get(low, raw)
 
     @staticmethod
     def _coerce_numeric(value, quantity_name, unit=None):

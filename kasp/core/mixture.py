@@ -89,7 +89,10 @@ class GasMixtureBuilder:
         total = sum(canonical_composition.values())
         if total <= 0:
             raise FluidPropertyError("Gaz kompozisyonu toplami pozitif olmalidir")
-        if abs(total - 100.0) > 0.1:
+        # Hem mol fraksiyonu (toplam ~ 1.0) hem yüzde (toplam ~ 100.0) geçerli fiziksel formattır
+        is_fraction = abs(total - 1.0) <= 0.01
+        is_percentage = abs(total - 100.0) <= 0.1
+        if not is_fraction and not is_percentage:
             logger.warning("Gaz kompozisyonu toplami %.2f. Normalize ediliyor...", total)
         if abs(total - 100.0) > 1e-9:
             return {

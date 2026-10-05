@@ -139,3 +139,50 @@ def test_equal_work_stage_optimization_integration():
     # Power difference between stages should be minimal (< 10%) with equal work optimization
     diff_pct = abs(p1 - p2) / max(p1, p2) * 100.0
     assert diff_pct < 10.0
+
+
+def test_compliance_robustness_and_edge_cases():
+    """Verify that compliance classes gracefully handle None, zeros, strings, and missing data."""
+    from kasp.core.compliance import ASME_PTC10_Compliance, API_617_Compliance
+
+    # 1. API 617 lateral analysis with None, zero mass, strings, and operating speed
+    r1 = API_617_Compliance.lateral_critical_speed_analysis(None)
+    assert r1["first_critical_speed_rpm"] > 0
+    assert r1["separation_margin"] is None
+
+    r2 = API_617_Compliance.lateral_critical_speed_analysis({"mass": 0, "stiffness": 0})
+    assert r2["first_critical_speed_rpm"] > 0
+
+    r3 = API_617_Compliance.lateral_critical_speed_analysis({
+        "mass": "80.0",
+        "stiffness": "2e6",
+        "operating_speed_rpm": "4000.0"
+    })
+    assert r3["first_critical_speed_rpm"] > 0
+    # Çalışma hızı verilse bile basitleştirilmiş model API 617 uygunluğu iddia etmemeli
+    assert r3["separation_margin"] is None
+    assert r3["meets_api"] is None
+    assert r3["not_implemented"] is True
+    # Nc = 60/(2π)·sqrt(2e6/80) ≈ 1509.8 rpm → |1509.8-4000|/4000 ≈ %62.3
+    assert r3["indicative_separation_margin_pct"] == pytest.approx(62.25, abs=0.1)
+    assert r1["indicative_separation_margin_pct"] is None
+
+    # 2. API 617 torsional analysis with None
+    r4 = API_617_Compliance.torsional_analysis(None)
+    assert r4["status"] == "NOT_IMPLEMENTED"
+
+    # 3. ASME PTC 10 uncertainty with None and string values
+    assert ASME_PTC10_Compliance.calculate_uncertainty(None, None) == 0.0
+    u = ASME_PTC10_Compliance.calculate_uncertainty({"p": "100.0", "t": 350.0}, {"p": "0.01"})
+    assert u > 0.0
+
+    # 4. ASME PTC 10 test validity with None
+    val = ASME_PTC10_Compliance.check_test_validity(None, None)
+    assert "is_valid" in val
+    assert val["is_valid"] is True
+
+    # 5. ASME PTC 10 performance correction with None / minimal inputs
+    corr = ASME_PTC10_Compliance.performance_correction_to_standard_conditions(None, None)
+    assert "head" in corr
+    assert "efficiency" in corr
+    assert "power_kw" in corr

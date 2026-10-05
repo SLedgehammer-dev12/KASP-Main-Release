@@ -271,3 +271,69 @@ def test_neqsim_not_solved_sets_critical_health(monkeypatch):
     assert state.raw_props.get("thermo_health") == "CRITICAL"
     assert "neqsim_tp_flash_not_solved" in state.raw_props.get("health_reasons", [])
 
+
+def test_poly_eff_coercion_and_boundary_safety():
+    """Verify ThermoMethodSuite._coerce_poly_eff handles percentages, zeros, negatives, and invalid values safely."""
+    from kasp.core.thermo_methods import ThermoMethodSuite
+
+    # Standard fraction
+    assert ThermoMethodSuite._coerce_poly_eff(0.85) == 0.85
+    # Percentage format
+    assert abs(ThermoMethodSuite._coerce_poly_eff(85.0) - 0.85) < 1e-6
+    assert abs(ThermoMethodSuite._coerce_poly_eff(78.5) - 0.785) < 1e-6
+    # Boundary clamps
+    assert ThermoMethodSuite._coerce_poly_eff(0.0) == 0.10  # Clamped to min_eff
+    assert ThermoMethodSuite._coerce_poly_eff(-0.5) == 0.10
+    assert ThermoMethodSuite._coerce_poly_eff(1.5) == 0.10  # 1.5% -> 0.015 < min_eff, clamped to 0.10
+    assert ThermoMethodSuite._coerce_poly_eff(120.0) == 0.999 # > 100 clamped to max_eff
+    # Invalid / NaN / None
+    import math
+    assert ThermoMethodSuite._coerce_poly_eff(float("nan")) == 0.75
+    assert ThermoMethodSuite._coerce_poly_eff(None) == 0.75
+    assert ThermoMethodSuite._coerce_poly_eff("invalid") == 0.75
+
+
+def test_thermo_methods_zero_and_percentage_poly_eff_no_crash():
+    """Verify methods 1, 2, 3, 5, 6 and integral handle poly_eff=0.0 and poly_eff=85.0 safely without ZeroDivisionError."""
+    import logging
+    from kasp.core.properties import ThermodynamicSolver
+    from kasp.core.thermo_methods import ThermoMethodSuite
+    from kasp.core.aerodynamics import CompressorAerodynamics
+
+    solver = ThermodynamicSolver()
+    suite = ThermoMethodSuite(thermo_solver=solver, logger=logging.getLogger("test_safety"))
+
+    p_in = 1.0e5
+    t_in = 300.0
+    p_out = 3.0e5
+
+    # 1. Zero efficiency should not crash with ZeroDivisionError
+    res_m1_zero = suite.method_average_properties(p_in, t_in, p_out, 0.0, "Methane", "coolprop")
+    assert res_m1_zero[0] > 0  # Valid T_out
+
+    res_m2_zero = suite.method_endpoint(p_in, t_in, p_out, 0.0, "Methane", "coolprop")
+    assert res_m2_zero[0] > 0
+
+    res_m3_zero = suite.method_incremental_pressure(p_in, t_in, p_out, 0.0, "Methane", "coolprop")
+    assert res_m3_zero[0] > 0
+
+    # 2. Percentage input (85.0) must produce identical result to fraction (0.85)
+    t_frac, head_frac, _, _ = suite.method_average_properties(p_in, t_in, p_out, 0.85, "Methane", "coolprop")
+    t_pct, head_pct, _, _ = suite.method_average_properties(p_in, t_in, p_out, 85.0, "Methane", "coolprop")
+    assert abs(t_frac - t_pct) < 1e-4
+    assert abs(head_frac - head_pct) < 1e-4
+
+    # 3. Integral aerodynamic method with zero and percentage
+    n_exp_zero, k_int_zero, _ = CompressorAerodynamics.calculate_polytropic_exponent_integral(
+        p_in, t_in, p_out, 0.0, solver, "Methane", "coolprop"
+    )
+    assert n_exp_zero > 0
+
+    n_exp_frac, _, _ = CompressorAerodynamics.calculate_polytropic_exponent_integral(
+        p_in, t_in, p_out, 0.85, solver, "Methane", "coolprop"
+    )
+    n_exp_pct, _, _ = CompressorAerodynamics.calculate_polytropic_exponent_integral(
+        p_in, t_in, p_out, 85.0, solver, "Methane", "coolprop"
+    )
+    assert abs(n_exp_frac - n_exp_pct) < 1e-6
+

@@ -26,6 +26,13 @@ class TurbineSelector:
         """
         selected_recommendations: List[TurbineRecommendation] = []
         
+        if not math.isfinite(required_power_kw) or required_power_kw <= 0.0:
+            logger.warning(
+                f"Gerekli güç geçersiz veya sıfır ({required_power_kw} kW). "
+                f"Türbin seçimi yapılamaz."
+            )
+            return []
+
         ambient_temp = site_conditions.get('ambient_temp', 15.0)
         altitude = site_conditions.get('altitude', 0.0)
         ambient_pressure = site_conditions.get('ambient_pressure', 101.325)
@@ -135,7 +142,8 @@ class TurbineSelector:
             (corr_power, corr_hr, source) — source: 'oem_curve' veya 'generic_formula'
         """
         T_ref_k = 15.0 + 273.15
-        T_amb_k = t_amb + 273.15
+        T_amb_k = max(1.0, float(t_amb if t_amb is not None else 15.0) + 273.15)
+        p_amb_safe = max(1.0, float(p_amb if p_amb is not None else 101.325))
         corr_data = (turbine_data or {}).get("performance_correction_data") or {}
         temp_curve = corr_data.get("temperature_correction") or {}
         power_pf = TurbineSelector._interpolate_curve(
@@ -162,10 +170,10 @@ class TurbineSelector:
         else:
             # Egri yok: genel ISO tahmini. Ortam basinci acikca verilmisse rakım
             # etkisi zaten icindedir; ayrica carpmak cift sayma yapar (P1-7).
-            if alt and abs(p_amb - 101.325) < 1e-6:
+            if alt and abs(p_amb_safe - 101.325) < 1e-6:
                 pressure_ratio = (1.0 - 2.25577e-5 * max(0.0, min(float(alt), 11000.0))) ** 5.25588
             else:
-                pressure_ratio = p_amb / 101.325
+                pressure_ratio = p_amb_safe / 101.325
             power_factor = (T_ref_k / T_amb_k) * pressure_ratio
             hr_factor = T_amb_k / max(1e-9, T_ref_k)
             source = "generic_formula"

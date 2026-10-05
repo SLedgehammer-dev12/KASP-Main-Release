@@ -42,6 +42,25 @@ class ThermoMethodSuite:
         return max(2, min(self.MAX_INCREMENTAL_STEPS, step_count))
 
     @staticmethod
+    def _coerce_poly_eff(value, *, default=0.75, min_eff=0.10, max_eff=0.999) -> float:
+        """
+        Politropik verimi standart fraksiyon (0.0 < eff < 1.0) aralığına normalize eder.
+        Eğer değer 1.0'dan büyük ve <= 100.0 ise (yüzde formatı), 100'e bölünür.
+        Sıfır, negatif veya geçersiz (NaN/None/inf) değerler güvenli fiziksel aralığa kelepçelenir.
+        """
+        try:
+            val = float(value)
+            if not math.isfinite(val):
+                return default
+        except (TypeError, ValueError):
+            return default
+
+        if 1.0 < val <= 100.0:
+            val = val / 100.0
+
+        return max(min_eff, min(max_eff, val))
+
+    @staticmethod
     def _calculate_polytropic_head(z_factor, r_specific, t_in, pressure_ratio, exponent):
         if abs(exponent) < 1e-10:
             return 0.0
@@ -56,6 +75,7 @@ class ThermoMethodSuite:
     def method_average_properties(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
+        poly_eff = self._coerce_poly_eff(poly_eff)
         pr = p_out / p_in
         use_integral = pr > EngineSettings.PR_INTEGRATION_THRESHOLD
 
@@ -184,6 +204,7 @@ class ThermoMethodSuite:
     def method_endpoint(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
+        poly_eff = self._coerce_poly_eff(poly_eff)
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
             k1, Z1 = state_in.k, state_in.Z
@@ -286,6 +307,7 @@ class ThermoMethodSuite:
 
     def method_incremental_pressure(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, step_count=10):
         step_count = self._coerce_step_count(step_count)
+        poly_eff = self._coerce_poly_eff(poly_eff)
 
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
@@ -349,6 +371,7 @@ class ThermoMethodSuite:
         return t_current, total_head, z_avg, history
 
     def method_direct_hs(self, p_in, t_in, p_out, poly_eff, gas_obj, eos):
+        poly_eff = self._coerce_poly_eff(poly_eff)
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
             h1, s1, k1, z1 = state_in.H, state_in.S, state_in.k, state_in.Z
@@ -584,6 +607,7 @@ class ThermoMethodSuite:
         H_p = integral_{P_in}^{P_out} v(P, T(P)) dP
         """
         step_count = self._coerce_step_count(step_count, default=20)
+        poly_eff = self._coerce_poly_eff(poly_eff)
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
             z0 = state_in.Z
@@ -785,6 +809,7 @@ class ThermoMethodSuite:
         """
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
+        poly_eff = self._coerce_poly_eff(poly_eff)
         
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)

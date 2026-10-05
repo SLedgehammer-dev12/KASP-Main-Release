@@ -171,10 +171,13 @@ class UnitDatabase:
         self.db_name = db_name or _resolve_db_path()
         self._local = threading.local()
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._cached_turbines = None
+        self._cached_compressors = None
+        self._cache_lock = threading.Lock()
         self.create_tables()
         self._migrate_database_schema()
-        # Sync sample data if tables are empty or missing newer turbines
-        if self._is_turbine_table_empty() or self._needs_sample_data_sync():
+        # Sync sample data if tables are empty or missing newer turbines (< 146)
+        if self._get_turbine_count() < 146:
             self.insert_sample_data()
     
     def get_connection(self):
@@ -204,27 +207,34 @@ class UnitDatabase:
         """Thread-safe cursor döndür"""
         conn = self.get_connection()
         return conn.cursor()
+
+    def invalidate_catalog_cache(self):
+        """Invalidate in-memory cache of turbines and compressors."""
+        with self._cache_lock:
+            self._cached_turbines = None
+            self._cached_compressors = None
+
+    def _get_turbine_count(self):
+        """Return count of rows in Turbines table, or 0 if empty or table does not exist."""
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT COUNT(*) FROM Turbines")
+            row = cursor.fetchone()
+            return row[0] if row else 0
+        except sqlite3.OperationalError:
+            # Table doesn't exist yet
+            return 0
+        except sqlite3.Error as e:
+            self.logger.warning(f"Türbin sayısı kontrol hatası: {e}")
+            return 0
     
     def _is_turbine_table_empty(self):
         """Check if turbines table exists and has data"""
-        try:
-            cursor = self.get_cursor()
-            cursor.execute("SELECT COUNT(*) FROM Turbines")
-            count = cursor.fetchone()[0]
-            return count == 0
-        except sqlite3.OperationalError:
-            # Table doesn't exist yet
-            return True
+        return self._get_turbine_count() == 0
 
     def _needs_sample_data_sync(self):
         """Check if existing database is missing newer sample turbines (< 146)"""
-        try:
-            cursor = self.get_cursor()
-            cursor.execute("SELECT COUNT(*) FROM Turbines")
-            count = cursor.fetchone()[0]
-            return count < 146
-        except sqlite3.Error:
-            return False
+        return self._get_turbine_count() < 146
     
     def create_tables(self):
         """Veritabanı tablolarını oluştur"""
@@ -406,6 +416,7 @@ class UnitDatabase:
                 self.logger.warning(f"Kompresör veri dosyası bulunamadı: {compressors_path}")
 
             self.get_connection().commit()
+            self.invalidate_catalog_cache()
             self.logger.info("Örnek veriler veritabanına yüklendi (doğrulamalı).")
 
         except Exception as e:
@@ -416,7 +427,11 @@ class UnitDatabase:
                 pass
     
     def get_all_turbines_full_data(self):
-        """Tüm türbin verilerini getir"""
+        """Tüm türbin verilerini getir (önbellekli)"""
+        with self._cache_lock:
+            if self._cached_turbines is not None:
+                return [dict(t) for t in self._cached_turbines]
+
         try:
             cursor = self.get_cursor()
             cursor.execute("SELECT * FROM Turbines ORDER BY manufacturer, iso_power_kw")
@@ -437,13 +452,19 @@ class UnitDatabase:
                 
                 turbines.append(turbine)
             
-            return turbines
+            with self._cache_lock:
+                self._cached_turbines = turbines
+                return [dict(t) for t in self._cached_turbines]
         except sqlite3.Error as e:
             self.logger.error(f"Türbin verileri getirme hatası: {e}")
             return []
     
     def get_all_compressors_full_data(self):
-        """Tüm kompresör verilerini getir"""
+        """Tüm kompresör verilerini getir (önbellekli)"""
+        with self._cache_lock:
+            if self._cached_compressors is not None:
+                return [dict(c) for c in self._cached_compressors]
+
         try:
             cursor = self.get_cursor()
             cursor.execute("SELECT * FROM Compressors ORDER BY manufacturer, max_pressure_ratio")
@@ -461,7 +482,9 @@ class UnitDatabase:
                 
                 compressors.append(compressor)
             
-            return compressors
+            with self._cache_lock:
+                self._cached_compressors = compressors
+                return [dict(c) for c in self._cached_compressors]
         except sqlite3.Error as e:
             self.logger.error(f"Kompresör verileri getirme hatası: {e}")
             return []
@@ -534,6 +557,7 @@ class UnitDatabase:
             ))
             
             self.get_connection().commit()
+            self.invalidate_catalog_cache()
             self.logger.info(f"Türbin eklendi: {turbine_data['manufacturer']} {turbine_data['model']}")
             return True
         except sqlite3.Error as e:
@@ -560,6 +584,7 @@ class UnitDatabase:
             """, (correction_data_str, turbine_id))
             
             self.get_connection().commit()
+            self.invalidate_catalog_cache()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
             try:
@@ -575,6 +600,7 @@ class UnitDatabase:
             cursor = self.get_cursor()
             cursor.execute("DELETE FROM Turbines WHERE id = ?", (turbine_id,))
             self.get_connection().commit()
+            self.invalidate_catalog_cache()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
             try:
@@ -613,6 +639,7 @@ class UnitDatabase:
             ))
             
             self.get_connection().commit()
+            self.invalidate_catalog_cache()
             return True
         except sqlite3.Error as e:
             try:
@@ -628,6 +655,7 @@ class UnitDatabase:
             cursor = self.get_cursor()
             cursor.execute("DELETE FROM Compressors WHERE id = ?", (compressor_id,))
             self.get_connection().commit()
+            self.invalidate_catalog_cache()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
             try:
