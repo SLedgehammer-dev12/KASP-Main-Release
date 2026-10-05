@@ -52,6 +52,6 @@ Korumalı uç noktalar `Authorization: Bearer <KASP_API_TOKEN>` başlığı gere
 
 ## ⚠️ Bilinen Kısıtlar
 
-- Web arayüzündeki hesaplama çağrıları şu an `Authorization` başlığı göndermez; korumalı uç noktalar token olmadan `401` döner. Arayüzden hesaplama yapabilmek için istemci tarafına token eklenmelidir (veya güvenlik bilinçli olarak gevşetilmelidir).
+- Arayüz, üstteki **API Token** alanına girilen değeri `localStorage`'da saklar ve korumalı çağrılarda `Authorization: Bearer <token>` başlığı olarak gönderir. Token boş/geçersizse üstteki rozet **"Token gerekli"** olur ve çağrılar `401/403` döner.
 - Üretim ortamı için tasarlanmamıştır; yalnızca yerel/geliştirme kullanımı içindir.
 - CORS varsayılan olarak `http://127.0.0.1:8000` ve `http://localhost:8000` ile sınırlıdır (`KASP_API_ALLOWED_ORIGINS` ile genişletilebilir).
