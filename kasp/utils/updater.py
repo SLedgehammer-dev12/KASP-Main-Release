@@ -278,24 +278,38 @@ class GitHubReleaseClient:
             if isinstance(a, dict) and a.get("browser_download_url")
         ]
         
-        def _extract_sha256(raw_asset):
+        # Gövdedeki sıralı 64-hex özetler (sıralı blok eşleme için)
+        body_hashes = re.findall(r"([a-fA-F0-9]{64})", body)
+
+        def _extract_sha256(raw_asset, index):
             digest = (raw_asset.get("digest") or "").strip()
             if digest.startswith("sha256:"):
                 return digest.replace("sha256:", "")
             name = raw_asset.get("name") or ""
+            # 1) Aynı satırda ad + özet: "KASP.exe  <hash>"
             if name:
-                pattern = re.escape(name) + r"[^\n\r]*?(?:[\r\n]+(?![^\r\n]*\.(?:exe|dmg|pkg|msi|zip|tar\.gz|AppImage))[^\r\n]*?){0,3}?([a-fA-F0-9]{64})"
-                match = re.search(pattern, body, re.IGNORECASE)
-                if match:
-                    return match.group(1)
-            # Single-asset fallback: if there is only 1 asset, allow general SHA256: <hash> or sole 64-hex hash
+                same_line = re.search(
+                    re.escape(name) + r"[^\n\r]*?([a-fA-F0-9]{64})", body, re.IGNORECASE
+                )
+                if same_line:
+                    return same_line.group(1)
+            # 2) Sıralı blok eşleme: gövdedeki özet sayısı varlık sayısına eşitse
+            #    release varlıkları yükleme sırasında döndüğü için index ile eşle.
+            #    Olası yanlış eşleme yine de fail-closed indirme doğrulamasında yakalanır.
+            if len(raw_assets) > 1 and len(body_hashes) == len(raw_assets):
+                return body_hashes[index]
+            # 3) Tek varlık fallback: "sha256: <hash>" veya tek 64-hex
             if len(raw_assets) == 1:
                 sha_match = re.search(r"sha256[:\s]+([a-fA-F0-9]{64})", body, re.IGNORECASE)
                 if sha_match:
                     return sha_match.group(1)
-                hashes = re.findall(r"([a-fA-F0-9]{64})", body)
-                if len(hashes) == 1:
-                    return hashes[0]
+                if len(body_hashes) == 1:
+                    return body_hashes[0]
+            # 4) Güvenle eşlenemedi -> fail-closed
+            if name and body_hashes:
+                logger.warning(
+                    "SHA256 gövdeden varlığa güvenle eşlenemedi, atlanıyor: %s", name
+                )
             return None
 
         assets = tuple(
@@ -306,9 +320,9 @@ class GitHubReleaseClient:
                 download_url=asset.get("browser_download_url") or "",
                 size=int(asset.get("size") or 0),
                 content_type=asset.get("content_type") or "application/octet-stream",
-                sha256=_extract_sha256(asset),
+                sha256=_extract_sha256(asset, index),
             )
-            for asset in raw_assets
+            for index, asset in enumerate(raw_assets)
         )
         return ReleaseInfo(
             tag_name=item_dict.get("tag_name") or "",

@@ -403,3 +403,71 @@ def test_parse_release_handles_none_items_assets_and_digest():
     assert len(r3.assets) == 1
     assert r3.assets[0].name == "KASP.dmg"
     assert r3.assets[0].sha256 is None
+
+
+# ─────────────────────────────────────────────────────────────────
+# Çok varlıklı release'lerde SHA256 ↔ varlık eşlemesi doğruluğu
+# ─────────────────────────────────────────────────────────────────
+def _release_without_digest(body, names):
+    return GitHubReleaseClient._parse_release({
+        "tag_name": "v9.9.9",
+        "assets": [
+            {"name": n, "browser_download_url": f"https://example.invalid/{n}", "size": 1, "digest": None}
+            for n in names
+        ],
+        "body": body,
+    })
+
+
+def test_parse_release_maps_grouped_hashes_by_asset_order():
+    """Gruplu 'SHA256:' bloğunda özetler varlık sırasına göre eşlenmeli (çapraz bağlanmamalı)."""
+    exe = "a" * 64
+    dmg = "b" * 64
+    body = f"Assets:\nKASP v9.9.9.exe\nKASP v9.9.9.dmg\nSHA256:\n{exe}\n{dmg}\n"
+
+    release = _release_without_digest(body, ["KASP v9.9.9.exe", "KASP v9.9.9.dmg"])
+
+    assert release.assets[0].sha256 == exe
+    assert release.assets[1].sha256 == dmg
+
+
+def test_parse_release_maps_same_line_hash_per_asset():
+    """Ad + aynı satırdaki özet doğrudan kendi varlığına bağlanmalı."""
+    exe = "c" * 64
+    dmg = "d" * 64
+    body = f"KASP v9.9.9.exe  sha256:{exe}\nKASP v9.9.9.dmg  sha256:{dmg}\n"
+
+    release = _release_without_digest(body, ["KASP v9.9.9.exe", "KASP v9.9.9.dmg"])
+
+    assert release.assets[0].sha256 == exe
+    assert release.assets[1].sha256 == dmg
+
+
+def test_parse_release_ambiguous_multi_asset_hash_is_fail_closed():
+    """Özet sayısı varlık sayısıyla eşleşmiyorsa tahmin yürütulmemeli (None)."""
+    body = "KASP v9.9.9.exe\nKASP v9.9.9.dmg\nSHA256:\n" + ("e" * 64) + "\n"
+
+    release = _release_without_digest(body, ["KASP v9.9.9.exe", "KASP v9.9.9.dmg"])
+
+    assert release.assets[0].sha256 is None
+    assert release.assets[1].sha256 is None
+
+
+def test_parse_release_prefers_api_digest_over_body():
+    """asset.digest varsa gövde taramasına düşülmemeli."""
+    digest = "f" * 64
+    release = GitHubReleaseClient._parse_release({
+        "tag_name": "v9.9.9",
+        "assets": [
+            {
+                "name": "KASP.exe",
+                "browser_download_url": "https://example.invalid/KASP.exe",
+                "size": 1,
+                "digest": f"sha256:{digest}",
+            }
+        ],
+        "body": "SHA256:\n" + ("0" * 64) + "\n",
+    })
+
+    assert release.assets[0].sha256 == digest
+
