@@ -17,13 +17,13 @@ RELEASES_API_URL = (
 RELEASE_EXE_STEM = f"KASP {RELEASE_TAG}"
 RELEASE_EXE_NAME = f"{RELEASE_EXE_STEM}.exe"
 RELEASE_SPEC_FILENAME = f"KASP_release_{RELEASE_TAG}.spec"
-RELEASE_BUILD_SCRIPT = f"build_release_{RELEASE_TAG}.bat"
+RELEASE_BUILD_COMMAND = f"pyinstaller --clean {RELEASE_SPEC_FILENAME}"
 
 # ── macOS release artifacts ─────────────────────────────────────────────
 RELEASE_MAC_APP_NAME = f"KASP {RELEASE_TAG}.app"
 RELEASE_MAC_DMG_NAME = f"KASP {RELEASE_TAG}.dmg"
 RELEASE_MAC_SPEC_FILENAME = f"KASP_release_{RELEASE_TAG}_mac.spec"
-RELEASE_MAC_BUILD_SCRIPT = f"build_release_{RELEASE_TAG}.sh"
+RELEASE_MAC_BUILD_COMMAND = f"pyinstaller --clean {RELEASE_MAC_SPEC_FILENAME}"
 RELEASE_MAC_DMG_SCRIPT = "package_mac_dmg.sh"
 
 # ── Local (dev) build artifacts ─────────────────────────────────────────
@@ -31,3 +31,4 @@ LOCAL_EXE_STEM = "KASP local build"
 LOCAL_EXE_NAME = f"{LOCAL_EXE_STEM}.exe"
 LOCAL_SPEC_FILENAME = "KASP_release_local.spec"
 LOCAL_BUILD_SCRIPT = "build_release_local.bat"
+LOCAL_BUILD_COMMAND = f"pyinstaller --clean {LOCAL_SPEC_FILENAME}"
