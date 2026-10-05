@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "project_name": "KASP",
+  "description": "Kompresör Tasarım ve Performans Simülatörü - Centrifugal Compressor Thermodynamic & Aerodynamic Design Suite",
+  "version": "2.5.1",
+  "schema_version": "1.0.0",
+  "updated_at": "2026-10-05T00:00:00Z",
+  "commit_hash": "6ca6e9c1263103a2c7928c12fa5b616ede6228ae",
+  "branch": "main",
+  "staleness_threshold_days": 7,
+  "metrics": {
+    "total_python_files": 123,
+    "total_source_files": 73,
+    "total_source_lines": 26260,
+    "total_test_lines": 8663,
+    "total_test_files": 50,
+    "test_suite_status": {
+      "total": 407,
+      "passed": 395,
+      "skipped": 12,
+      "failed": 0
+    },
+    "estimated_full_repo_tokens": 280000,
+    "index_tokens": 1500,
+    "token_savings_percentage": 99.46
+  },
+  "entry_points": [
+    {
+      "name": "Desktop GUI Application",
+      "path": "main.py",
+      "type": "GUI",
+      "runtime": "PyQt5",
+      "command": "python3 main.py"
+    },
+    {
+      "name": "Headless Simulation API",
+      "path": "kasp/api/server.py",
+      "type": "REST_API",
+      "runtime": "FastAPI/Uvicorn",
+      "command": "KASP_API_ENABLE=1 KASP_API_TOKEN=... python3 -m kasp.api.server"
+    },
+    {
+      "name": "Release Command Helper",
+      "path": "build_release.py",
+      "type": "CLI_BUILD",
+      "runtime": "PyInstaller",
+      "command": "python3 build_release.py"
+    },
+    {
+      "name": "macOS DMG Packager",
+      "path": "package_mac_dmg.sh",
+      "type": "SHELL_SCRIPT",
+      "runtime": "Bash",
+      "command": "./package_mac_dmg.sh"
+    }
+  ],
+  "subsystems": [
+    {
+      "name": "kasp.core",
+      "path": "kasp/core",
+      "role": "Core Thermodynamics & Aerodynamics",
+      "files_count": 24,
+      "loc": 9894,
+      "critical_files": [
+        "kasp/core/properties.py",
+        "kasp/core/thermo.py",
+        "kasp/core/aerodynamics.py",
+        "kasp/core/thermo_methods.py",
+        "kasp/core/thermo_design_orchestration.py",
+        "kasp/core/compliance.py"
+      ]
+    },
+    {
+      "name": "kasp.ui",
+      "path": "kasp/ui",
+      "role": "Presentation & Interaction Layer",
+      "files_count": 31,
+      "loc": 10797,
+      "critical_files": [
+        "kasp/ui/main_window.py",
+        "kasp/ui/design_left_panel_builders.py",
+        "kasp/ui/design_results_workflow.py",
+        "kasp/ui/theme_manager.py"
+      ]
+    },
+    {
+      "name": "kasp.utils",
+      "path": "kasp/utils",
+      "role": "Plotting, Reporting & Utilities",
+      "files_count": 8,
+      "loc": 3837,
+      "critical_files": [
+        "kasp/utils/graphs.py",
+        "kasp/utils/reporting.py",
+        "kasp/utils/workers.py",
+        "kasp/utils/updater.py"
+      ]
+    },
+    {
+      "name": "kasp.data",
+      "path": "kasp/data",
+      "role": "Persistence, Auth & Audit",
+      "files_count": 2,
+      "loc": 847,
+      "critical_files": [
+        "kasp/data/database.py"
+      ]
+    },
+    {
+      "name": "kasp.api",
+      "path": "kasp/api",
+      "role": "REST API Server",
+      "files_count": 1,
+      "loc": 224,
+      "critical_files": [
+        "kasp/api/server.py"
+      ]
+    }
+  ],
+  "hotspots": [
+    {
+      "file": "kasp/ui/main_window.py",
+      "touches_last_50_commits": 12,
+      "risk": "HIGH",
+      "reason": "Central UI controller; high coupling with all tab workflows and background threads."
+    },
+    {
+      "file": "kasp/core/properties.py",
+      "touches_last_50_commits": 11,
+      "risk": "HIGH",
+      "reason": "Multi-backend thermodynamic engine with LRU caching, kij matrix adjustments, and phase boundary detection."
+    },
+    {
+      "file": "kasp/core/thermo.py",
+      "touches_last_50_commits": 10,
+      "risk": "HIGH",
+      "reason": "Thermodynamic solver facade and multi-stage convergence loops."
+    },
+    {
+      "file": "kasp/ui/design_left_panel_builders.py",
+      "touches_last_50_commits": 10,
+      "risk": "MEDIUM",
+      "reason": "Dynamic input panel construction; layout and signal regressions across themes."
+    },
+    {
+      "file": "kasp/core/aerodynamics.py",
+      "touches_last_50_commits": 9,
+      "risk": "MEDIUM",
+      "reason": "ASME PTC 10 & Schultz polytropic compression aerodynamic logic."
+    },
+    {
+      "file": "kasp/data/database.py",
+      "touches_last_50_commits": 7,
+      "risk": "MEDIUM",
+      "reason": "Database schema migrations, user authentication, and lockout tracking."
+    }
+  ],
+  "external_dependencies": {
+    "PyQt5": ">=5.15,<5.16",
+    "numpy": ">=1.26,<3",
+    "scipy": ">=1.11,<2",
+    "matplotlib": ">=3.8,<4",
+    "reportlab": ">=4.0,<5",
+    "CoolProp": ">=6.8,<8",
+    "thermo": ">=0.6,<0.7",
+    "chemicals": ">=1.5,<2",
+    "fastapi": ">=0.115,<1",
+    "uvicorn": ">=0.32,<1",
+    "pydantic": ">=2.9,<3",
+    "pytest": ">=8.3,<10",
+    "ccp-performance": ">=0.3.0",
+    "thermopack": ">=2.2.0",
+    "neqsim": ">=3.0",
+    "jpype1": ">=1.5.0",
+    "pythonnet": ">=3.0.0; sys_platform == 'win32'"
+  }
+}
