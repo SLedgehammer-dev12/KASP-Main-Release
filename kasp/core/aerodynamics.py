@@ -410,6 +410,15 @@ class CompressorAerodynamics:
                 - analysis_data    : Tanı verisi (dict)
         """
         steps = max(10, min(50, steps))
+        try:
+            poly_eff_val = float(poly_eff)
+            if not math.isfinite(poly_eff_val):
+                poly_eff_val = 0.75
+        except (TypeError, ValueError):
+            poly_eff_val = 0.75
+        if 1.0 < poly_eff_val <= 100.0:
+            poly_eff_val = poly_eff_val / 100.0
+        poly_eff = max(0.10, min(0.999, poly_eff_val))
 
         # Geometrik basınç adımları (üstel sıkıştırma için daha uygun)
         pressures = np.geomspace(p_in, p_out, steps + 1)
@@ -582,7 +591,9 @@ class CompressorAerodynamics:
         state_in: ThermodynamicState, p_out: float,
         thermo_solver, gas_obj, eos: str
     ) -> tuple:
-        """Brent's Hybrid Root-Finding Solver (Pure Python)"""
+        """Brent's Hybrid Root-Finding Solver (using scipy.optimize.brentq with robust physical bracket expansion)"""
+        from scipy.optimize import brentq
+
         S1 = state_in.S
         t_in = state_in.T
 
@@ -596,7 +607,7 @@ class CompressorAerodynamics:
                 else:
                     return 1e6
 
-        # Başlangıç braketi bulma (T2 >= T1 için kompresörde a = t_in)
+        # Başlangıç tahmini (T2 >= T1 için kompresörde a = t_in)
         k_est = state_in.k if (state_in.k and state_in.k > 1.0) else 1.3
         n_isen = (k_est - 1.0) / k_est
         pr = max(1.0001, p_out / max(1.0, state_in.P))
@@ -606,103 +617,45 @@ class CompressorAerodynamics:
         fa = f(a)
         fb = f(b)
 
-        for _ in range(5):
-            if fb >= 1e5 and b > t_in + 1.0:
-                b = t_in + 0.5 * (b - t_in)
-                fb = f(b)
-                continue
+        # Sağlam fiziksel braket genişletme (İşaret değişimi sağlanana kadar)
+        for _ in range(8):
             if fa * fb < 0 and abs(fa) < 1e5 and abs(fb) < 1e5:
                 break
-            if fa > 0:
-                a = max(100.0, a * 0.5)
+            if fa >= 0:
+                a = max(80.0, a * 0.8)
                 fa = f(a)
-            if fb < 0:
-                b = min(3000.0, b * 1.5)
+            if fb <= 0:
+                b = min(3500.0, b + max(25.0, (b - t_in) * 0.6))
                 fb = f(b)
 
-        if fa * fb >= 0 or abs(fa) >= 1e5 or abs(fb) >= 1e5:
-            # Braket başarısız — bisection stratejisi ile en iyi tahmini bul
-            left, right = min(a, b), max(a, b)
-            best_t, best_res = (a, abs(fa)) if abs(fa) < abs(fb) else (b, abs(fb))
-            for _ in range(8):
-                mid = (left + right) / 2.0
-                val_mid = f(mid)
-                fmid = abs(val_mid)
-                if fmid < best_res:
-                    best_t, best_res = mid, fmid
-                if val_mid > 0:
-                    right = mid
-                else:
-                    left = mid
-            return best_t, 1, max(abs(best_res), 10.0)
+        # Braket başarıyla bulunduysa C-seviyesi scipy brentq çalıştır
+        if fa * fb < 0:
+            try:
+                root, res = brentq(f, a, b, xtol=1e-4, rtol=1e-4, maxiter=30, full_output=True)
+                residual = abs(f(root))
+                iter_count = max(1, getattr(res, "iterations", 5))
+                return root, iter_count, residual
+            except Exception as e:
+                logger.warning(f"brentq çözücü hatası: {e}")
 
-        # Brent Algoritması
-        max_iter = 20
-        tol = 5.0 # Entropi toleransı
-        c = a
-        fc = fa
-        d = b - a
-        e = d
-        iter_count = 0
-        residual = 999.0
+        # Braket bulunamadıysa veya brentq başarısız olduysa, AJ-NR kurtarması dene
+        try:
+            t_aj, iter_aj, res_aj = CompressorAerodynamics.calculate_isentropic_temp_aj_nr(
+                state_in, p_out, thermo_solver, gas_obj, eos
+            )
+            if res_aj is not None and res_aj < 50.0:
+                return t_aj, iter_aj, res_aj
+        except Exception:
+            pass
 
-        for iteration in range(max_iter):
-            iter_count += 1
-            if abs(fc) < abs(fb):
-                a, b, c = b, c, b
-                fa, fb, fc = fb, fc, fb
-
-            residual = abs(fb)
-            if residual < tol:
-                break
-
-            m = 0.5 * (c - b)
-            if abs(m) < 0.1:
-                break
-
-            if abs(e) >= 0.1 and abs(fa) > abs(fb):
-                s = fb / fa
-                if a == c:
-                    p = 2.0 * m * s
-                    q = 1.0 - s
-                else:
-                    q = fa / fc
-                    r = fb / fc
-                    p = s * (2.0 * m * q * (q - r) - (b - a) * (r - 1.0))
-                    q = (q - 1.0) * (r - 1.0) * (s - 1.0)
-
-                if p > 0:
-                    q = -q
-                else:
-                    p = -p
-
-                if 2.0 * p < min(3.0 * m * q - abs(0.1 * q), abs(e * q)):
-                    e = d
-                    d = p / q
-                else:
-                    d = m
-                    e = d
-            else:
-                d = m
-                e = d
-
-            a = b
-            fa = fb
-
-            if abs(d) > 0.1:
-                b += d
-            else:
-                b += 0.1 if m > 0 else -0.1
-
-            fb = f(b)
-
-            if (fb > 0 and fc > 0) or (fb < 0 and fc < 0):
-                c = a
-                fc = fa
-                d = b - a
-                e = d
-
-        return b, iter_count, residual
+        # Son çare: İdeal gaz tahmini ve gerçek residual ile dön (SolverChain yakalasın)
+        t_fallback = max(t_in, t_est)
+        try:
+            st = thermo_solver.get_properties(p_out, t_fallback, gas_obj, eos)
+            res_fallback = abs(st.S - S1)
+        except Exception:
+            res_fallback = 999.0
+        return t_fallback, 1, res_fallback
 
     @staticmethod
     def run_isentropic_fallback_comparison(
@@ -778,11 +731,13 @@ class CompressorAerodynamics:
         thermo_solver, gas_obj, eos: str
     ) -> float:
         # Retrieve selected root-finding solver from thread-local context
+        has_context = False
         solver_method = "auto"
         if hasattr(thermo_solver, "_run_tracking") and hasattr(thermo_solver._run_tracking, "context") and thermo_solver._run_tracking.context:
             solver_method = thermo_solver._run_tracking.context.get("solver_method", "auto")
+            has_context = True
 
-        if solver_method == "benchmark":
+        if solver_method == "benchmark" or not has_context:
             return CompressorAerodynamics.run_isentropic_fallback_comparison(
                 state_in, p_out, thermo_solver, gas_obj, eos
             )
@@ -792,19 +747,10 @@ class CompressorAerodynamics:
         tracker = getattr(thermo_solver, "_fallback_tracker", None)
         if tracker is not None:
             chain = SolverChain(tracker)
-            result = chain.find_isentropic_temp(
+            return chain.find_isentropic_temp(
                 state_in, p_out, thermo_solver, gas_obj, eos,
                 solver_method=solver_method,
             )
-            if solver_method == "auto":
-                # Benchmark verisini de arka planda topla (diagnostik icin)
-                try:
-                    CompressorAerodynamics.run_isentropic_fallback_comparison(
-                        state_in, p_out, thermo_solver, gas_obj, eos
-                    )
-                except Exception:
-                    pass
-            return result
         # FallbackTracker yoksa eski benchmark davranisi
         return CompressorAerodynamics.run_isentropic_fallback_comparison(
             state_in, p_out, thermo_solver, gas_obj, eos

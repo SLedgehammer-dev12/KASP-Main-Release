@@ -39,6 +39,8 @@ def eos_method_from_ui_text(selected_text):
 
 def solver_method_from_ui_text(selected_text):
     """Translate a UI combo label into the engine solver_method code."""
+    if "Benchmark" in selected_text and "Auto" not in selected_text:
+        return "benchmark"
     if "AJ-NR" in selected_text:
         return "aj_nr"
     if "FD-NR" in selected_text:

@@ -163,6 +163,11 @@ class KaspMainWindow(QMainWindow):
         self.last_report_data = {}
         self.worker_thread = None
         self.worker = None
+        self._shootout_thread = None
+        self._shootout_worker = None
+        self._shootout_results = []
+        self._eos_shootout_results = []
+        self._method_shootout_results = []
         self.update_check_thread = None
         self.update_check_worker = None
         self.update_download_thread = None
@@ -231,7 +236,24 @@ class KaspMainWindow(QMainWindow):
         self._check_for_updates(manual=False)
 
     def closeEvent(self, event):
+        has_running_calc = self.worker_thread is not None and self.worker_thread.isRunning()
+        has_running_shootout = getattr(self, "_shootout_thread", None) is not None and self._shootout_thread.isRunning()
+        if has_running_calc or has_running_shootout:
+            from kasp.i18n import tr
+            reply = QMessageBox.question(
+                self,
+                tr("Çıkış Onayı"),
+                tr("Arka planda çalışan bir hesaplama var. Çıkmak ve hesaplamayı iptal etmek istediğinize emin misiniz?"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
+
         self._save_splitter_state()
+        self._cleanup_worker_thread()
+        self._cleanup_shootout_thread()
         self._cleanup_update_check_thread()
         self._cleanup_update_download_thread()
         root_logger = logging.getLogger()
@@ -540,6 +562,42 @@ class KaspMainWindow(QMainWindow):
         self.update_download_thread = None
         self.update_download_worker = None
         self.update_progress_dialog = None
+
+    def _cleanup_worker_thread(self):
+        """Hesaplama worker thread'ini guvenle durdur ve bekle."""
+        worker = getattr(self, "worker", None)
+        if worker is not None:
+            try:
+                worker.request_cancel()
+            except Exception:
+                pass
+        thread = getattr(self, "worker_thread", None)
+        if thread is not None:
+            try:
+                thread.quit()
+                thread.wait(2000)
+            except Exception:
+                pass
+        self.worker_thread = None
+        self.worker = None
+
+    def _cleanup_shootout_thread(self):
+        """Shootout worker thread'ini guvenle durdur ve bekle."""
+        worker = getattr(self, "_shootout_worker", None)
+        if worker is not None:
+            try:
+                worker.request_cancel()
+            except Exception:
+                pass
+        thread = getattr(self, "_shootout_thread", None)
+        if thread is not None:
+            try:
+                thread.quit()
+                thread.wait(2000)
+            except Exception:
+                pass
+        self._shootout_thread = None
+        self._shootout_worker = None
 
     def _check_for_updates(self, manual=True):
         if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
@@ -887,6 +945,9 @@ class KaspMainWindow(QMainWindow):
         eos_table = self._eng_widgets.get("eos_table")
         if eos_table:
             eos_table.itemSelectionChanged.connect(self._on_shootout_row_selected)
+        method_table = self._eng_widgets.get("method_table")
+        if method_table:
+            method_table.itemSelectionChanged.connect(self._on_method_shootout_row_selected)
         method_btn = self._eng_widgets.get("method_run_btn")
         if method_btn:
             method_btn.clicked.connect(self._run_method_shootout)
@@ -903,6 +964,16 @@ class KaspMainWindow(QMainWindow):
                 tr("Önce Tasarım sekmesinde bir hesaplama çalıştırın."),
             )
             return
+
+        if getattr(self, "_shootout_thread", None) is not None and self._shootout_thread.isRunning():
+            from kasp.i18n import tr
+            QMessageBox.warning(
+                self,
+                tr("Uyarı"),
+                tr("Zaten bir karşılaştırma hesaplaması çalışıyor. Lütfen bitmesini bekleyin veya durdurun."),
+            )
+            return
+
         from kasp.utils.workers import ShootoutWorker
         from PyQt5.QtCore import QThread
 
@@ -926,7 +997,8 @@ class KaspMainWindow(QMainWindow):
         worker = ShootoutWorker(self.engine, self.last_design_inputs, mode="eos")
         worker.moveToThread(thread)
 
-        self._shootout_results = []
+        self._eos_shootout_results = []
+        self._shootout_results = self._eos_shootout_results
         self._shootout_thread = thread
         self._shootout_worker = worker
 
@@ -975,10 +1047,12 @@ class KaspMainWindow(QMainWindow):
             prop_table.resizeRowsToContents()
             prop_table.updateGeometry()
 
-            self._shootout_results.append(r)
+            self._eos_shootout_results.append(r)
+            self._shootout_results = self._eos_shootout_results
 
         def on_finished(results):
             """Tum EOS'ler bittiginde veya iptal edildiğinde."""
+            self._eos_shootout_results = results
             self._shootout_results = results
 
             # Fallback zincir kaydi
@@ -1027,6 +1101,8 @@ class KaspMainWindow(QMainWindow):
         worker.error.connect(thread.quit)
         worker.cancelled.connect(thread.quit)
         thread.started.connect(worker.run)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_shootout_thread)
 
         thread.start()
 
@@ -1047,7 +1123,8 @@ class KaspMainWindow(QMainWindow):
         row = selected[0].row()
         shootout_idx = row
         r = None
-        for item in self._shootout_results:
+        eos_results = getattr(self, "_eos_shootout_results", None) or self._shootout_results
+        for item in eos_results:
             if item.get("eos") is not None:
                 if shootout_idx == 0:
                     r = item
@@ -1093,6 +1170,91 @@ class KaspMainWindow(QMainWindow):
                         f"{raw.get(f'{prefix}phase','?')}")
                 detail_form.addRow(f"🔍 {label}:", QLabel(line))
 
+    def _on_method_shootout_row_selected(self):
+        if not getattr(self, "_eng_widgets", None):
+            return
+        table = self._eng_widgets.get("method_table")
+        detail_frame = self._eng_widgets.get("method_detail_frame")
+        detail_title = self._eng_widgets.get("method_detail_title")
+        detail_form = self._eng_widgets.get("method_detail_form")
+        if not table or not detail_frame or not detail_form:
+            return
+
+        selected = table.selectedIndexes()
+        if not selected:
+            detail_frame.setVisible(False)
+            return
+
+        row = selected[0].row()
+        shootout_idx = row
+        r = None
+        method_results = getattr(self, "_method_shootout_results", None) or []
+        for item in method_results:
+            if item.get("method") is not None:
+                if shootout_idx == 0:
+                    r = item
+                    break
+                shootout_idx -= 1
+        if r is None:
+            return
+
+        detail_frame.setVisible(True)
+        detail_title.setText(f"📋 {r.get('label', '?')} Detayı")
+
+        # Formu temizle
+        while detail_form.rowCount() > 0:
+            detail_form.removeRow(0)
+
+        if not r.get("success", False):
+            from PyQt5.QtWidgets import QLabel
+            detail_form.addRow("❌ Durum:", QLabel(f"Başarısız: {r.get('error', 'Bilinmeyen hata')}"))
+            return
+
+        from PyQt5.QtWidgets import QLabel
+
+        # Yakınsama durumu
+        converged = r.get("convergence")
+        status_text = "✓ Başarıyla Yakınsadı" if converged else "⚠️ Yakınsama Tamamlanamadı"
+        detail_form.addRow("🎯 Yakınsama:", QLabel(status_text))
+
+        # Kademe bazlı iterasyon detayları
+        conv_list = r.get("method_convergence", [])
+        if conv_list:
+            conv_lines = []
+            for c in conv_list:
+                st = c.get("stage", "?")
+                it = c.get("iteration_count", 0)
+                reason = c.get("termination_reason") or "ok"
+                conv_lines.append(f"Kademe {st}: {it} iter ({reason})")
+            detail_form.addRow("🔄 Kademe İterasyonları:", QLabel(" | ".join(conv_lines)))
+
+        # Metrikler
+        detail_form.addRow("⏱️ Hesaplama Süresi:", QLabel(f"{r.get('elapsed_s', 0):.2f}s"))
+        if r.get("poly_eff_actual"):
+            detail_form.addRow("η_poly (Gerçek):", QLabel(f"{r.get('poly_eff_actual', 0) * 100:.2f}%"))
+        if r.get("head_kj_kg") is not None:
+            head_val = f"{r.get('head_kj_kg', 0):.2f} kJ/kg"
+            if r.get("head_diff_pct") is not None:
+                head_val += f" (Δ {r.get('head_diff_pct', 0):+.2f}%)"
+            detail_form.addRow("Polytropic Head:", QLabel(head_val))
+        if r.get("power_kw") is not None:
+            pwr_val = f"{r.get('power_kw', 0):.1f} kW"
+            if r.get("power_diff_pct") is not None:
+                pwr_val += f" (Δ {r.get('power_diff_pct', 0):+.2f}%)"
+            detail_form.addRow("Gas Power:", QLabel(pwr_val))
+
+        # Ham propertyler
+        raw = r.get("raw_props", {})
+        parts = [("Giriş", "inlet_"), ("Çıkış", "outlet_")]
+        for label, prefix in parts:
+            mw = raw.get(f"{prefix}mw")
+            if mw:
+                line = (f"MW={mw:.2f} g/mol | k={raw.get(f'{prefix}k',0):.4f} | "
+                        f"Z={raw.get(f'{prefix}z',0):.4f} | Cp={raw.get(f'{prefix}cp',0):.0f} | "
+                        f"Cv={raw.get(f'{prefix}cv',0):.0f} | ρ={raw.get(f'{prefix}density',0):.2f} | "
+                        f"{raw.get(f'{prefix}phase','?')}")
+                detail_form.addRow(f"🔍 {label}:", QLabel(line))
+
     def _run_method_shootout(self):
         if not getattr(self, "last_design_inputs", None):
             from kasp.i18n import tr
@@ -1102,11 +1264,24 @@ class KaspMainWindow(QMainWindow):
                 tr("Önce Tasarım sekmesinde bir hesaplama çalıştırın."),
             )
             return
+
+        if getattr(self, "_shootout_thread", None) is not None and self._shootout_thread.isRunning():
+            from kasp.i18n import tr
+            QMessageBox.warning(
+                self,
+                tr("Uyarı"),
+                tr("Zaten bir karşılaştırma hesaplaması çalışıyor. Lütfen bitmesini bekleyin veya durdurun."),
+            )
+            return
+
         from kasp.utils.workers import ShootoutWorker
         from PyQt5.QtCore import QThread
 
         table = self._eng_widgets["method_table"]
         table.setRowCount(0)
+        method_detail = self._eng_widgets.get("method_detail_frame")
+        if method_detail:
+            method_detail.setVisible(False)
 
         method_btn = self._eng_widgets.get("method_run_btn")
         if method_btn:
@@ -1116,7 +1291,8 @@ class KaspMainWindow(QMainWindow):
         worker = ShootoutWorker(self.engine, self.last_design_inputs, mode="method")
         worker.moveToThread(thread)
 
-        self._shootout_results = []
+        self._method_shootout_results = []
+        self._shootout_results = self._method_shootout_results
         self._shootout_thread = thread
         self._shootout_worker = worker
 
@@ -1135,9 +1311,11 @@ class KaspMainWindow(QMainWindow):
             else:
                 table.setItem(row, 1, QTableWidgetItem(f"❌ {r.get('error', '')}"))
 
-            self._shootout_results.append(r)
+            self._method_shootout_results.append(r)
+            self._shootout_results = self._method_shootout_results
 
         def on_finished(results):
+            self._method_shootout_results = results
             self._shootout_results = results
             if method_btn:
                 method_btn.setEnabled(True)
@@ -1171,6 +1349,8 @@ class KaspMainWindow(QMainWindow):
         worker.error.connect(thread.quit)
         worker.cancelled.connect(thread.quit)
         thread.started.connect(worker.run)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_shootout_thread)
 
         thread.start()
 

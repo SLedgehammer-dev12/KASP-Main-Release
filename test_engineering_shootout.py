@@ -140,10 +140,23 @@ def test_method_shootout_returns_correct_structure():
         "enable_uncertainty": False,
     }
     results = run_method_shootout(engine, inputs)
-    required_fields = ["method", "label", "success", "t_out", "head_kj_kg", "poly_eff_actual", "power_kw", "convergence", "elapsed_s"]
+    required_fields = [
+        "method", "label", "success", "t_out", "head_kj_kg",
+        "poly_eff_actual", "power_kw", "convergence",
+        "method_convergence", "raw_props", "stages", "elapsed_s"
+    ]
     for r in results:
         for field in required_fields:
             assert field in r
+
+    successful = [r for r in results if r["success"]]
+    if successful:
+        first = successful[0]
+        assert first["head_diff_pct"] == 0.0
+        assert "raw_props" in first and "inlet_mw" in first["raw_props"]
+        if len(successful) > 1:
+            assert "head_diff_pct" in successful[1]
+            assert "power_diff_pct" in successful[1]
 
 
 def test_method_shootout_methods_have_different_labels():
@@ -191,3 +204,17 @@ def test_shootout_preserves_original_inputs():
     results = run_eos_shootout(engine, inputs)
     assert inputs["eos_method"] == original_eos
     assert results[0]["eos"] != original_eos or results[0]["eos"] == original_eos
+
+
+def test_engineering_dashboard_method_detail_widgets(qapp):
+    """build_engineering_dashboard method detail bileşenlerini döndürmeli."""
+    from PyQt5.QtWidgets import QWidget
+    from kasp.ui.engineering_tab_builders import build_engineering_dashboard
+    parent = QWidget()
+    widgets = build_engineering_dashboard(parent, engine=None, last_results=None)
+    assert "method_detail_frame" in widgets
+    assert "method_detail_title" in widgets
+    assert "method_detail_form" in widgets
+    assert widgets["method_detail_frame"].isVisible() is False
+    assert widgets["method_table"].selectionBehavior() == widgets["method_table"].SelectRows
+

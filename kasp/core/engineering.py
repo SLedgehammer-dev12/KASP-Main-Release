@@ -146,6 +146,7 @@ def run_method_shootout(engine, base_inputs: dict,
         cancel_cb: () -> bool; True dondururse kosu iptal edilir.
     """
     results = []
+    reference = None
     for idx, method in enumerate(ALL_METHOD_LABELS):
         if cancel_cb and cancel_cb():
             break
@@ -155,6 +156,7 @@ def run_method_shootout(engine, base_inputs: dict,
         try:
             output = engine.calculate_design_performance(inputs)
             elapsed = time.perf_counter() - t0
+            raw = _extract_raw_properties(output)
             item = {
                 "method": method,
                 "label": METHOD_NAMES.get(method, method),
@@ -164,9 +166,14 @@ def run_method_shootout(engine, base_inputs: dict,
                 "poly_eff_actual": output.get("actual_poly_efficiency", None),
                 "power_kw": output.get("power_gas_total_kw", None),
                 "convergence": output.get("method_converged", None),
+                "method_convergence": output.get("method_convergence", []),
+                "raw_props": raw,
+                "stages": output.get("stages", []),
                 "elapsed_s": elapsed,
                 "error": None,
             }
+            if reference is None:
+                reference = output
         except Exception as e:
             item = {
                 "method": method,
@@ -179,4 +186,15 @@ def run_method_shootout(engine, base_inputs: dict,
         if progress_cb:
             progress_cb(idx + 1, len(ALL_METHOD_LABELS), item["label"], item)
 
+    # Referansa göre sapma hesapla
+    if reference:
+        ref_head = reference.get("head_kj_kg", 0)
+        ref_power = reference.get("power_gas_total_kw", 0)
+        for r in results:
+            if not r.get("success") or r.get("head_kj_kg") is None or ref_head == 0:
+                continue
+            r["head_diff_pct"] = (r["head_kj_kg"] - ref_head) / ref_head * 100
+            r["power_diff_pct"] = (r["power_kw"] - ref_power) / ref_power * 100 if ref_power else 0
+
     return results
+

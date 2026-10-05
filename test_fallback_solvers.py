@@ -101,3 +101,84 @@ def test_fallback_comparison_runner_and_storage():
         assert method["iterations"] >= 1
         assert method["residual"] >= 0.0
         assert method["time_ms"] >= 0.0
+
+
+def test_brent_solver_high_pr_convergence():
+    """Verify that calculate_isentropic_temp_brent converges accurately at high pressure ratios and never collapses to t_in."""
+    solver = ThermodynamicSolver()
+    gas_comp = {"METHANE": 0.85, "ETHANE": 0.10, "PROPANE": 0.05}
+    normalized = GasMixtureBuilder.validate_and_normalize(gas_comp)
+    gas_obj = GasMixtureBuilder.build_thermo_data(normalized)
+
+    p_in = 1.0e6   # 10 bar
+    t_in = 300.0   # 300 K
+    p_out = 8.0e6  # 80 bar (PR = 8.0)
+
+    state_in = solver.get_properties(p_in, t_in, gas_obj, "pr")
+    t_brent, iters, residual = CompressorAerodynamics.calculate_isentropic_temp_brent(
+        state_in, p_out, solver, gas_obj, "pr"
+    )
+
+    # Must be physically well above t_in (compression heating)
+    assert t_brent > t_in + 50.0
+    assert 400.0 < t_brent < 600.0
+    # Must converge with low entropy residual
+    assert residual < 1.0
+    assert iters >= 1
+
+
+def test_auto_solver_bypasses_redundant_comparisons():
+    """Verify that in 'auto' mode with active run tracking, redundant fallback benchmarking is bypassed."""
+    solver = ThermodynamicSolver()
+    solver.begin_run_tracking("auto")
+    
+    gas_comp = {"METHANE": 0.9, "ETHANE": 0.1}
+    normalized = GasMixtureBuilder.validate_and_normalize(gas_comp)
+    gas_obj = GasMixtureBuilder.build_thermo_data(normalized)
+    
+    p_in = 2.0e6
+    t_in = 310.0
+    p_out = 5.0e6
+    
+    state_in = solver.get_properties(p_in, t_in, gas_obj, "pr")
+    
+    reset_fallback_comparisons()
+    set_current_stage("Kademe 1")
+    
+    t_result = CompressorAerodynamics.calculate_isentropic_temp_fallback(
+        state_in, p_out, solver, gas_obj, "pr"
+    )
+    assert 310.0 < t_result < 600.0
+    # Auto mode should NOT run the 3-solver shootout comparison
+    comparisons = get_fallback_comparisons()
+    assert len(comparisons) == 0
+
+
+def test_benchmark_solver_executes_comparisons():
+    """Verify that in 'benchmark' mode with active run tracking, the 3-solver comparison is executed."""
+    solver = ThermodynamicSolver()
+    solver.begin_run_tracking("benchmark")
+    
+    gas_comp = {"METHANE": 0.9, "ETHANE": 0.1}
+    normalized = GasMixtureBuilder.validate_and_normalize(gas_comp)
+    gas_obj = GasMixtureBuilder.build_thermo_data(normalized)
+    
+    p_in = 2.0e6
+    t_in = 310.0
+    p_out = 5.0e6
+    
+    state_in = solver.get_properties(p_in, t_in, gas_obj, "pr")
+    
+    reset_fallback_comparisons()
+    set_current_stage("Kademe 1")
+    
+    t_result = CompressorAerodynamics.calculate_isentropic_temp_fallback(
+        state_in, p_out, solver, gas_obj, "pr"
+    )
+    assert 310.0 < t_result < 600.0
+    # Benchmark mode MUST run the 3-solver shootout comparison
+    comparisons = get_fallback_comparisons()
+    assert len(comparisons) == 1
+    assert len(comparisons[0]["methods"]) == 3
+
+

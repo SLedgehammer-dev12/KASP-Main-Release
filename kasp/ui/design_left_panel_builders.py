@@ -48,7 +48,8 @@ def get_solver_method_options():
         "Analitik Jakobiyen NR (AJ-NR - Hızlı)",
         "Sonlu Farklar NR (FD-NR - Standart)",
         "Brent Hibrit Yöntemi (Brent - Kararlı)",
-        "Otomatik Karşılaştırmalı Benchmark (Auto)",
+        "Otomatik Akıllı Zincir (Auto - Önerilen)",
+        "Karşılaştırmalı Benchmark (Benchmark - Tanı)",
     ]
 
 

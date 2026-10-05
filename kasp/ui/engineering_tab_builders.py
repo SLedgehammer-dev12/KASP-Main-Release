@@ -185,10 +185,32 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
     method_table = QTableWidget(0, 7)
     method_table.setHorizontalHeaderLabels(["Metot", "T_out (°C)", "Head (kJ/kg)", "Power (kW)", "η_poly", "Yakınsadı", "Süre (s)"])
     method_table.setObjectName("eng_method_shootout")
+    method_table.setSelectionBehavior(method_table.SelectRows)
+    method_table.setSelectionMode(method_table.SingleSelection)
+    method_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
     method_layout.addWidget(method_table)
+    
     method_run_btn = QPushButton("🔄 Method Shootout Çalıştır")
     method_run_btn.setObjectName("eng_method_shootout_btn")
     method_layout.addWidget(method_run_btn)
+
+    # Alt panel: secili Metot detayi
+    method_detail_frame = QFrame()
+    method_detail_frame.setObjectName("eng_method_detail")
+    method_detail_frame.setFrameShape(QFrame.StyledPanel)
+    method_detail_layout = QVBoxLayout(method_detail_frame)
+
+    method_detail_title = QLabel("📋 Metot Detayı — seçmek için yukarıdaki satıra tıklayın")
+    method_detail_title.setObjectName("eng_method_detail_title")
+    method_detail_layout.addWidget(method_detail_title)
+
+    method_detail_form = QFormLayout()
+    method_detail_form.setSpacing(2)
+    method_detail_form.setObjectName("eng_method_detail_form")
+    method_detail_layout.addLayout(method_detail_form)
+    method_detail_frame.setVisible(False)
+    method_layout.addWidget(method_detail_frame)
+
     method_group.setLayout(method_layout)
     layout.addWidget(method_group)
 
@@ -221,6 +243,9 @@ def build_engineering_dashboard(parent_widget, engine=None, last_results=None):
         "chain_table": chain_table,
         "method_table": method_table,
         "method_run_btn": method_run_btn,
+        "method_detail_frame": method_detail_frame,
+        "method_detail_title": method_detail_title,
+        "method_detail_form": method_detail_form,
         "export_btn": export_btn,
     }
 
