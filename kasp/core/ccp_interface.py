@@ -136,40 +136,53 @@ class CCPAdapter:
                 - calculation_backend: 'CCP/Petrobras' or 'CCP/REFPROP'
         """
         try:
+            inputs = inputs or {}
             # Convert gas composition
-            fluid = self._convert_gas_composition(inputs['gas_comp'])
+            fluid = self._convert_gas_composition(inputs.get('gas_comp', {'METHANE': 100.0}))
             
+            p_in = float(inputs.get('p_in', 1.0))
+            p_in_unit = inputs.get('p_in_unit', inputs.get('p_unit', 'bar'))
+            t_in = float(inputs.get('t_in', 20.0))
+            t_in_unit = inputs.get('t_in_unit', inputs.get('t_unit', 'degC'))
+            p_out = float(inputs.get('p_out', p_in * 2.0))
+            p_out_unit = inputs.get('p_out_unit', inputs.get('p_unit', p_in_unit))
+            flow = float(inputs.get('flow', 1.0))
+            flow_unit = inputs.get('flow_unit', 'kg/s')
+
+            eos = 'REFPROP' if self.use_refprop else 'HEOS'
+
             # Create suction state
             suc = ccp.State(
                 fluid=fluid,
-                p=Q_(inputs['p_in'], inputs['p_in_unit']),
-                T=Q_(inputs['t_in'], inputs['t_in_unit']),
-                EOS='REFPROP' if self.use_refprop else 'PR'  # CCP default
+                p=Q_(p_in, p_in_unit),
+                T=Q_(t_in, t_in_unit),
+                EOS=eos,
             )
             
             # Estimate discharge state for initial point
             # (CCP needs discharge for Point creation)
-            p_out_q = Q_(inputs['p_out'], inputs['p_out_unit'])
+            p_out_q = Q_(p_out, p_out_unit)
             
             # Initial temperature estimate using isentropic relation
-            pressure_ratio = p_out_q.magnitude / suc.p.magnitude
+            pressure_ratio = float((p_out_q / suc.p()).to_base_units().magnitude)
             k_guess = 1.3  # Typical for natural gas
-            t_out_guess = suc.T.magnitude * (pressure_ratio ** ((k_guess - 1) / k_guess))
+            t_in_k = float(suc.T().to('K').magnitude)
+            t_out_guess = t_in_k * (pressure_ratio ** ((k_guess - 1) / k_guess))
             
             disch_initial = ccp.State(
                 fluid=fluid,
                 p=p_out_q,
                 T=Q_(t_out_guess, 'K'),
-                EOS='REFPROP' if self.use_refprop else 'PR'
+                EOS=eos,
             )
             
             # Convert flow rate
-            flow_q = self._convert_flow_rate(inputs['flow'], inputs['flow_unit'])
+            flow_q = self._convert_flow_rate(flow, flow_unit)
             
             # Get geometric parameters (if available)
-            b = inputs.get('blade_height', 0.0285)  # Default: 28.5 mm
-            D = inputs.get('impeller_diameter', 0.365)  # Default: 365 mm
-            speed = inputs.get('speed', 7500)  # Default: 7500 RPM
+            b = float(inputs.get('blade_height', 0.0285))  # Default: 28.5 mm
+            D = float(inputs.get('impeller_diameter', 0.365))  # Default: 365 mm
+            speed = float(inputs.get('speed', 7500))  # Default: 7500 RPM
             
             # Create performance point
             point = ccp.Point(
@@ -183,14 +196,14 @@ class CCPAdapter:
             
             # Extract results
             results = {
-                't_out': point.disch.T.to('K').magnitude,
-                'p_out': point.disch.p.to('Pa').magnitude,
-                'head_kj_kg': point.head.to('J/kg').magnitude / 1000.0,
-                'power_kw': point.power.to('W').magnitude / 1000.0,
-                'efficiency': point.eff.magnitude,
-                'z_avg': self._compute_z_avg_log(suc.z().magnitude, point.disch.z().magnitude),
+                't_out': float(point.disch.T().to('K').magnitude),
+                'p_out': float(point.disch.p().to('Pa').magnitude),
+                'head_kj_kg': float(point.head.to('J/kg').magnitude) / 1000.0,
+                'power_kw': float(point.power.to('W').magnitude) / 1000.0,
+                'efficiency': float(point.eff.magnitude),
+                'z_avg': self._compute_z_avg_log(float(suc.z().magnitude), float(point.disch.z().magnitude)),
                 'calculation_backend': 'CCP/REFPROP' if self.use_refprop else 'CCP/Petrobras',
-                'ccp_version': ccp.__version__ if hasattr(ccp, '__version__') else 'unknown'
+                'ccp_version': getattr(ccp, '__version__', 'unknown'),
             }
             
             self.logger.debug(
@@ -218,27 +231,29 @@ class CCPAdapter:
         Convert KASP composition to CCP format
         
         Args:
-            kasp_comp: {component: percentage} (0-100 scale)
+            kasp_comp: {component: fraction_or_percentage}
         
         Returns:
             {component: mole_fraction} (0-1 scale)
         """
-        ccp_comp = {}
-        
-        for comp, percentage in kasp_comp.items():
-            comp_upper = comp.upper()
-            ccp_name = self.COMPONENT_MAPPING.get(comp_upper, comp)
+        if not kasp_comp:
+            return {'Methane': 1.0}
             
-            # Convert percentage to mole fraction
-            ccp_comp[ccp_name] = percentage / 100.0
+        raw_sum = sum(float(v or 0.0) for v in kasp_comp.values())
+        divisor = 100.0 if raw_sum > 1.5 else 1.0
+
+        ccp_comp = {}
+        for comp, percentage in kasp_comp.items():
+            comp_upper = str(comp).strip().upper()
+            ccp_name = self.COMPONENT_MAPPING.get(comp_upper, comp)
+            ccp_comp[ccp_name] = float(percentage or 0.0) / divisor
         
         # Validate total
         total = sum(ccp_comp.values())
-        if abs(total - 1.0) > 0.01:
-            self.logger.warning(
-                f"Composition sum = {total:.4f}, normalizing to 1.0"
-            )
-            ccp_comp = {k: v/total for k, v in ccp_comp.items()}
+        if total <= 0:
+            return {'Methane': 1.0}
+        if abs(total - 1.0) > 0.001:
+            ccp_comp = {k: v / total for k, v in ccp_comp.items()}
         
         return ccp_comp
     
@@ -257,11 +272,13 @@ class CCPAdapter:
         unit_mapping = {
             'kg/s': 'kg/s',
             'kg/h': 'kg/hr',
+            't/h': 'metric_ton/hr',
             'lb/h': 'lb/hr',
+            'lb/s': 'lb/s',
         }
         
-        pint_unit = unit_mapping.get(unit, unit)
-        return Q_(value, pint_unit)
+        pint_unit = unit_mapping.get(str(unit).strip(), unit)
+        return Q_(float(value or 0.0), pint_unit)
     
     def compare_with_kasp(self, kasp_results: Dict, ccp_results: Dict) -> Dict:
         """
@@ -274,28 +291,42 @@ class CCPAdapter:
         Returns:
             Dictionary with comparison metrics
         """
+        kasp_results = kasp_results or {}
+        ccp_results = ccp_results or {}
+
         def percent_diff(kasp_val, ccp_val):
             """Calculate percentage difference"""
-            if kasp_val == 0:
+            try:
+                k_val = float(kasp_val)
+                c_val = float(ccp_val)
+                if abs(k_val) < 1e-9:
+                    return 0.0
+                return ((c_val - k_val) / k_val) * 100.0
+            except (TypeError, ValueError):
                 return 0.0
-            return ((ccp_val - kasp_val) / kasp_val) * 100.0
         
+        raw_kasp_eff = kasp_results.get('actual_poly_efficiency')
+        if raw_kasp_eff is None:
+            raw_kasp_eff = kasp_results.get('poly_eff', 0.0)
+            if float(raw_kasp_eff or 0.0) > 1.0:
+                raw_kasp_eff = float(raw_kasp_eff) / 100.0
+
         comparison = {
             't_out_diff_percent': percent_diff(
-                kasp_results.get('t_out', 0) + 273.15,  # Convert °C to K
-                ccp_results['t_out']
+                float(kasp_results.get('t_out', 0.0) or 0.0) + 273.15,
+                ccp_results.get('t_out', 0.0)
             ),
             'head_diff_percent': percent_diff(
-                kasp_results.get('head_kj_kg', 0),
-                ccp_results['head_kj_kg']
+                kasp_results.get('head_kj_kg', 0.0),
+                ccp_results.get('head_kj_kg', 0.0)
             ),
             'power_diff_percent': percent_diff(
-                kasp_results.get('power_unit_kw', 0),
-                ccp_results['power_kw']
+                kasp_results.get('power_unit_kw', 0.0),
+                ccp_results.get('power_kw', 0.0)
             ),
             'efficiency_diff_percent': percent_diff(
-                kasp_results.get('actual_poly_efficiency', 0),
-                ccp_results['efficiency']
+                raw_kasp_eff,
+                ccp_results.get('efficiency', 0.0)
             ),
         }
         
