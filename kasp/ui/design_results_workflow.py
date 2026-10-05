@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, is_dataclass
 
 
@@ -27,17 +28,23 @@ GRAPH_KEY_BY_LABEL = {
 
 
 def build_consistency_info_html(results):
-    if not results.get("consistency_mode", False):
+    if not results or not results.get("consistency_mode", False):
         return None
 
     converged_icon = "✓" if results.get("consistency_converged", False) else "⚠️"
+    eff_tgt = float(results.get("poly_eff_target", 0.0) or 0.0)
+    eff_conv = float(results.get("poly_eff_converged", 0.0) or 0.0)
+    act_eff = float(results.get("actual_poly_efficiency", 0.0) or 0.0) * 100.0
+    iters = int(results.get("consistency_iterations", 0) or 0)
+    residual = float(results.get("final_residual", 0.0) or 0.0)
+
     info_text = (
         f"<b>Mod:</b> Tutarlı (Self-Consistent) {converged_icon}<br>"
-        f"<b>Hedef Verim:</b> {results['poly_eff_target']:.2f}%<br>"
-        f"<b>Yakınsanan Verim:</b> {results['poly_eff_converged']:.2f}%<br>"
-        f"<b>Hesaplanan Verim:</b> {results['actual_poly_efficiency']*100:.2f}%<br>"
-        f"<b>İterasyon:</b> {results['consistency_iterations']}<br>"
-        f"<b>Final Residual:</b> {results['final_residual']:.4f}%"
+        f"<b>Hedef Verim:</b> {eff_tgt:.2f}%<br>"
+        f"<b>Yakınsanan Verim:</b> {eff_conv:.2f}%<br>"
+        f"<b>Hesaplanan Verim:</b> {act_eff:.2f}%<br>"
+        f"<b>İterasyon:</b> {iters}<br>"
+        f"<b>Final Residual:</b> {residual:.4f}%"
     )
 
     if not results.get("consistency_converged", False):
@@ -106,22 +113,32 @@ def build_fallback_info_html(results):
 
 
 def build_design_summary_text(summary, results):
+    summary = summary or {}
+    results = results or {}
     recommended_turbines = summary.get("recommended_turbines") or []
     recommended_turbine = recommended_turbines[0]["turbine"] if recommended_turbines else "Yok"
     fallback_lines = build_fallback_summary_lines(results)
     method_lines = build_method_convergence_summary_lines(results)
+    proj_name = summary.get("project_name", "İsimsiz Proje")
+    basic = summary.get("basic_parameters", {})
+    cr = float(basic.get("compression_ratio", 0.0) or 0.0)
+    tot_power = float(basic.get("total_power", 0.0) or 0.0)
+    num_u = int(basic.get("num_units", 1) or 1)
 
     if results.get("consistency_mode", False):
         converged_text = "✓ Yakınsadı" if results.get("consistency_converged") else "⚠️ Max iter aşıldı"
+        eff_tgt = float(results.get("poly_eff_target", 0.0) or 0.0)
+        eff_conv = float(results.get("poly_eff_converged", 0.0) or 0.0)
+        iters = int(results.get("consistency_iterations", 0) or 0)
         summary_text = (
             "🔄 Mod: Tutarlı (Self-Consistent)\n"
-            f"Proje: {summary['project_name']}\n"
-            f"Hedef Verim: {results['poly_eff_target']:.1f}% → "
-            f"Yakınsanan: {results['poly_eff_converged']:.1f}% "
-            f"({converged_text}, {results['consistency_iterations']} iter)\n"
-            f"Sıkıştırma Oranı: {summary['basic_parameters']['compression_ratio']:.2f}\n"
-            f"Toplam Güç: {summary['basic_parameters']['total_power']:.0f} kW "
-            f"({summary['basic_parameters']['num_units']} Ünite)\n"
+            f"Proje: {proj_name}\n"
+            f"Hedef Verim: {eff_tgt:.1f}% → "
+            f"Yakınsanan: {eff_conv:.1f}% "
+            f"({converged_text}, {iters} iter)\n"
+            f"Sıkıştırma Oranı: {cr:.2f}\n"
+            f"Toplam Güç: {tot_power:.0f} kW "
+            f"({num_u} Ünite)\n"
             f"Önerilen Türbin: {recommended_turbine}"
         )
         extra_lines = fallback_lines + method_lines
@@ -129,13 +146,15 @@ def build_design_summary_text(summary, results):
             summary_text += "\n" + "\n".join(extra_lines)
         return summary_text
 
+    eff_metrics = summary.get("efficiency_metrics", {})
+    poly_eff_inp = float(eff_metrics.get("poly_efficiency", 0.0) or 0.0) * 100.0
     summary_text = (
         "⚡ Mod: Hızlı\n"
-        f"Proje: {summary['project_name']}\n"
-        f"Sıkıştırma Oranı: {summary['basic_parameters']['compression_ratio']:.2f}\n"
-        f"Politropik Verim (Girdi): {summary['efficiency_metrics']['poly_efficiency']*100:.1f}%\n"
-        f"Toplam Güç İhtiyacı: {summary['basic_parameters']['total_power']:.0f} kW "
-        f"({summary['basic_parameters']['num_units']} Ünite)\n"
+        f"Proje: {proj_name}\n"
+        f"Sıkıştırma Oranı: {cr:.2f}\n"
+        f"Politropik Verim (Girdi): {poly_eff_inp:.1f}%\n"
+        f"Toplam Güç İhtiyacı: {tot_power:.0f} kW "
+        f"({num_u} Ünite)\n"
         f"Önerilen Türbin: {recommended_turbine}"
     )
     extra_lines = fallback_lines + method_lines
@@ -465,8 +484,8 @@ class DesignResultsPresenter:
 
         self.window.thermo_table.setRowCount(len(thermo_props))
 
-        in_props = results["inlet_properties"]
-        out_props = results["outlet_properties"]
+        in_props = results.get("inlet_properties") or {}
+        out_props = results.get("outlet_properties") or {}
 
         for index, (prop, unit, name) in enumerate(zip(thermo_props, units, display_names)):
             val_in = in_props.get(prop, 0)
@@ -491,24 +510,34 @@ class DesignResultsPresenter:
 
         self.window.power_table.setRowCount(4)
         power_data = [
-            ("Gaz Gücü", results["power_gas_per_unit_kw"], results["power_gas_total_kw"]),
-            ("Şaft Gücü", results["power_shaft_per_unit_kw"], results["power_shaft_total_kw"]),
-            ("Motor Gücü (Gerekli)", results["power_unit_kw"], results["power_unit_total_kw"]),
-            ("Mekanik Kayıp", results["mech_loss_per_unit_kw"], results["mech_loss_total_kw"]),
+            ("Gaz Gücü", results.get("power_gas_per_unit_kw", 0.0), results.get("power_gas_total_kw", 0.0)),
+            ("Şaft Gücü", results.get("power_shaft_per_unit_kw", 0.0), results.get("power_shaft_total_kw", 0.0)),
+            ("Motor Gücü (Gerekli)", results.get("power_unit_kw", 0.0), results.get("power_unit_total_kw", 0.0)),
+            ("Mekanik Kayıp", results.get("mech_loss_per_unit_kw", 0.0), results.get("mech_loss_total_kw", 0.0)),
         ]
 
         for index, (name, per_unit, total) in enumerate(power_data):
+            p_u = float(per_unit or 0.0)
+            p_t = float(total or 0.0)
             self.window.power_table.setItem(index, 0, QTableWidgetItem(name))
-            self.window.power_table.setItem(index, 1, QTableWidgetItem(f"{per_unit:.0f} kW"))
-            self.window.power_table.setItem(index, 2, QTableWidgetItem(f"{total:.0f} kW"))
+            self.window.power_table.setItem(index, 1, QTableWidgetItem(f"{p_u:.0f} kW"))
+            self.window.power_table.setItem(index, 2, QTableWidgetItem(f"{p_t:.0f} kW"))
 
         self.window.fuel_table.setRowCount(3)
+        lhv_val = results.get("lhv")
+        hhv_val = results.get("hhv")
+        fuel_tot = results.get("fuel_total_kgh")
+
+        lhv_str = f"{float(lhv_val):.0f} kJ/kg" if (lhv_val is not None and math.isfinite(float(lhv_val or 0.0))) else "-"
+        hhv_str = f"{float(hhv_val):.0f} kJ/kg" if (hhv_val is not None and math.isfinite(float(hhv_val or 0.0))) else "-"
+        fuel_str = f"{float(fuel_tot):.1f} kg/h" if (fuel_tot is not None and math.isfinite(float(fuel_tot or 0.0))) else "-"
+
         self.window.fuel_table.setItem(0, 0, QTableWidgetItem("LHV"))
-        self.window.fuel_table.setItem(0, 1, QTableWidgetItem(f"{results['lhv']:.0f} kJ/kg"))
+        self.window.fuel_table.setItem(0, 1, QTableWidgetItem(lhv_str))
         self.window.fuel_table.setItem(1, 0, QTableWidgetItem("HHV"))
-        self.window.fuel_table.setItem(1, 1, QTableWidgetItem(f"{results['hhv']:.0f} kJ/kg"))
+        self.window.fuel_table.setItem(1, 1, QTableWidgetItem(hhv_str))
         self.window.fuel_table.setItem(2, 0, QTableWidgetItem("Toplam Yakıt Akışı"))
-        self.window.fuel_table.setItem(2, 1, QTableWidgetItem(f"{results['fuel_total_kgh']:.1f} kg/h"))
+        self.window.fuel_table.setItem(2, 1, QTableWidgetItem(fuel_str))
 
         # Fallback Karşılaştırması Tablosunu Doldur
         comparisons = results.get("fallback_comparison", [])

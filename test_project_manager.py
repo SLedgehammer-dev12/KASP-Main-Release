@@ -141,3 +141,37 @@ class TestProjectManagerEdgeCases:
             ok, msg = pm.save_project(filepath, {'project_name': 'Test'}, {})
             assert ok
             assert msg == filepath or msg == str(filepath)
+
+    def test_save_and_load_with_numpy_and_custom_types(self):
+        """NumPy dizileri, skalerleri ve datetime nesnelerinin hatasiz serilestirilip yuklenmesi testi."""
+        import numpy as np
+        import datetime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pm = ProjectManager()
+            filepath = os.path.join(tmpdir, "numpy_test.kasp")
+
+            inputs = {
+                'project_name': 'NumPy Project',
+                'p_in': np.float64(50.0),
+                'num_units': np.int64(2),
+            }
+            results = {
+                'eff': np.float64(0.8523),
+                'matrix': np.array([[1.0, 2.0], [3.0, 4.0]]),
+                'created': datetime.datetime(2026, 10, 4, 12, 0, 0),
+                'active_modes': {'pr', 'srk'},
+            }
+
+            ok, msg = pm.save_project(filepath, inputs, results)
+            assert ok, f"Kaydetme basarisiz oldu: {msg}"
+
+            ok, loaded_inputs, loaded_results = pm.load_project(filepath)
+            assert ok, "Yukleme basarisiz oldu"
+            assert loaded_inputs['project_name'] == 'NumPy Project'
+            assert loaded_inputs['p_in'] == 50.0
+            assert loaded_inputs['num_units'] == 2
+            assert loaded_results['eff'] == pytest.approx(0.8523)
+            assert loaded_results['matrix'] == [[1.0, 2.0], [3.0, 4.0]]
+            assert loaded_results['created'] == "2026-10-04T12:00:00"
+            assert sorted(loaded_results['active_modes']) == ['pr', 'srk']

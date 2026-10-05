@@ -46,8 +46,11 @@ def convert_pressure_delta_to_kpa(value, unit):
 
 
 def build_performance_report_inputs(ui_context, inputs, results, *, design_inputs=None):
+    ui_context = ui_context or {}
+    inputs = inputs or {}
+    results = results or {}
     design_inputs = design_inputs or {}
-    site_corrections = inputs.get("site_correction_inputs", {})
+    site_corrections = inputs.get("site_correction_inputs") or {}
 
     return {
         "unit_name": ui_context.get("unit_name") or "Performans Testi",
@@ -61,9 +64,9 @@ def build_performance_report_inputs(ui_context, inputs, results, *, design_input
         "t_out_unit": ui_context.get("t_out_unit", "degC"),
         "flow": performance_ui_float(ui_context.get("flow"), 0.0),
         "flow_unit": ui_context.get("flow_unit", "kg/s"),
-        "flow_kgs": inputs["flow_kgs"],
-        "p1_pa": inputs["p1_pa"],
-        "p2_pa": inputs["p2_pa"],
+        "flow_kgs": performance_ui_float(inputs.get("flow_kgs"), 0.0),
+        "p1_pa": performance_ui_float(inputs.get("p1_pa"), 0.0),
+        "p2_pa": performance_ui_float(inputs.get("p2_pa"), 0.0),
         "fuel_flow": results.get("fuel_cons_kg_h", 0.0),
         "fuel_flow_unit": "kg/h",
         "ambient_temp": site_corrections.get(
@@ -318,26 +321,42 @@ class PerformanceResultsPresenter:
             if lbl is not None and hasattr(lbl, "setText"):
                 lbl.setText("—")
 
+    @staticmethod
+    def _fmt(results, key, fmt, prefix="", missing="—"):
+        """Sonuc degerini guvenle formatlar; eksik/None/sonlu-olmayan degerde `missing` doner."""
+        raw = results.get(key)
+        if raw is None:
+            return missing
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return missing
+        if value != value or value in (float("inf"), float("-inf")):
+            return missing
+        return f"{prefix}{value:{fmt}}"
+
     def apply(self, results):
-        self.window.perf_res_poly_eff.setText(f"%{results['poly_eff']:.2f}")
-        self.window.perf_res_isen_eff.setText(f"%{results['isen_eff']:.2f}")
-        self.window.perf_res_head.setText(f"{results['poly_head_kj_kg']:.1f}")
-        self.window.perf_res_power_gas.setText(f"{results['gas_power_kw']:.0f}")
+        results = results or {}
+        fmt = self._fmt
+        self.window.perf_res_poly_eff.setText(fmt(results, "poly_eff", ".2f", "%"))
+        self.window.perf_res_isen_eff.setText(fmt(results, "isen_eff", ".2f", "%"))
+        self.window.perf_res_head.setText(fmt(results, "poly_head_kj_kg", ".1f"))
+        self.window.perf_res_power_gas.setText(fmt(results, "gas_power_kw", ".0f"))
         self.window.perf_res_power_shaft.setText(
-            f"Motor: {results['motor_power_kw']:.0f} | Saft: {results['shaft_power_kw']:.0f}"
+            f"Motor: {fmt(results, 'motor_power_kw', '.0f')} | Saft: {fmt(results, 'shaft_power_kw', '.0f')}"
         )
         if hasattr(self.window, "perf_res_corrected"):
             self.window.perf_res_corrected.setText(
-                f"Guc: {results.get('corrected_power_kw', 0.0):.0f} kW | "
-                f"Isi Orani: {results.get('corrected_heat_rate', 0.0):.0f} kJ/kWh"
+                f"Guc: {fmt(results, 'corrected_power_kw', '.0f')} kW | "
+                f"Isi Orani: {fmt(results, 'corrected_heat_rate', '.0f')} kJ/kWh"
             )
 
         if self.window.radio_turb_eff.isChecked():
             self.window.perf_res_fuel_lbl.setText("Hesaplanan Yakit [kg/h]:")
-            self.window.perf_res_fuel_or_eff.setText(f"{results['fuel_cons_kg_h']:.1f}")
+            self.window.perf_res_fuel_or_eff.setText(fmt(results, "fuel_cons_kg_h", ".1f"))
         else:
             self.window.perf_res_fuel_lbl.setText("Hesaplanan Turbin Verimi:")
-            self.window.perf_res_fuel_or_eff.setText(f"%{results['turb_eff']:.1f}")
+            self.window.perf_res_fuel_or_eff.setText(fmt(results, "turb_eff", ".1f", "%"))
 
 
 class PerformanceEvaluationController:
@@ -425,7 +444,7 @@ class PerformanceEvaluationController:
             if inputs is None:
                 return
 
-            standard = inputs["site_correction_inputs"].get("standard", "ASME PTC 10")
+            standard = (inputs.get("site_correction_inputs") or {}).get("standard", "ASME PTC 10")
             self.window.append_log(f"[INFO] Performans degerlendirmesi baslatildi ({standard}).")
             # Hesabi UI thread'i disinda calistir (P3-20)
             self._start_performance_worker(inputs, flow_unit)

@@ -107,3 +107,70 @@ def test_headless_canvas_factory_and_wrap():
     assert "demo" in wrapped
     assert isinstance(wrapped["demo"], graphs.MplCanvas)
 
+
+def test_graph_generation_without_p_out_unit():
+    """Verify diagrams render successfully even when p_out_unit is omitted from inputs."""
+    pytest.importorskip("PyQt5", reason="PyQt5 required")
+    from PyQt5.QtWidgets import QApplication
+    _app = QApplication.instance() or QApplication([])
+
+    from kasp.core.thermo import ThermoEngine
+    from kasp.utils.graphs import GraphGenerator
+
+    engine = ThermoEngine()
+    gen = GraphGenerator(engine)
+    inputs = {
+        "p_in": 2.0,
+        "p_in_unit": "bar",
+        "p_out": 6.0,
+        # p_out_unit intentionally omitted
+        "t_in": 25.0,
+        "t_in_unit": "°C",
+        "poly_eff": 82.0,
+    }
+    results = {
+        "t_out": 95.0,
+        "head_kj_kg": 150.0,
+    }
+    composition = {"methane": 1.0}
+    eos = "pr"
+
+    ts_canvas = gen.create_ts_diagram(inputs, results, composition, eos)
+    assert ts_canvas is not None
+
+    pv_canvas = gen.create_pv_diagram(inputs, results, composition, eos)
+    assert pv_canvas is not None
+
+    hs_canvas = gen.create_hs_mollier_diagram(inputs, results, composition, eos)
+    assert hs_canvas is not None
+
+    kz_canvas = gen.create_kz_pressure_path(inputs, composition, eos)
+    assert kz_canvas is not None
+
+
+def test_unit_system_alias_and_case_tolerance():
+    """Verify UnitSystem gracefully converts industrial aliases and case variations."""
+    from kasp.core.units import UnitSystem
+
+    # Pressure conversions
+    assert UnitSystem.convert_pressure(200.0, "kpa", "bar") == pytest.approx(2.0, rel=1e-3)
+    assert UnitSystem.convert_pressure(0.2, "mpa", "bar") == pytest.approx(2.0, rel=1e-3)
+    assert UnitSystem.convert_pressure(2.0, "bar ", "bar") == pytest.approx(2.0, rel=1e-3)
+    assert UnitSystem.convert_pressure(2.0, "barg", "Pa") == pytest.approx(301325.0, rel=1e-3)
+    assert UnitSystem.convert_pressure(2.0, "bar_g", "Pa") == pytest.approx(301325.0, rel=1e-3)
+    assert UnitSystem.convert_pressure(2.0, "kg/cm2", "Pa") == pytest.approx(196133.0, rel=1e-3)
+
+    # Temperature conversions
+    assert UnitSystem.convert_temperature(25.0, "degC", "K") == pytest.approx(298.15, rel=1e-3)
+    assert UnitSystem.convert_temperature(25.0, "C", "K") == pytest.approx(298.15, rel=1e-3)
+    assert UnitSystem.convert_temperature(25.0, " celsius ", "°C") == pytest.approx(25.0, rel=1e-3)
+    assert UnitSystem.convert_temperature(77.0, "degF", "K") == pytest.approx(298.15, rel=1e-3)
+    assert UnitSystem.convert_temperature(77.0, "F", "K") == pytest.approx(298.15, rel=1e-3)
+    assert UnitSystem.convert_temperature(300.0, "k", "K") == pytest.approx(300.0, rel=1e-3)
+
+    # Validation methods
+    assert UnitSystem.validate_pressure_value(2.0, "barg") is True
+    assert UnitSystem.validate_temperature_value(25.0, "degC") is True
+
+
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import ssl
 import sys
@@ -220,61 +221,65 @@ class GitHubReleaseClient:
         elif destination_path.suffix == "":
             destination_path = destination_path / sanitize_asset_filename(asset.name)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
+        # Doğrulanmamış veri asla nihai adla diskte bulunmaz: önce .part dosyasına yaz,
+        # SHA256 doğrulandıktan sonra atomik olarak yeniden adlandır.
+        part_path = destination_path.with_name(destination_path.name + ".part")
 
         request = urllib.request.Request(asset.download_url, headers=self.headers)
         hasher = hashlib.sha256()
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout, context=_get_ssl_context()) as response:
-                total_size = int(response.headers.get("Content-Length") or asset.size or 0)
-                downloaded = 0
-                with destination_path.open("wb") as output_file:
-                    while True:
-                        if cancel_check is not None and cancel_check():
-                            raise DownloadCancelled("İndirme kullanıcı tarafından iptal edildi.")
-                        chunk = response.read(1024 * 128)
-                        if not chunk:
-                            break
-                        output_file.write(chunk)
-                        hasher.update(chunk)
-                        downloaded += len(chunk)
-                        if progress_callback is not None:
-                            progress_callback(downloaded, total_size)
-        except DownloadCancelled:
-            # Kismi dosyayi temizle (P4-22)
-            destination_path.unlink(missing_ok=True)
-            raise
-        except urllib.error.URLError as exc:
-            # Kismi dosyayi temizle (P4-22)
-            destination_path.unlink(missing_ok=True)
-            raise RuntimeError(f"Guncelleme dosyasi indirilemedi: {exc}") from exc
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout, context=_get_ssl_context()) as response:
+                    total_size = int(response.headers.get("Content-Length") or asset.size or 0)
+                    downloaded = 0
+                    with part_path.open("wb") as output_file:
+                        while True:
+                            if cancel_check is not None and cancel_check():
+                                raise DownloadCancelled("İndirme kullanıcı tarafından iptal edildi.")
+                            chunk = response.read(1024 * 128)
+                            if not chunk:
+                                break
+                            output_file.write(chunk)
+                            hasher.update(chunk)
+                            downloaded += len(chunk)
+                            if progress_callback is not None:
+                                progress_callback(downloaded, total_size)
+            except urllib.error.URLError as exc:
+                raise RuntimeError(f"Guncelleme dosyasi indirilemedi: {exc}") from exc
 
-        # SHA256 doğrulama (akışlı hash, fail-closed)
-        if asset.sha256:
+            # SHA256 doğrulama (akışlı hash, fail-closed)
+            if not asset.sha256:
+                raise RuntimeError(
+                    f"İndirilen dosya için SHA256 özeti bulunamadı (asset.digest eksik). "
+                    f"Güvenlik nedeniyle dosya silindi. Lütfen release notlarında SHA256 sağlayın."
+                )
             computed = hasher.hexdigest()
             if computed.lower() != asset.sha256.lower():
-                destination_path.unlink(missing_ok=True)
                 raise RuntimeError(
                     f"SHA256 doğrulama başarısız: indirilen dosya bozuk veya değiştirilmiş. "
                     f"Beklenen: {asset.sha256}, Hesaplanan: {computed}"
                 )
-            logger.info("SHA256 doğrulama başarılı: %s", asset.name)
-        else:
-            # SHA256 yoksa fail-closed: indirme engellenir
-            destination_path.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"İndirilen dosya için SHA256 özeti bulunamadı (asset.digest eksik). "
-                f"Güvenlik nedeniyle dosya silindi. Lütfen release notlarında SHA256 sağlayın."
-            )
+            os.replace(part_path, destination_path)
+        except BaseException:
+            # İptal, ağ kopması (TimeoutError, ConnectionResetError, IncompleteRead),
+            # disk hatası veya doğrulama hatası: kısmi dosyayı her durumda temizle (P4-22)
+            part_path.unlink(missing_ok=True)
+            raise
 
+        logger.info("SHA256 doğrulama başarılı: %s", asset.name)
         return destination_path
 
     @staticmethod
     def _parse_release(item: dict) -> ReleaseInfo:
-        body = item.get("body") or ""
-        raw_assets = [a for a in item.get("assets", []) if a.get("browser_download_url")]
+        item_dict = dict(item or {})
+        body = item_dict.get("body") or ""
+        raw_assets = [
+            a for a in (item_dict.get("assets") or [])
+            if isinstance(a, dict) and a.get("browser_download_url")
+        ]
         
         def _extract_sha256(raw_asset):
-            digest = raw_asset.get("digest", "")
+            digest = (raw_asset.get("digest") or "").strip()
             if digest.startswith("sha256:"):
                 return digest.replace("sha256:", "")
             name = raw_asset.get("name") or ""
@@ -306,13 +311,13 @@ class GitHubReleaseClient:
             for asset in raw_assets
         )
         return ReleaseInfo(
-            tag_name=item.get("tag_name") or "",
-            name=item.get("name") or item.get("tag_name") or "",
+            tag_name=item_dict.get("tag_name") or "",
+            name=item_dict.get("name") or item_dict.get("tag_name") or "",
             body=body,
-            html_url=item.get("html_url") or "",
-            published_at=item.get("published_at") or "",
-            prerelease=bool(item.get("prerelease")),
-            draft=bool(item.get("draft")),
+            html_url=item_dict.get("html_url") or "",
+            published_at=item_dict.get("published_at") or "",
+            prerelease=bool(item_dict.get("prerelease")),
+            draft=bool(item_dict.get("draft")),
             assets=assets,
         )
 

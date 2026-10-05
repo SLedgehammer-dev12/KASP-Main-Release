@@ -107,3 +107,62 @@ def test_describe_report_unit_supports_object_units():
     assert details["name"] == "Object Turbine"
     assert details["site_heat_rate"] == 9800.0
     assert details["recommendation_level"] == "Recommended"
+
+
+def test_build_stage_breakdown_data_formatting():
+    """Verify that _build_stage_breakdown_data properly formats stage rows, conversions, and liquid knockout."""
+    stages = [
+        {
+            "stage": 1,
+            "p_in": 1.0e6,      # 10 bar
+            "p_out": 2.5e6,     # 25 bar
+            "t_in": 293.15,     # 20 °C
+            "t_out": 373.15,    # 100 °C
+            "head_kj_kg": 120.5,
+            "power_gas_kw": 450.0,
+            "z_avg": 0.952,
+            "liquid_knockout_kg_h": 15.34,
+        },
+        {
+            "stage": 2,
+            "p_in": 2.45e6,     # 24.5 bar
+            "p_out": 6.0e6,     # 60 bar
+            "t_in": 313.15,     # 40 °C
+            "t_out": 395.15,    # 122 °C
+            "head_kj_kg": 135.2,
+            "power_gas_kw": 510.0,
+            "z_avg": 0.912,
+            "liquid_knockout_kg_h": 0.0,
+        },
+    ]
+
+    table_data = ReportGenerator._build_stage_breakdown_data(stages)
+    assert len(table_data) == 3  # Header + 2 stages
+
+    # Check stage 1
+    r1 = table_data[1]
+    assert r1[0] == "1"
+    assert r1[1] == "10.00"
+    assert r1[2] == "25.00"
+    assert r1[3] == "2.50"
+    assert r1[4] == "20.0"
+    assert r1[5] == "100.0"
+    assert r1[6] == "120.5"
+    assert r1[7] == "450"
+    assert r1[8] == "0.952"
+    assert r1[9] == "15.34"
+
+    # Check stage 2 (zero knockout displays as "-")
+    r2 = table_data[2]
+    assert r2[0] == "2"
+    assert r2[1] == "24.50"
+    assert r2[2] == "60.00"
+    assert r2[9] == "-"
+
+
+def test_build_stage_breakdown_data_empty():
+    """Verify that an empty stages list yields only the header row."""
+    table_data = ReportGenerator._build_stage_breakdown_data([])
+    assert len(table_data) == 1
+    assert len(table_data[0]) == 10
+

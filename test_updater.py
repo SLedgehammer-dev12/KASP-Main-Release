@@ -284,3 +284,122 @@ def test_build_release_notes_html_contains_all_visible_releases():
     assert "KASP v1.1" in html
     assert "Yeni surum" in html
     assert "Kurulu surum" in html
+
+
+# ─────────────────────────────────────────────────────────────────
+# İterasyon 19: Kısmi/doğrulanmamış indirme asla diskte kalmamalı
+# ─────────────────────────────────────────────────────────────────
+class _DroppingResponse(_FakeResponse):
+    """İlk parçayı verip ardından ağ kopması simüle eden yanıt."""
+
+    def __init__(self, first_chunk: bytes, exc: BaseException):
+        super().__init__(first_chunk, {"Content-Length": str(len(first_chunk) * 4)})
+        self._exc = exc
+        self._sent = False
+
+    def read(self, size: int = -1) -> bytes:
+        if not self._sent:
+            self._sent = True
+            return super().read(size)
+        raise self._exc
+
+
+def _asset(sha: str | None):
+    from kasp.utils.updater import ReleaseAsset
+
+    return ReleaseAsset(
+        name="KASP v9.9.9.dmg",
+        download_url="https://example.invalid/KASP.dmg",
+        size=0,
+        content_type="application/octet-stream",
+        sha256=sha,
+    )
+
+
+import hashlib as _hashlib
+import http.client as _http_client
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize(
+    "exc",
+    [
+        TimeoutError("read timed out"),
+        ConnectionResetError("connection reset"),
+        _http_client.IncompleteRead(b"partial"),
+    ],
+)
+def test_download_interrupted_mid_stream_leaves_no_files(monkeypatch, tmp_path, exc):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout=0, **_kw: _DroppingResponse(b"x" * 500, exc),
+    )
+    with _pytest.raises(type(exc)):
+        GitHubReleaseClient().download_asset(_asset("0" * 64), tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_sha_mismatch_leaves_no_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout=0, **_kw: _FakeResponse(b"tampered payload"),
+    )
+    with _pytest.raises(RuntimeError, match="SHA256 doğrulama başarısız"):
+        GitHubReleaseClient().download_asset(_asset("0" * 64), tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_missing_sha_leaves_no_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout=0, **_kw: _FakeResponse(b"payload"),
+    )
+    with _pytest.raises(RuntimeError, match="SHA256 özeti bulunamadı"):
+        GitHubReleaseClient().download_asset(_asset(None), tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_success_leaves_only_final_file(monkeypatch, tmp_path):
+    payload = b"verified installer bytes"
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, timeout=0, **_kw: _FakeResponse(payload),
+    )
+    path = GitHubReleaseClient().download_asset(
+        _asset(_hashlib.sha256(payload).hexdigest()), tmp_path
+    )
+    assert [p.name for p in tmp_path.iterdir()] == ["KASP v9.9.9.dmg"]
+    assert path.read_bytes() == payload
+
+
+# ─────────────────────────────────────────────────────────────────
+# İterasyon 20: _parse_release None güvenliği
+# ─────────────────────────────────────────────────────────────────
+def test_parse_release_handles_none_items_assets_and_digest():
+    """_parse_release metodu None nesne, None assets listesi ve None digest alanında çökmemeli."""
+    # 1. item = None
+    r1 = GitHubReleaseClient._parse_release(None)
+    assert r1.tag_name == ""
+    assert r1.assets == ()
+
+    # 2. assets = None
+    r2 = GitHubReleaseClient._parse_release({"tag_name": "v1.0.0", "assets": None})
+    assert r2.tag_name == "v1.0.0"
+    assert r2.assets == ()
+
+    # 3. asset.digest = None
+    r3 = GitHubReleaseClient._parse_release({
+        "tag_name": "v2.0.0",
+        "assets": [
+            {
+                "name": "KASP.dmg",
+                "browser_download_url": "https://example.invalid/KASP.dmg",
+                "size": 1024,
+                "digest": None,
+            }
+        ],
+    })
+    assert len(r3.assets) == 1
+    assert r3.assets[0].name == "KASP.dmg"
+    assert r3.assets[0].sha256 is None

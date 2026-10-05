@@ -107,6 +107,37 @@ class GraphGenerator:
         self.engine = engine
         self.logger = logging.getLogger(self.__class__.__name__)
 
+    @staticmethod
+    def _extract_process_conditions(inputs, results=None):
+        """inputs ve results sözlüklerinden basınç ve sıcaklık parametrelerini güvenle çıkarır."""
+        inputs = inputs or {}
+        p_in_unit = inputs.get("p_in_unit", inputs.get("p_unit", "bar"))
+        p_out_unit = inputs.get("p_out_unit", inputs.get("p_unit", p_in_unit))
+        t_in_unit = inputs.get("t_in_unit", inputs.get("t_unit", "°C"))
+
+        p_in_val = float(inputs.get("p_in", 1.01325))
+        p_out_val = float(inputs.get("p_out", max(p_in_val * 1.5, 2.0)))
+        t_in_val = float(inputs.get("t_in", 15.0))
+
+        t_out_val = t_in_val + 30.0
+        if results and isinstance(results, dict):
+            raw_t_out = results.get("t_out")
+            if raw_t_out is not None:
+                try:
+                    t_out_val = float(raw_t_out)
+                except (ValueError, TypeError):
+                    pass
+
+        return {
+            "p_in_val": p_in_val,
+            "p_in_unit": p_in_unit,
+            "p_out_val": p_out_val,
+            "p_out_unit": p_out_unit,
+            "t_in_val": t_in_val,
+            "t_in_unit": t_in_unit,
+            "t_out_c": t_out_val,
+        }
+
     def _apply_axis_theme(self, ax, ax2=None):
         if not MATPLOTLIB_LOADED:
             return
@@ -244,10 +275,11 @@ class GraphGenerator:
             # Gaz objesi oluştur
             gas_obj = self.engine._create_gas_object(gas_composition, eos_method)
             
-            # Basınç değerleri
-            p_in_pa = self.engine.convert_pressure_to_pa(float(inputs['p_in']), inputs['p_in_unit'])
-            p_out_pa = self.engine.convert_pressure_to_pa(float(inputs['p_out']), inputs['p_out_unit'])
-            t_in_k = self.engine.convert_temperature_to_k(float(inputs['t_in']), inputs['t_in_unit'])
+            # Basınç ve sıcaklık değerleri
+            cond = self._extract_process_conditions(inputs, results)
+            p_in_pa = self.engine.convert_pressure_to_pa(cond["p_in_val"], cond["p_in_unit"])
+            p_out_pa = self.engine.convert_pressure_to_pa(cond["p_out_val"], cond["p_out_unit"])
+            t_in_k = self.engine.convert_temperature_to_k(cond["t_in_val"], cond["t_in_unit"])
             
             # Entropi değerleri
             props_in = self.engine.thermo_solver.get_properties(p_in_pa, t_in_k, gas_obj, eos_method)
@@ -257,7 +289,7 @@ class GraphGenerator:
             t_out_isen_k = CompressorAerodynamics.calculate_isentropic_outlet_temp(
                 props_in, p_out_pa, self.engine.thermo_solver, gas_obj, eos_method
             )
-            t_out_actual_k = results['t_out'] + 273.15 # Gerçek çıkış sıcaklığı (K)
+            t_out_actual_k = cond["t_out_c"] + 273.15 # Gerçek çıkış sıcaklığı (K)
             
             props_out_isen = self.engine.thermo_solver.get_properties(p_out_pa, t_out_isen_k, gas_obj, eos_method)
             props_out_actual = self.engine.thermo_solver.get_properties(p_out_pa, t_out_actual_k, gas_obj, eos_method)
@@ -347,7 +379,6 @@ class GraphGenerator:
             
         except Exception as e:
             self.logger.exception(f"T-s diyagramı oluşturma hatası: {e}")
-            import sys; print(f"GRAPH ERROR (ts): {e}", file=sys.stderr)
             return None
 
     def create_pv_diagram(self, inputs, results, gas_composition, eos_method):
@@ -362,11 +393,12 @@ class GraphGenerator:
             
             gas_obj = self.engine._create_gas_object(gas_composition, eos_method)
             
-            # Basınç değerleri
-            p_in_pa = self.engine.convert_pressure_to_pa(float(inputs['p_in']), inputs['p_in_unit'])
-            p_out_pa = self.engine.convert_pressure_to_pa(float(inputs['p_out']), inputs['p_out_unit'])
-            t_in_k = self.engine.convert_temperature_to_k(float(inputs['t_in']), inputs['t_in_unit'])
-            t_out_k = self.engine.convert_temperature_to_k(results['t_out'], '°C')
+            # Basınç ve sıcaklık değerleri (güvenli çıkarım)
+            cond = self._extract_process_conditions(inputs, results)
+            p_in_pa = self.engine.convert_pressure_to_pa(cond["p_in_val"], cond["p_in_unit"])
+            p_out_pa = self.engine.convert_pressure_to_pa(cond["p_out_val"], cond["p_out_unit"])
+            t_in_k = self.engine.convert_temperature_to_k(cond["t_in_val"], cond["t_in_unit"])
+            t_out_k = cond["t_out_c"] + 273.15
             
             # Hacim değerleri
             props_in = self.engine.thermo_solver.get_properties(p_in_pa, t_in_k, gas_obj, eos_method)
@@ -442,7 +474,7 @@ class GraphGenerator:
             ax.legend(loc='best')
             
             # İş bilgisi
-            work_poly = results['head_kj_kg']
+            work_poly = float(results.get('head_kj_kg', 0.0))
             text_str = f'Politropik İş: {work_poly:.1f} kJ/kg'
             ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=10,
                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
@@ -452,7 +484,6 @@ class GraphGenerator:
             
         except Exception as e:
             self.logger.exception(f"P-v diyagramı oluşturma hatası: {e}")
-            import sys; print(f"GRAPH ERROR (pv): {e}", file=sys.stderr)
             return None
 
     def create_performance_chart(self, selected_units):
@@ -642,10 +673,11 @@ class GraphGenerator:
             ax = canvas.fig.add_subplot(111)
 
             gas_obj = self.engine._create_gas_object(composition, eos_method)
-            p_in_pa = self.engine.convert_pressure_to_pa(float(inputs["p_in"]), inputs["p_in_unit"])
-            p_out_pa = self.engine.convert_pressure_to_pa(float(inputs["p_out"]), inputs["p_out_unit"])
-            t_in_k = self.engine.convert_temperature_to_k(float(inputs["t_in"]), inputs["t_in_unit"])
-            t_out_k = results["t_out"] + 273.15
+            cond = self._extract_process_conditions(inputs, results)
+            p_in_pa = self.engine.convert_pressure_to_pa(cond["p_in_val"], cond["p_in_unit"])
+            p_out_pa = self.engine.convert_pressure_to_pa(cond["p_out_val"], cond["p_out_unit"])
+            t_in_k = self.engine.convert_temperature_to_k(cond["t_in_val"], cond["t_in_unit"])
+            t_out_k = cond["t_out_c"] + 273.15
 
             state_in = self.engine.thermo_solver.get_properties(p_in_pa, t_in_k, gas_obj, eos_method)
             h1 = state_in.H / 1000.0
@@ -783,9 +815,10 @@ class GraphGenerator:
             ax2 = ax1.twinx()
 
             gas_obj = self.engine._create_gas_object(composition, eos_method)
-            p_in_pa = self.engine.convert_pressure_to_pa(float(inputs["p_in"]), inputs["p_in_unit"])
-            p_out_pa = self.engine.convert_pressure_to_pa(float(inputs["p_out"]), inputs["p_out_unit"])
-            t_in_k = self.engine.convert_temperature_to_k(float(inputs["t_in"]), inputs["t_in_unit"])
+            cond = self._extract_process_conditions(inputs)
+            p_in_pa = self.engine.convert_pressure_to_pa(cond["p_in_val"], cond["p_in_unit"])
+            p_out_pa = self.engine.convert_pressure_to_pa(cond["p_out_val"], cond["p_out_unit"])
+            t_in_k = self.engine.convert_temperature_to_k(cond["t_in_val"], cond["t_in_unit"])
 
             state_in = self.engine.thermo_solver.get_properties(p_in_pa, t_in_k, gas_obj, eos_method)
             poly_eff = min(float(inputs.get("poly_eff", 90.0)) / 100.0, 0.99)

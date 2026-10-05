@@ -11,6 +11,19 @@ import tempfile
 from pathlib import Path
 
 
+def _json_default_serializer(obj):
+    """Serialize numpy types, dates, sets, and arbitrary objects to JSON-friendly primitives."""
+    if hasattr(obj, "tolist"):
+        return obj.tolist()
+    if hasattr(obj, "item"):
+        return obj.item()
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
+    return str(obj)
+
+
 class ProjectManager:
     """Proje dosyalarını kaydetme ve yükleme yöneticisi"""
     
@@ -102,7 +115,7 @@ class ProjectManager:
                     delete=False,
                 ) as f:
                     tmp_path = f.name
-                    json.dump(project_data, f, indent=2, ensure_ascii=False)
+                    json.dump(project_data, f, indent=2, ensure_ascii=False, default=_json_default_serializer)
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(tmp_path, str(filepath))

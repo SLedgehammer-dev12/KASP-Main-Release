@@ -355,3 +355,170 @@ def test_main_window_design_input_binder_is_used(app, monkeypatch):
     assert applied == {"project_name": "Applied"}
     assert ("apply", {"project_name": "Delegated"}) in calls
     assert any(call[0] == "update_total_label" for call in calls)
+
+
+def test_main_window_close_event_with_running_thread(app, monkeypatch):
+    """Verify closeEvent asks confirmation and ignores event if rejected, or cleans up threads if confirmed."""
+    from PyQt5.QtGui import QCloseEvent
+    from PyQt5.QtWidgets import QMessageBox
+
+    window = KaspMainWindow()
+    cleanup_calls = []
+
+    monkeypatch.setattr(window, "_cleanup_worker_thread", lambda: cleanup_calls.append("worker"))
+    monkeypatch.setattr(window, "_cleanup_shootout_thread", lambda: cleanup_calls.append("shootout"))
+
+    class FakeRunningThread:
+        def isRunning(self): return True
+        def quit(self): pass
+        def wait(self, *args): pass
+
+    window.worker_thread = FakeRunningThread()
+
+    # Case 1: User says NO to exit -> event ignored, no cleanup
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.No)
+    event = QCloseEvent()
+    window.closeEvent(event)
+    assert not event.isAccepted()
+    assert cleanup_calls == []
+
+    # Case 2: User says YES to exit -> threads cleaned up, event accepted
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    event2 = QCloseEvent()
+    window.closeEvent(event2)
+    assert "worker" in cleanup_calls
+    assert "shootout" in cleanup_calls
+    assert event2.isAccepted()
+
+
+def test_main_window_shootout_concurrent_guard(app, monkeypatch):
+    """Verify _run_eos_shootout and _run_method_shootout reject concurrent execution when already running."""
+    from PyQt5.QtWidgets import QMessageBox
+
+    window = KaspMainWindow()
+    window.last_design_inputs = {"p_in": 1.0}
+
+    class FakeRunningThread:
+        def isRunning(self): return True
+
+    window._shootout_thread = FakeRunningThread()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[1]))
+
+    window._run_eos_shootout()
+    assert len(warnings) == 1
+
+    window._run_method_shootout()
+    assert len(warnings) == 2
+
+
+def test_populate_detailed_tables_with_minimal_results(app):
+    """Verify populate_detailed_tables does not crash when results dictionary has missing keys."""
+    window = KaspMainWindow()
+    try:
+        presenter = window.design_results_presenter
+        # Minimal results dict with missing fuel, power, and thermo properties
+        minimal_results = {
+            "power_gas_per_unit_kw": 500.0,
+            # 'inlet_properties', 'outlet_properties', 'lhv', 'hhv', 'fuel_total_kgh' omitted
+        }
+        presenter.populate_detailed_tables(minimal_results)
+
+        # Check that tables were populated safely
+        assert window.power_table.rowCount() == 4
+        assert window.fuel_table.rowCount() == 3
+        assert window.fuel_table.item(0, 1).text() == "-"
+        assert window.fuel_table.item(1, 1).text() == "-"
+        assert window.fuel_table.item(2, 1).text() == "-"
+        assert window.thermo_table.rowCount() == 10
+    finally:
+        window.close()
+
+
+def test_build_design_summary_text_with_empty_dictionaries():
+    """Verify build_design_summary_text and build_consistency_info_html handle empty or partial dicts safely."""
+    from kasp.ui.design_results_workflow import build_consistency_info_html, build_design_summary_text
+
+    # None and empty tests
+    assert build_consistency_info_html(None) is None
+    assert build_consistency_info_html({}) is None
+
+    # Partial consistency results
+    partial_consistency = {
+        "consistency_mode": True,
+        "consistency_converged": True,
+        # missing poly_eff_target, poly_eff_converged, actual_poly_efficiency, etc.
+    }
+    html = build_consistency_info_html(partial_consistency)
+    assert html is not None
+    assert "Tutarlı (Self-Consistent)" in html
+
+    summary_text = build_design_summary_text({}, partial_consistency)
+    assert "Tutarlı (Self-Consistent)" in summary_text
+    assert "İsimsiz Proje" in summary_text
+
+
+
+class _FakeLabel:
+    def __init__(self):
+        self.text = None
+
+    def setText(self, value):
+        self.text = value
+
+
+class _FakeRadio:
+    def __init__(self, checked):
+        self._checked = checked
+
+    def isChecked(self):
+        return self._checked
+
+
+def _make_fake_perf_window(turb_eff_checked):
+    from types import SimpleNamespace
+
+    names = (
+        "perf_res_poly_eff", "perf_res_isen_eff", "perf_res_head", "perf_res_power_gas",
+        "perf_res_power_shaft", "perf_res_corrected", "perf_res_fuel_lbl", "perf_res_fuel_or_eff",
+    )
+    window = SimpleNamespace(**{name: _FakeLabel() for name in names})
+    window.radio_turb_eff = _FakeRadio(turb_eff_checked)
+    return window
+
+
+@pytest.mark.parametrize("turb_eff_checked", [True, False])
+def test_performance_results_presenter_handles_partial_results(turb_eff_checked):
+    """Eksik / None / NaN sonuclarda presenter cokmemeli, '—' gostermeli."""
+    from kasp.ui.performance_workflow import PerformanceResultsPresenter
+
+    window = _make_fake_perf_window(turb_eff_checked)
+    presenter = PerformanceResultsPresenter(window)
+    presenter.apply({"poly_eff": 81.234, "isen_eff": None, "gas_power_kw": float("nan")})
+
+    assert window.perf_res_poly_eff.text == "%81.23"
+    assert window.perf_res_isen_eff.text == "—"
+    assert window.perf_res_head.text == "—"
+    assert window.perf_res_power_gas.text == "—"
+    assert window.perf_res_power_shaft.text == "Motor: — | Saft: —"
+    assert window.perf_res_fuel_or_eff.text == "—"
+
+    # None sonuc sozlugu da guvenli olmali
+    presenter.apply(None)
+    assert window.perf_res_poly_eff.text == "—"
+
+
+def test_build_performance_report_inputs_with_missing_keys():
+    """flow_kgs / p1_pa / p2_pa / site_correction_inputs eksikken KeyError olmamali."""
+    from kasp.ui.performance_workflow import build_performance_report_inputs
+
+    report = build_performance_report_inputs({}, {}, {})
+    assert report["flow_kgs"] == 0.0
+    assert report["p1_pa"] == 0.0
+    assert report["p2_pa"] == 0.0
+    assert report["site_correction_inputs"] == {}
+    assert report["unit_name"] == "Performans Testi"
+
+    report2 = build_performance_report_inputs(None, {"flow_kgs": "12.5", "site_correction_inputs": None}, None)
+    assert report2["flow_kgs"] == 12.5
+    assert report2["site_correction_inputs"] == {}

@@ -213,17 +213,20 @@ class CalculationWorker(QObject):
         # --- Unit Selection Phase (70-95%) ---
         # Pass un-margined driver/motor power so API 617 4% margin is not double-counted
         # on top of TurbineSelector's own 5-20% oversize margin
-        required_power_per_unit_kw = results_raw.get(
-            'power_motor_per_unit_kw',
-            results_raw['power_unit_kw'] / 1.04,
-        )
+        raw_motor_power = results_raw.get('power_motor_per_unit_kw')
+        if raw_motor_power is not None:
+            required_power_per_unit_kw = float(raw_motor_power)
+        else:
+            raw_unit_power = results_raw.get('power_unit_kw', 0.0)
+            required_power_per_unit_kw = (float(raw_unit_power) / 1.04) if raw_unit_power else 0.0
+
         site_conditions = {
-            'ambient_temp':     self.inputs['ambient_temp'],
-            'altitude':         self.inputs['altitude'],
+            'ambient_temp':     float(self.inputs.get('ambient_temp', 15.0)),
+            'altitude':         float(self.inputs.get('altitude', 0.0)),
             # V4.3 Fix 4: Birim kPa — 1013 mbar değil, 101.325 kPa!
             # UI'dan kPa olarak geldiğinden emin olun.
-            'ambient_pressure': self.inputs.get('ambient_pressure', 101.325),  # kPa
-            'humidity':         self.inputs.get('humidity', 60),
+            'ambient_pressure': float(self.inputs.get('ambient_pressure', 101.325)),  # kPa
+            'humidity':         float(self.inputs.get('humidity', 60.0)),
             # Surge/stonewall marglari icin gercek isletme debisi (kg/s, unite basina) (P1-7)
             'flow':             results_raw.get('mass_flow_per_unit_kgs'),
         }

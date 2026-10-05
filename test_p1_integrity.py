@@ -1,5 +1,4 @@
-"""P1 regression tests: input & selection integrity fixes."""
-
+import os
 import pytest
 
 from kasp.core.exceptions import UnitConversionError
@@ -123,3 +122,117 @@ def test_compressor_dialog_converts_kg_h_to_kg_s():
     data = dialog.get_compressor_data()
     assert data["min_flow_kgs"] == pytest.approx(1.0)
     assert data["max_flow_kgs"] == pytest.approx(2.0)
+
+
+def test_turbine_selection_zero_and_negative_power_safety():
+    """Verify that select_units handles zero, negative, or non-finite power safely without ZeroDivisionError."""
+    turbines = [{"iso_power_kw": 1000.0, "iso_heat_rate_kj_kwh": 9000.0, "type": "Industrial"}]
+    
+    # 0.0 power must not crash
+    recs_zero = TurbineSelector.select_units(0.0, {}, turbines)
+    assert recs_zero == []
+
+    # Negative power must not crash
+    recs_neg = TurbineSelector.select_units(-500.0, {}, turbines)
+    assert recs_neg == []
+
+    # NaN / Inf power must not crash
+    recs_nan = TurbineSelector.select_units(float("nan"), {}, turbines)
+    assert recs_nan == []
+
+
+def test_turbine_correction_extreme_temperature_and_pressure_safety():
+    """Verify that _correct_performance never divides by zero at absolute zero or zero ambient pressure."""
+    # Absolute zero temperature (-273.15 °C)
+    power, hr, source = TurbineSelector._correct_performance(1000.0, 9000.0, -273.15, 101.325, 0, {})
+    assert power >= 0.0
+    assert hr >= 0.0
+
+    # Zero ambient pressure
+    power_p0, hr_p0, _ = TurbineSelector._correct_performance(1000.0, 9000.0, 15.0, 0.0, 0, {})
+    assert power_p0 >= 0.0
+    assert hr_p0 >= 0.0
+
+
+def test_calculation_worker_unit_selection_resilience():
+    """Verify that CalculationWorker._run_body unit selection step does not crash with KeyError or TypeError
+    when results_raw or inputs lack power_motor_per_unit_kw, power_unit_kw, ambient_temp, or altitude."""
+    from unittest.mock import MagicMock
+    from kasp.utils.workers import CalculationWorker
+
+    engine_mock = MagicMock()
+    # Case 1: results_raw without power_motor_per_unit_kw and without power_unit_kw
+    engine_mock.calculate_design_performance_with_mode.return_value = {
+        "mass_flow_per_unit_kgs": 1.5,
+    }
+    engine_mock.select_units.return_value = []
+
+    worker = CalculationWorker(engine_mock, {}, [])
+    # _run_body should complete without raising KeyError or TypeError
+    worker._run_body()
+    assert engine_mock.select_units.called
+    args, kwargs = engine_mock.select_units.call_args
+    assert args[0] == 0.0  # fallback required_power_per_unit_kw
+    assert args[1]["ambient_temp"] == 15.0
+    assert args[1]["altitude"] == 0.0
+    assert args[1]["ambient_pressure"] == 101.325
+
+    # Case 2: results_raw with power_motor_per_unit_kw = None
+    engine_mock.reset_mock()
+    engine_mock.calculate_design_performance_with_mode.return_value = {
+        "power_motor_per_unit_kw": None,
+        "power_unit_kw": 520.0,
+        "mass_flow_per_unit_kgs": 1.5,
+    }
+    engine_mock.select_units.return_value = []
+
+    worker2 = CalculationWorker(engine_mock, {"ambient_temp": 20.0}, [])
+    worker2._run_body()
+    args2, _ = engine_mock.select_units.call_args
+    assert args2[0] == pytest.approx(500.0)  # 520 / 1.04
+    assert args2[1]["ambient_temp"] == 20.0
+
+
+def test_report_generator_minimal_inputs_resilience(tmp_path):
+    """Verify that ReportGenerator.generate_design_report does not crash with KeyError
+    when inputs dict lacks optional metadata fields like ambient_temp, project_name, etc."""
+    from unittest.mock import MagicMock
+    from kasp.utils.reporting import ReportGenerator
+
+    engine_mock = MagicMock()
+    engine_mock._create_gas_object.return_value = None
+    engine_mock.convert_result_value.side_effect = lambda val, *args, **kwargs: float(val) if val is not None else 0.0
+    out_pdf = str(tmp_path / "minimal_report.pdf")
+    rg = ReportGenerator(out_pdf, engine_mock)
+    
+    minimal_inputs = {
+        "p_in": 10.0,
+        "p_out": 20.0,
+        "t_in": 25.0,
+        "p_in_unit": "bar",
+        "t_in_unit": "°C",
+        "flow": 5000.0,
+        "flow_unit": "kg/h",
+    }
+    minimal_results = {
+        "t_out": 85.0,
+        "compression_ratio": 2.0,
+        "head_kj_kg": 150.0,
+        "power_unit_kw": 300.0,
+        "power_unit_total_kw": 300.0,
+        "power_shaft_total_kw": 300.0,
+        "power_motor_total_kw": 312.0,
+        "power_gas_total_kw": 280.0,
+        "actual_poly_efficiency": 0.82,
+        "fuel_total_kgh": 50.0,
+        "heat_rate": 9500.0,
+        "inlet_properties": {},
+        "outlet_properties": {},
+        "stages": [],
+    }
+    
+    rg.generate_design_report(minimal_inputs, minimal_results)
+    assert os.path.exists(out_pdf)
+    assert os.path.getsize(out_pdf) > 0
+
+

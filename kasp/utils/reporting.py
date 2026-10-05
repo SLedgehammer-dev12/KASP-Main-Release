@@ -3,6 +3,7 @@ import datetime
 import os
 import sys
 import io
+import math
 from html import escape
 from release_metadata import APP_VERSION
 
@@ -120,12 +121,30 @@ class ReportGenerator:
         else:
             self.uncertainty_analyzer = None
             self.logger.warning("Uncertainty analysis not available (uncertainty.py not found)")
-        
-    def generate_design_report(self, inputs, results, selected_units, report_units):
+
+    DEFAULT_REPORT_UNITS = {
+        "power_unit": "kW",
+        "head_unit": "kJ/kg",
+        "heat_rate": "kJ/kWh",
+        "lhv": "kJ/kg",
+        "hhv": "kJ/kg",
+        "fuel_unit": "kg/h",
+    }
+
+    def generate_design_report(self, inputs, results, selected_units=None, report_units=None):
         """Tasarım raporu oluşturur - GELİŞMİŞ VERSİYON"""
         if not REPORTLAB_LOADED:
             raise ImportError("ReportLab kütüphanesi yüklü değil")
-             
+
+        if selected_units is None:
+            selected_units = []
+        if report_units is None:
+            report_units = dict(self.DEFAULT_REPORT_UNITS)
+        else:
+            merged_units = dict(self.DEFAULT_REPORT_UNITS)
+            merged_units.update(report_units)
+            report_units = merged_units
+
         try:
             doc = SimpleDocTemplate(self.file_path, pagesize=A4)
             story = []
@@ -163,14 +182,14 @@ class ReportGenerator:
 
             project_data = [
                 [_L("Parametre", "Parameter"), _L("Değer", "Value"), _L("Birim", "Unit")],
-                [_L("Proje Adı", "Project Name"), inputs['project_name'], ''],
-                [_L("Ünite Sayısı", "Number of Units"), f"{inputs['num_units']}", ''],
-                [_L("Gaz Kompozisyonu", "Gas Composition"), self._format_composition(inputs['gas_comp']), ''],
+                [_L("Proje Adı", "Project Name"), str(inputs.get('project_name', 'Untitled')), ''],
+                [_L("Ünite Sayısı", "Number of Units"), f"{inputs.get('num_units', 1)}", ''],
+                [_L("Gaz Kompozisyonu", "Gas Composition"), self._format_composition(inputs.get('gas_comp', {})), ''],
                 [_L("EOS Metodu", "EOS Method"), eos_display, ''],
-                [_L("Hesaplama Metodu", "Calculation Method"), inputs['method'], ''],
-                [_L("Ortam Sıcaklığı", "Ambient Temperature"), f"{inputs['ambient_temp']:.1f}", '°C'],
+                [_L("Hesaplama Metodu", "Calculation Method"), str(inputs.get('method', '—')), ''],
+                [_L("Ortam Sıcaklığı", "Ambient Temperature"), f"{float(inputs.get('ambient_temp', 15.0)):.1f}", '°C'],
                 [_L("Ortam Basıncı", "Ambient Pressure"), f"{amb_p_val:.2f}", amb_p_unit],
-                [_L("Rakım", "Altitude"), f"{inputs.get('altitude', 0):.0f}", 'm']
+                [_L("Rakım", "Altitude"), f"{float(inputs.get('altitude', 0.0)):.0f}", 'm']
             ]
             
             project_table = Table(project_data, colWidths=[200, 200, 80])
@@ -183,7 +202,7 @@ class ReportGenerator:
                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#ecf0f1')),
-                ('GRID', (0, 0), ( -1, -1), 1, colors.black)
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
             ]))
             story.append(project_table)
             story.append(Spacer(1, 20))
@@ -192,12 +211,12 @@ class ReportGenerator:
             story.append(Paragraph(_L("2. PROSES KOŞULLARI", "2. PROCESS CONDITIONS"), styles['Heading2']))
             process_data = [
                 [_L("Parametre", "Parameter"), _L("Giriş", "Inlet"), _L("Çıkış", "Outlet"), _L("Birim", "Unit")],
-                [_L("Basınç", "Pressure"), f"{inputs['p_in']}", f"{inputs['p_out']}", inputs['p_in_unit']],
-                [_L("Sıcaklık", "Temperature"), f"{inputs['t_in']}", f"{results['t_out']:.1f}", inputs['t_in_unit']],
-                [_L("Sıkıştırma Oranı", "Compression Ratio"), '-', f"{results['compression_ratio']:.2f}", ''],
-                [_L("Politropik Verim", "Polytropic Efficiency"), f"{inputs['poly_eff']:.1f}", f"{results['actual_poly_efficiency']*100:.2f}", '%'],
-                [_L("Isıl Verim", "Thermal Efficiency"), f"{inputs['therm_eff']:.1f}", '-', '%'],
-                [_L("Mekanik Verim", "Mechanical Efficiency"), f"{inputs['mech_eff']:.1f}", '-', '%']
+                [_L("Basınç", "Pressure"), f"{inputs.get('p_in', '-')}", f"{inputs.get('p_out', '-')}", inputs.get('p_in_unit', 'bar')],
+                [_L("Sıcaklık", "Temperature"), f"{inputs.get('t_in', '-')}", f"{results.get('t_out', 0.0):.1f}" if results.get('t_out') is not None else '-', inputs.get('t_in_unit', '°C')],
+                [_L("Sıkıştırma Oranı", "Compression Ratio"), '-', f"{results.get('compression_ratio', 0.0):.2f}" if results.get('compression_ratio') is not None else '-', ''],
+                [_L("Politropik Verim", "Polytropic Efficiency"), f"{float(inputs.get('poly_eff', 80.0)):.1f}", f"{float(results.get('actual_poly_efficiency', 0.8))*100:.2f}" if results.get('actual_poly_efficiency') is not None else '-', '%'],
+                [_L("Isıl Verim", "Thermal Efficiency"), f"{float(inputs.get('therm_eff', 35.0)):.1f}", '-', '%'],
+                [_L("Mekanik Verim", "Mechanical Efficiency"), f"{float(inputs.get('mech_eff', 98.0)):.1f}", '-', '%']
             ]
             
             process_table = Table(process_data, colWidths=[120, 80, 80, 60])
@@ -219,42 +238,44 @@ class ReportGenerator:
             
             # Birim dönüşümleri
             power_unit_val = self.engine.convert_result_value(
-                results['power_unit_kw'], 'kW', report_units['power_unit'], 'power'
+                results.get('power_unit_kw', 0.0), 'kW', report_units['power_unit'], 'power'
             )
             power_total_val = self.engine.convert_result_value(
-                results['power_unit_total_kw'], 'kW', report_units['power_unit'], 'power'
+                results.get('power_unit_total_kw', 0.0), 'kW', report_units['power_unit'], 'power'
             )
             power_fmt = ".2f" if report_units.get('power_unit') == 'MW' else ".0f"
             
+            num_units = int(results.get('num_units', inputs.get('num_units', 1)))
+            inlet_vol = float(results.get('inlet_vol_flow_acmh_per_unit', 0.0))
             power_data = [
                 [_L('Parametre', 'Parameter'), _L('Ünite Başına', 'Per Unit'), _L('Toplam', 'Total'), _L('Birim', 'Unit')],
                 [_L('Kütlesel Debi', 'Mass Flow'), 
-                 f"{results['mass_flow_per_unit_kgs']:.3f}", 
-                 f"{results['mass_flow_total_kgs']:.3f}", 
+                 f"{results.get('mass_flow_per_unit_kgs', 0.0):.3f}", 
+                 f"{results.get('mass_flow_total_kgs', 0.0):.3f}", 
                  'kg/s'],
                 [_L('Hacimsel Debi', 'Volumetric Flow'), 
-                 f"{results['inlet_vol_flow_acmh_per_unit']:.0f}", 
-                 f"{results['inlet_vol_flow_acmh_per_unit'] * results['num_units']:.0f}", 
+                 f"{inlet_vol:.0f}", 
+                 f"{inlet_vol * num_units:.0f}", 
                  'ACMH'],
                 [_L('Gaz Gücü', 'Gas Power'), 
-                 f"{results['power_gas_per_unit_kw']:.0f}", 
-                 f"{results['power_gas_total_kw']:.0f}", 
+                 f"{results.get('power_gas_per_unit_kw', 0.0):.0f}", 
+                 f"{results.get('power_gas_total_kw', 0.0):.0f}", 
                  'kW'],
                 [_L('Şaft Gücü', 'Shaft Power'), 
-                 f"{results['power_shaft_per_unit_kw']:.0f}", 
-                 f"{results['power_shaft_total_kw']:.0f}", 
+                 f"{results.get('power_shaft_per_unit_kw', 0.0):.0f}", 
+                 f"{results.get('power_shaft_total_kw', 0.0):.0f}", 
                  'kW'],
                 [_L('Ünite Gücü', 'Unit Power'), 
                  f"{power_unit_val:{power_fmt}}", 
                  f"{power_total_val:{power_fmt}}", 
                  report_units['power_unit']],
                 [_L('Mekanik Kayıp', 'Mechanical Loss'), 
-                 f"{results['mech_loss_per_unit_kw']:.0f}", 
-                 f"{results['mech_loss_total_kw']:.0f}", 
+                 f"{results.get('mech_loss_per_unit_kw', 0.0):.0f}", 
+                 f"{results.get('mech_loss_total_kw', 0.0):.0f}", 
                  'kW']
             ]
             
-            power_table = Table(power_data, colWidths=[140, 80, 80, 60])
+            power_table = Table(power_data, colWidths=[120, 80, 80, 60])
             power_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -272,21 +293,22 @@ class ReportGenerator:
             story.append(Paragraph(_L("4. TERMODİNAMİK SONUÇLAR", "4. THERMODYNAMIC RESULTS"), styles['Heading2']))
             
             head_val = self.engine.convert_result_value(
-                results['head_kj_kg'], 'kJ/kg', report_units['head_unit'], 'head'
+                results.get('head_kj_kg', 0.0), 'kJ/kg', report_units['head_unit'], 'head'
             )
             hr_val = self.engine.convert_result_value(
-                results['heat_rate'], 'kJ/kWh', report_units['heat_rate'], 'heat_rate'
+                results.get('heat_rate', 0.0), 'kJ/kWh', report_units['heat_rate'], 'heat_rate'
             )
+            inlet_props = results.get('inlet_properties') or {}
             
             thermo_data = [
                 [_L('Parametre', 'Parameter'), _L('Değer', 'Value'), _L('Birim', 'Unit')],
                 [_L('Politropik Head', 'Polytropic Head'), f"{head_val:.1f}", report_units['head_unit']],
                 [_L('Isı Oranı', 'Heat Rate'), f"{hr_val:.0f}", report_units['heat_rate']],
-                [_L('Çıkış Sıcaklığı', 'Outlet Temperature'), f"{results['t_out']:.1f}", '°C'],
-                [_L('Gerçek Politropik Verim', 'Actual Polytropic Efficiency'), f"{results['actual_poly_efficiency']*100:.2f}", '%'],
-                [_L('Sıkıştırma Oranı', 'Compression Ratio'), f"{results['compression_ratio']:.2f}", ''],
-                [_L('İzentropik Üs (k-giriş)', 'Isentropic Exponent (k-inlet)'), f"{results['inlet_properties']['k']:.3f}", ''],
-                [_L('Sıkıştırılabilirlik (Z-giriş)', 'Compressibility (Z-inlet)'), f"{results['inlet_properties']['Z']:.4f}", '']
+                [_L('Çıkış Sıcaklığı', 'Outlet Temperature'), f"{results.get('t_out', 0.0):.1f}", '°C'],
+                [_L('Gerçek Politropik Verim', 'Actual Polytropic Efficiency'), f"{float(results.get('actual_poly_efficiency', 0.0))*100:.2f}", '%'],
+                [_L('Sıkıştırma Oranı', 'Compression Ratio'), f"{results.get('compression_ratio', 1.0):.2f}", ''],
+                [_L('İzentropik Üs (k-giriş)', 'Isentropic Exponent (k-inlet)'), f"{float(inlet_props.get('k', 1.4)):.3f}", ''],
+                [_L('Sıkıştırılabilirlik (Z-giriş)', 'Compressibility (Z-inlet)'), f"{float(inlet_props.get('Z', 1.0)):.4f}", '']
             ]
             
             thermo_table = Table(thermo_data, colWidths=[150, 100, 80])
@@ -302,23 +324,44 @@ class ReportGenerator:
             ]))
             story.append(thermo_table)
             story.append(Spacer(1, 20))
-            
+
+            # 4A. KADEME BAZLI ANALİZ VE DAĞILIM (Çok Kademeli Kompresörler İçin)
+            stages = results.get('stages') or results.get('staged_results') or []
+            if stages and len(stages) > 0:
+                story.append(Paragraph(_L("4A. KADEME BAZLI ANALİZ VE DAĞILIM", "4A. STAGE-BY-STAGE BREAKDOWN"), styles['Heading2']))
+                stage_data = self._build_stage_breakdown_data(stages)
+                stage_table = Table(stage_data, colWidths=[35, 48, 48, 38, 48, 48, 58, 55, 40, 55])
+                stage_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1b4f72')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                    ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
+                    ('FONTSIZE', (0, 0), (-1, 0), 8),
+                    ('FONTSIZE', (0, 1), (-1, -1), 8),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#eaf2f8'), colors.white]),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ]))
+                story.append(stage_table)
+                story.append(Spacer(1, 20))
+
             # 5. YAKIT BİLGİLERİ
             story.append(Paragraph(_L("5. YAKIT BİLGİLERİ", "5. FUEL INFORMATION"), styles['Heading2']))
             
             fuel_composition = inputs.get('fuel_gas_comp') or inputs.get('gas_comp') or {}
-            fuel_gas_obj = self.engine._create_gas_object(fuel_composition, inputs['eos_method'])
+            eos_for_fuel = inputs.get('eos_method', 'coolprop')
+            fuel_gas_obj = self.engine._create_gas_object(fuel_composition, eos_for_fuel)
             lhv_val = self.engine.convert_result_value(
-                results['lhv'], 'kJ/kg', report_units['lhv'], 'heating_value', 
-                fuel_gas_obj, inputs['eos_method']
+                results.get('lhv', 0.0), 'kJ/kg', report_units['lhv'], 'heating_value', 
+                fuel_gas_obj, eos_for_fuel
             )
             hhv_val = self.engine.convert_result_value(
-                results['hhv'], 'kJ/kg', report_units['hhv'], 'heating_value',
-                fuel_gas_obj, inputs['eos_method']
+                results.get('hhv', 0.0), 'kJ/kg', report_units['hhv'], 'heating_value',
+                fuel_gas_obj, eos_for_fuel
             )
             fuel_unit_val = self.engine.convert_result_value(
-                results['fuel_unit_kgh'], 'kg/h', report_units['fuel_unit'], 'fuel_flow',
-                fuel_gas_obj, inputs['eos_method']
+                results.get('fuel_unit_kgh', 0.0), 'kg/h', report_units['fuel_unit'], 'fuel_flow',
+                fuel_gas_obj, eos_for_fuel
             )
             
             fuel_data = [
@@ -326,8 +369,8 @@ class ReportGenerator:
                 [_L('LHV (Alt Isıl Değer)', 'LHV (Lower Heating Value)'), f"{lhv_val:.0f}", report_units['lhv']],
                 [_L('HHV (Üst Isıl Değer)', 'HHV (Higher Heating Value)'), f"{hhv_val:.0f}", report_units['hhv']],
                 [_L('Ünite Yakıt Tüketimi', 'Unit Fuel Consumption'), f"{fuel_unit_val:.1f}", report_units['fuel_unit']],
-                [_L('Toplam Yakıt Tüketimi', 'Total Fuel Consumption'), f"{results['fuel_total_kgh']:.1f}", 'kg/h'],
-                [_L('Isıl Verim', 'Thermal Efficiency'), f"{inputs['therm_eff']:.1f}", '%']
+                [_L('Toplam Yakıt Tüketimi', 'Total Fuel Consumption'), f"{results.get('fuel_total_kgh', 0.0):.1f}", 'kg/h'],
+                [_L('Isıl Verim', 'Thermal Efficiency'), f"{float(inputs.get('therm_eff', 35.0)):.1f}", '%']
             ]
             
             fuel_table = Table(fuel_data, colWidths=[150, 100, 80])
@@ -352,7 +395,7 @@ class ReportGenerator:
                     # Generate T-s diagram — tablo ile aynı fizik: etkin (fallback sonrası) EOS kullanılır
                     diagram_eos = str(eff_eos) if eff_eos else req_eos
                     ts_canvas = self.graph_generator.create_ts_diagram(
-                        inputs, results, inputs['gas_comp'], diagram_eos
+                        inputs, results, inputs.get('gas_comp', {}), diagram_eos
                     )
                     if ts_canvas is not None:
                         # Save T-s diagram to BytesIO
@@ -370,7 +413,7 @@ class ReportGenerator:
                     
                     # Generate P-v diagram — etkin EOS
                     pv_canvas = self.graph_generator.create_pv_diagram(
-                        inputs, results, inputs['gas_comp'], diagram_eos
+                        inputs, results, inputs.get('gas_comp', {}), diagram_eos
                     )
                     if pv_canvas is not None:
                         # Save P-v diagram to BytesIO
@@ -460,17 +503,31 @@ class ReportGenerator:
         story.append(Spacer(1, 20))
         story.append(Paragraph("8. SİSTEM PERFORMANS İSTATİSTİKLERİ", styles['Heading2']))
         # Önbellek İstatistikleri Dışa Aktarma
-        cache_stats = self.engine.thermo_solver.get_cache_stats()
-        perf_stats = self.engine.performance_monitor.get_statistics()
-        
+        try:
+            cache_stats = self.engine.thermo_solver.get_cache_stats() or {}
+        except Exception:
+            cache_stats = {}
+        try:
+            perf_stats = self.engine.performance_monitor.get_statistics() or {}
+        except Exception:
+            perf_stats = {}
+
+        hit_rate = float(cache_stats.get('hit_rate', 0.0))
+        cache_size = cache_stats.get('size', 0)
+        cache_max = cache_stats.get('max_size', 0)
+        total_calc = perf_stats.get('total_calculations', 0)
+        avg_time = float(perf_stats.get('avg_calculation_time', 0.0))
+        success_rate = float(perf_stats.get('success_rate', 1.0))
+        eos_dist = perf_stats.get('eos_method_distribution', {})
+
         stats_data = [
             ['Metrik', 'Değer'],
-            ['Önbellek İsabet Oranı', f"{cache_stats['hit_rate']*100:.1f}%"],
-            ['Önbellek Boyutu', f"{cache_stats['size']}/{cache_stats['max_size']}"],
-            ['Toplam Hesaplama', f"{perf_stats['total_calculations']}"],
-            ['Ort. Hesaplama Süresi', f"{perf_stats['avg_calculation_time']:.3f} s"],
-            ['Başarı Oranı', f"{perf_stats['success_rate']*100:.1f}%"],
-            ['EOS Dağılımı', self._format_eos_distribution(perf_stats['eos_method_distribution'])]
+            ['Önbellek İsabet Oranı', f"{hit_rate*100:.1f}%"],
+            ['Önbellek Boyutu', f"{cache_size}/{cache_max}"],
+            ['Toplam Hesaplama', f"{total_calc}"],
+            ['Ort. Hesaplama Süresi', f"{avg_time:.3f} s"],
+            ['Başarı Oranı', f"{success_rate*100:.1f}%"],
+            ['EOS Dağılımı', self._format_eos_distribution(eos_dist)]
         ]
         
         stats_table = Table(stats_data, colWidths=[180, 120])
@@ -1031,53 +1088,122 @@ class ReportGenerator:
 
     @classmethod
     def _build_detailed_thermo_data(cls, results):
-        inlet = results['inlet_properties']
-        outlet = results['outlet_properties']
+        inlet = results.get('inlet_properties') or {}
+        outlet = results.get('outlet_properties') or {}
+
+        def _fmt(props, key, factor=1.0, fmt=".3f"):
+            val = props.get(key)
+            if val is None:
+                return "-"
+            try:
+                return f"{float(val) * factor:{fmt}}"
+            except Exception:
+                return "-"
+
+        def _pct(k):
+            v_in = inlet.get(k)
+            v_out = outlet.get(k)
+            if v_in is not None and v_out is not None:
+                try:
+                    return cls._percent_change_text(v_in, v_out)
+                except Exception:
+                    return "-"
+            return "-"
+
         return [
             ['Özellik', 'Giriş', 'Çıkış', 'Birim', 'Değişim (%)'],
             [
                 'Sıkıştırılabilirlik (Z)',
-                f"{inlet['Z']:.4f}",
-                f"{outlet['Z']:.4f}",
+                _fmt(inlet, 'Z', 1.0, ".4f"),
+                _fmt(outlet, 'Z', 1.0, ".4f"),
                 '',
-                cls._percent_change_text(inlet['Z'], outlet['Z']),
+                _pct('Z'),
             ],
             [
                 'Yoğunluk',
-                f"{inlet['rho']:.3f}",
-                f"{outlet['rho']:.3f}",
+                _fmt(inlet, 'rho', 1.0, ".3f"),
+                _fmt(outlet, 'rho', 1.0, ".3f"),
                 'kg/m³',
-                cls._percent_change_text(inlet['rho'], outlet['rho']),
+                _pct('rho'),
             ],
             [
                 'İzentropik Üs (k)',
-                f"{inlet['k']:.3f}",
-                f"{outlet['k']:.3f}",
+                _fmt(inlet, 'k', 1.0, ".3f"),
+                _fmt(outlet, 'k', 1.0, ".3f"),
                 '',
-                cls._percent_change_text(inlet['k'], outlet['k']),
+                _pct('k'),
             ],
             [
                 'Spesifik Isı (Cp)',
-                f"{inlet['Cp'] / 1000:.3f}",
-                f"{outlet['Cp'] / 1000:.3f}",
+                _fmt(inlet, 'Cp', 0.001, ".3f"),
+                _fmt(outlet, 'Cp', 0.001, ".3f"),
                 'kJ/kg-K',
-                cls._percent_change_text(inlet['Cp'], outlet['Cp']),
+                _pct('Cp'),
             ],
             [
                 'Viskozite',
-                f"{inlet['mu'] * 1e6:.2f}",
-                f"{outlet['mu'] * 1e6:.2f}",
+                _fmt(inlet, 'mu', 1e6, ".2f"),
+                _fmt(outlet, 'mu', 1e6, ".2f"),
                 'μPa·s',
-                cls._percent_change_text(inlet['mu'], outlet['mu']),
+                _pct('mu'),
             ],
             [
                 'Ses Hızı',
-                f"{inlet['a']:.1f}",
-                f"{outlet['a']:.1f}",
+                _fmt(inlet, 'a', 1.0, ".1f"),
+                _fmt(outlet, 'a', 1.0, ".1f"),
                 'm/s',
-                cls._percent_change_text(inlet['a'], outlet['a']),
+                _pct('a'),
             ],
         ]
+
+    @classmethod
+    def _build_stage_breakdown_data(cls, stages):
+        headers = [
+            _L("Kademe", "Stage"),
+            _L("P_gir (bar)", "P_in (bar)"),
+            _L("P_çık (bar)", "P_out (bar)"),
+            _L("PR", "PR"),
+            _L("T_gir (°C)", "T_in (°C)"),
+            _L("T_çık (°C)", "T_out (°C)"),
+            _L("Head (kJ/kg)", "Head (kJ/kg)"),
+            _L("Güç (kW)", "Power (kW)"),
+            _L("Z_ort", "Z_avg"),
+            _L("Sıvı (kg/h)", "Liquid (kg/h)"),
+        ]
+        rows = [headers]
+        for i, s in enumerate(stages, 1):
+            stage_idx = s.get("stage", i)
+            p_in = float(s.get("p_in", 0.0) or 0.0)
+            p_out = float(s.get("p_out", 0.0) or 0.0)
+            pr = (p_out / p_in) if p_in > 0 else 0.0
+
+            t_in = float(s.get("t_in", 0.0) or 0.0)
+            t_in_c = (t_in - 273.15) if t_in > 100.0 else t_in
+
+            t_out = float(s.get("t_out", 0.0) or 0.0)
+            t_out_c = (t_out - 273.15) if t_out > 100.0 else t_out
+
+            head = float(s.get("head_kj_kg", 0.0) or 0.0)
+            power = float(s.get("power_gas_kw", 0.0) or 0.0)
+            z_avg = s.get("z_avg")
+            z_str = f"{float(z_avg):.3f}" if (z_avg is not None and math.isfinite(float(z_avg))) else "-"
+
+            ko = float(s.get("liquid_knockout_kg_h", 0.0) or 0.0)
+            ko_str = f"{ko:.2f}" if ko > 0.001 else "-"
+
+            rows.append([
+                str(stage_idx),
+                f"{p_in / 1e5:.2f}",
+                f"{p_out / 1e5:.2f}",
+                f"{pr:.2f}",
+                f"{t_in_c:.1f}",
+                f"{t_out_c:.1f}",
+                f"{head:.1f}",
+                f"{power:.0f}",
+                z_str,
+                ko_str,
+            ])
+        return rows
 
     @staticmethod
     def _get_unit_value(unit, *keys, default=None):
@@ -1153,19 +1279,19 @@ class ReportGenerator:
                     })
 
             summary = {
-                'project_name': inputs['project_name'],
+                'project_name': str(inputs.get('project_name', 'Untitled')),
                 'calculation_date': datetime.datetime.now().isoformat(),
                 'basic_parameters': {
-                    'num_units': inputs['num_units'],
-                    'compression_ratio': results['compression_ratio'],
-                    'power_per_unit': results['power_unit_kw'],
-                    'total_power': results['power_unit_total_kw'],
-                    'outlet_temperature': results['t_out']
+                    'num_units': inputs.get('num_units', 1),
+                    'compression_ratio': results.get('compression_ratio', 0.0),
+                    'power_per_unit': results.get('power_unit_kw', 0.0),
+                    'total_power': results.get('power_unit_total_kw', 0.0),
+                    'outlet_temperature': results.get('t_out', 0.0)
                 },
                 'efficiency_metrics': {
-                    'poly_efficiency': results['actual_poly_efficiency'],
-                    'thermal_efficiency': inputs['therm_eff'] / 100.0,
-                    'heat_rate': results['heat_rate']
+                    'poly_efficiency': results.get('actual_poly_efficiency', 0.0),
+                    'thermal_efficiency': float(inputs.get('therm_eff', 35.0)) / 100.0,
+                    'heat_rate': results.get('heat_rate', 0.0)
                 },
                 'recommended_turbines': recommended,
                 'system_performance': self.engine.performance_monitor.get_statistics()
