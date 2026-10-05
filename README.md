@@ -4,17 +4,21 @@ KASP is a PyQt5-based compressor analysis and selection application with thermod
 
 ## Current Release Baseline
 
-- Application version: `2.4.2`
-- GitHub release target: `v2.4.2`
+- Application version: `2.5.1`
+- GitHub release target: `v2.5.1`
 - Desktop icon: compressor / gas turbine (`.ico` for Windows, `.icns` for macOS)
 - English UI mode: set `app.language` to `"en"` in `kasp_config.json`
 - Built-in update center: checks GitHub releases and lets the user choose download location
 
 ### Highlights since v2.0.0
 - **6 calculation methods** (average, endpoint, incremental, direct H-S, Huntington-RK45, Schultz 3-exp)
+- **ASME PTC 10 / API 617 compliance** — standardized polytropic exponent, Schultz compressibility factor, efficiency clamping, driver margin
+- **Thermodynamic safety guards** — NeqSim convergence guard, INVALID-stage consistency, missing $k_{ij}$ warnings, supercritical phase detection
 - **Thermodynamic audit fixes** — energy-balance marking, solver convergence reporting, fallback traceability
 - **Offline password recovery** — security question + one-time recovery key, per-user lockout
 - **Left-panel ergonomics** and theme-contrast improvements
+
+See `CHANGELOG.md` and the `v2.5.1_release_notes.md` for the full change history.
 
 ## Local Setup
 
@@ -42,20 +46,17 @@ python3 -m kasp.api.server
 
 ### Windows
 ```powershell
-.\build_release_v2.4.2.bat
+pyinstaller --clean KASP_release_v2.5.1.spec
+.\build_release_local.bat    # workspace-only build
 ```
 
 ### macOS
 ```bash
-./build_release_v2.4.2.sh      # PyInstaller .app
-./package_mac_dmg.sh         # create .dmg
+pyinstaller --clean KASP_release_v2.5.1_mac.spec   # PyInstaller .app
+./package_mac_dmg.sh                              # create .dmg
 ```
 
-For a workspace-only build without the release filename:
-
-```powershell
-.\build_release_local.bat    # Windows
-```
+`build_release.py` prints the canonical release command for the current `release_metadata.py` version.
 
 ## DWSIM Setup (Optional)
 
@@ -67,7 +68,7 @@ On Windows, .NET Framework 4.x is pre-installed and DWSIM works out of the box.
 On macOS, Mono or .NET SDK must be installed separately for DWSIM support.
 
 Icons: `resources/icon.ico` (Windows), `resources/icon.icns` (macOS).<br>
-Release spec files: `KASP_release_v2.4.2.spec` (Win), `KASP_release_v2.4.2_mac.spec` (mac).
+Release spec files: `KASP_release_v2.5.1.spec` (Win), `KASP_release_v2.5.1_mac.spec` (mac).
 
 ## Notes
 

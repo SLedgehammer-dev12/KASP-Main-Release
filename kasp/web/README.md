@@ -1,17 +1,29 @@
 # KASP V4 Web Analitik Platformu
 
-KASP V4, artık modern bir web arayüzüne sahip. Bu arayüz, gelişmiş termodinamik hesaplamalarınızı (Çok Kademeli Sıkıştırma, Pompaj Analizi) tarayıcı üzerinden kolayca yapmanızı sağlar.
+KASP V4, modern bir web arayüzü sunar. Bu arayüz ile çok kademeli sıkıştırma ve pompaj (benchmark) analizlerini tarayıcı üzerinden yapabilirsiniz.
+
+> **Not:** `kasp/api/server.py` **legacy/experimental** olarak işaretlenmiştir ve varsayılan olarak **KAPALIDIR**. Kimlik doğrulama (Bearer token) ve IP bazlı hız sınırı uygulanır.
 
 ## 🚀 Hızlı Başlangıç
 
-### 1. Sunucuyu Başlatın
-Aşağıdaki komutu terminalde çalıştırın:
+### 1. API'yi etkinleştirin
+Sunucu, güvenlik gereği yalnızca `KASP_API_ENABLE=1` **ve** `KASP_API_TOKEN` ayarlandığında başlar. Token yoksa süreç başlatılmaz.
+
 ```bash
-python kasp/api/server.py
+export KASP_API_ENABLE=1
+export KASP_API_TOKEN="<guclu-rastgele-token>"
+python3 kasp/api/server.py
 ```
 
-### 2. Arayüze Erişin
+Kök dizinden modül olarak da başlatılabilir:
+
+```bash
+python3 -m kasp.api.server
+```
+
+### 2. Arayüze erişin
 Tarayıcınızda şu adrese gidin:
+
 **[http://localhost:8000](http://localhost:8000)**
 
 ## ✨ Özellikler
@@ -22,6 +34,24 @@ Tarayıcınızda şu adrese gidin:
 - **Kurulumsuz (No-Build)**: Node.js gerektirmez, tek bir Python komutuyla çalışır.
 
 ## 🛠️ Teknik Altyapı
-- **Backend**: FastAPI (Python) - Yüksek performanslı asenkron API.
-- **Frontend**: Vue.js 3 + TailwindCSS - CDN üzerinden çalışan modern SPA.
-- **Motor**: KASP V4 ThermoEngine (CoolProp & Real Gas EOS).
+
+- **Backend**: FastAPI (Python) — `uvicorn` ile çalışan asenkron REST API.
+- **Frontend**: Vue.js 3 + TailwindCSS (CDN üzerinden), Chart.js ve Lucide ikonları.
+- **Motor**: `kasp.core.thermo.ThermoEngine` (CoolProp & gerçek gaz EOS).
+
+## 🔌 API Uç Noktaları
+
+| Metot | Yol | Kimlik Doğrulama | Açıklama |
+| :--- | :--- | :--- | :--- |
+| GET | `/api/health` | Hayır | Sağlık durumu |
+| GET | `/api/constants` | Hayır | Gaz listesi, birimler, varsayılan kompozisyon |
+| POST | `/api/calculate/design` | Bearer token | Tek/çok kademeli tasarım hesabı |
+| POST | `/api/calculate/benchmark` | Bearer token | EOS × metot karşılaştırması |
+
+Korumalı uç noktalar `Authorization: Bearer <KASP_API_TOKEN>` başlığı gerektirir.
+
+## ⚠️ Bilinen Kısıtlar
+
+- Web arayüzündeki hesaplama çağrıları şu an `Authorization` başlığı göndermez; korumalı uç noktalar token olmadan `401` döner. Arayüzden hesaplama yapabilmek için istemci tarafına token eklenmelidir (veya güvenlik bilinçli olarak gevşetilmelidir).
+- Üretim ortamı için tasarlanmamıştır; yalnızca yerel/geliştirme kullanımı içindir.
+- CORS varsayılan olarak `http://127.0.0.1:8000` ve `http://localhost:8000` ile sınırlıdır (`KASP_API_ALLOWED_ORIGINS` ile genişletilebilir).
