@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# macOS release spec for GitHub release v2.6.0.
+# macOS release spec for GitHub release v2.6.1.
 
 import sys
 from pathlib import Path
@@ -30,6 +30,7 @@ thermo_datas = collect_data_files("thermo")
 chemicals_datas = collect_data_files("chemicals")
 scipy_datas = collect_data_files("scipy")
 thermopack_datas = collect_data_files("thermopack")
+ccp_datas = collect_data_files("ccp")
 
 all_datas = [
     ("kasp", "kasp"),
@@ -41,6 +42,7 @@ all_datas.extend(thermo_datas)
 all_datas.extend(chemicals_datas)
 all_datas.extend(scipy_datas)
 all_datas.extend(thermopack_datas)
+all_datas.extend(ccp_datas)
 
 # DWSIM DLL bundle — macOS'ta opsiyonel (Mono gerektirir)
 dwsim_binaries = []
@@ -74,6 +76,7 @@ all_hidden.extend(collect_submodules("thermo", filter=include_runtime_submodule)
 all_hidden.extend(collect_submodules("chemicals", filter=include_runtime_submodule))
 all_hidden.extend(collect_submodules("scipy", filter=include_runtime_submodule))
 all_hidden.extend(collect_submodules("thermopack", filter=include_runtime_submodule))
+all_hidden.extend(collect_submodules("ccp", filter=include_runtime_submodule))
 
 # pythonnet hidden imports — macOS'ta sadece pythonnet kuruluysa
 try:

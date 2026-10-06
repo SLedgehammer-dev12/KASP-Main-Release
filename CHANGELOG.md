@@ -4,6 +4,14 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.6.1] — 2026-10-06
+
+### Fixed
+- **Packaged app crash on startup (Critical)** — the frozen (`.exe`/`.app`) builds shipped without the `ccp` package data files (`ccp/config/*.txt`). `import ccp` then raised `FileNotFoundError` (not an `ImportError`), which was uncaught and crashed the app before the GUI/logging started — the app appeared to "open and immediately close". PyInstaller specs now bundle `collect_data_files("ccp")` + `collect_submodules("ccp")`, and the import guard degrades gracefully for any ccp load error (`CCP_LOADED = False`) instead of aborting.
+- Added a regression test (`test_ccp_import_guard.py`) that simulates the missing-data error and asserts the app imports safely.
+
+---
+
 ## [v2.6.0] — 2026-10-05
 
 ### Fixed

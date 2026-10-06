@@ -4,8 +4,8 @@ KASP is a PyQt5-based compressor analysis and selection application with thermod
 
 ## Current Release Baseline
 
-- Application version: `2.6.0`
-- GitHub release target: `v2.6.0`
+- Application version: `2.6.1`
+- GitHub release target: `v2.6.1`
 - Desktop icon: compressor / gas turbine (`.ico` for Windows, `.icns` for macOS)
 - English UI mode: set `app.language` to `"en"` in `kasp_config.json`
 - Built-in update center: checks GitHub releases and lets the user choose download location
@@ -46,13 +46,13 @@ python3 -m kasp.api.server
 
 ### Windows
 ```powershell
-pyinstaller --clean KASP_release_v2.6.0.spec
+pyinstaller --clean KASP_release_v2.6.1.spec
 .\build_release_local.bat    # workspace-only build
 ```
 
 ### macOS
 ```bash
-pyinstaller --clean KASP_release_v2.6.0_mac.spec   # PyInstaller .app
+pyinstaller --clean KASP_release_v2.6.1_mac.spec   # PyInstaller .app
 ./package_mac_dmg.sh                              # create .dmg
 ```
 
@@ -68,7 +68,7 @@ On Windows, .NET Framework 4.x is pre-installed and DWSIM works out of the box.
 On macOS, Mono or .NET SDK must be installed separately for DWSIM support.
 
 Icons: `resources/icon.ico` (Windows), `resources/icon.icns` (macOS).<br>
-Release spec files: `KASP_release_v2.6.0.spec` (Win), `KASP_release_v2.6.0_mac.spec` (mac).
+Release spec files: `KASP_release_v2.6.1.spec` (Win), `KASP_release_v2.6.1_mac.spec` (mac).
 
 ## Notes
 
