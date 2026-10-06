@@ -39,6 +39,10 @@ try:
     CCP_LOADED = True
 except ImportError:
     CCP_LOADED = False
+except Exception as _ccp_err:  # noqa: BLE001 - eksik veri dosyasi vb. tum hatalarda guvenli bozulma
+    # Orn. paketlenmis uygulamada ccp/config/new_units.txt eksikse FileNotFoundError.
+    logging.getLogger(__name__).warning("ccp backend yuklenemedi: %s", _ccp_err)
+    CCP_LOADED = False
 
 logger = logging.getLogger(__name__)
 
