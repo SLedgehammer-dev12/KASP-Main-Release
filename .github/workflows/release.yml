@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to upload assets to (e.g. v2.5.0)'
+        required: true
+      build_ref:
+        description: 'Git ref/commit/branch to build from'
+        required: true
 
 permissions:
   contents: write
@@ -16,6 +24,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -49,6 +59,7 @@ jobs:
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
           files: ${{ env.EXE_PATH }}
           body_path: ${{ env.NOTES_PATH }}
           generate_release_notes: ${{ env.NOTES_FOUND == 'false' }}
@@ -59,6 +70,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -98,5 +111,6 @@ jobs:
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
           files: ${{ env.DMG_PATH }}
           generate_release_notes: false
