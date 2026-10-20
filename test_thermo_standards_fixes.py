@@ -461,3 +461,82 @@ def test_thermo_methods_zero_pressure_difference_early_exit():
         assert hist.get("termination_reason") == "zero_dp", f"{name}: termination_reason != zero_dp"
 
 
+def test_thermo_design_support_edge_cases_safety():
+    """Verify thermo_design_support functions safely handle boundary, zero, and percentage values."""
+    from kasp.core.thermo_design_support import (
+        compute_stage_pressure_ratio,
+        optimize_stage_pressure_ratios,
+        calculate_total_actual_poly_efficiency,
+        build_design_results_payload,
+        build_uncertainty_measurements,
+    )
+
+    # 1. compute_stage_pressure_ratio: dp >= 1.0 or percentage
+    # Should not raise ZeroDivisionError and should return a real float (not complex)
+    pr_dp1 = compute_stage_pressure_ratio(3.0, 1.0, 2)
+    assert isinstance(pr_dp1, float) and pr_dp1 > 0
+
+    pr_pct = compute_stage_pressure_ratio(3.0, 2.0, 2)  # 2.0% -> 0.02
+    assert isinstance(pr_pct, float) and pr_pct > 0
+
+    pr_zero = compute_stage_pressure_ratio(0.0, 0.02, 2)
+    assert pr_zero == 1.0
+
+    pr_n0 = compute_stage_pressure_ratio(3.0, 0.02, 0)
+    assert pr_n0 == 3.0
+
+    # 2. optimize_stage_pressure_ratios: zero/negative pressures or zero stages
+    r_n0 = optimize_stage_pressure_ratios(1e5, 3e5, 0)
+    assert r_n0 == []
+
+    r_p0 = optimize_stage_pressure_ratios(0.0, 3e5, 2)
+    assert r_p0 == [1.0, 1.0]
+
+    r_pct = optimize_stage_pressure_ratios(1e5, 4e5, 2, intercooler_dp=3.0, k_isen=None)
+    assert len(r_pct) == 2
+    assert all(isinstance(x, float) and x > 1.0 for x in r_pct)
+
+    # 3. calculate_total_actual_poly_efficiency: None in delta_h
+    stages = [
+        {"stage": 1, "delta_h_kj_kg": None, "poly_eff_diagnostic": 0.80},
+        {"stage": 2, "delta_h_kj_kg": 50.0, "poly_eff_diagnostic": 0.82},
+    ]
+    eff = calculate_total_actual_poly_efficiency(stages, 40.0, 0.75)
+    assert 0.7 < eff < 0.9
+
+    # 4. build_design_results_payload: zero p_in
+    payload = build_design_results_payload(
+        p_in_pa=0.0,
+        t_in_k=300.0,
+        p_out_pa=3e5,
+        final_t_out_k=350.0,
+        total_poly_head_kj_kg=100.0,
+        poly_eff_tgt=0.75,
+        total_stage_gas_power_kw=100.0,
+        total_shaft_kw=105.0,
+        motor_kw=110.0,
+        unit_kw=110.0,
+        mech_loss_kw=5.0,
+        fuel_kgh=0.0,
+        mass_flow_per_unit=1.0,
+        inlet_acmh=1000.0,
+        num_units=1,
+        total_mass_flow_kgs=1.0,
+        heat_rate=0.0,
+        lhv=0.0,
+        hhv=0.0,
+        inlet_properties={},
+        outlet_properties={},
+        num_stages=1,
+        staged_results=[],
+        method="average",
+    )
+    assert payload["compression_ratio"] == 1.0
+
+    # 5. build_uncertainty_measurements: None / empty input
+    meas = build_uncertainty_measurements(None)
+    assert meas["p_in"] == 101325.0
+    assert meas["flow"] == 10.0
+
+
+

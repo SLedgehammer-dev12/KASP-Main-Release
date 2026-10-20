@@ -2,18 +2,46 @@
 
 from __future__ import annotations
 
+import math
+
 from kasp.core.constants import API_617_DRIVER_MARGIN_PCT
 
 
 ENGINE_VERSION = "1.3.0 (V4.5 — 6-Method Engine)"
 
 
+def _coerce_float(value, default: float = 0.0) -> float:
+    try:
+        val = float(value)
+        return val if math.isfinite(val) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def compute_stage_pressure_ratio(total_pressure_ratio, intercooler_dp, num_stages):
-    if num_stages <= 1:
-        return total_pressure_ratio
-    return (
-        total_pressure_ratio / ((1.0 - intercooler_dp) ** (num_stages - 1))
-    ) ** (1.0 / num_stages)
+    try:
+        pr = float(total_pressure_ratio)
+        dp = float(intercooler_dp or 0.0)
+        n = int(num_stages)
+    except (TypeError, ValueError):
+        return 1.0
+
+    if n <= 1:
+        return max(1.0, pr) if math.isfinite(pr) else 1.0
+
+    if not math.isfinite(pr) or pr <= 0.0:
+        return 1.0
+
+    # Auto-convert percentage input (e.g. 2.0% -> 0.02)
+    if dp > 1.0:
+        dp = dp / 100.0
+
+    # Clamp dp safely to [0.0, 0.50] to avoid non-physical pressure drop or division by zero
+    dp = max(0.0, min(0.50, dp if math.isfinite(dp) else 0.0))
+    denom = (1.0 - dp) ** (n - 1)
+    if denom <= 0.0:
+        return 1.0
+    return (pr / denom) ** (1.0 / n)
 
 
 def optimize_stage_pressure_ratios(
@@ -30,30 +58,54 @@ def optimize_stage_pressure_ratios(
     Ara soğutucu basınç kaybını (intercooler_dp) ve kademe giriş sıcaklıklarını dikkate alarak
     kademeler arası eşit iş (Equal Work) veya dengeli basınç dağılımı sağlar.
     """
-    if num_stages <= 1:
-        return [p_out_pa / p_in_pa]
+    try:
+        p_in = float(p_in_pa)
+        p_out = float(p_out_pa)
+        n_stages = int(num_stages)
+    except (TypeError, ValueError):
+        return []
 
-    total_pr = p_out_pa / p_in_pa
-    r_uniform = compute_stage_pressure_ratio(total_pr, intercooler_dp, num_stages)
+    if n_stages <= 0:
+        return []
 
-    if abs(t_in_k - ic_t_k) < 1.0 or num_stages <= 1:
-        return [r_uniform] * num_stages
+    if not math.isfinite(p_in) or p_in <= 0.0 or not math.isfinite(p_out) or p_out <= 0.0:
+        return [1.0] * n_stages
+
+    total_pr = max(1.0, p_out / p_in)
+    if n_stages <= 1:
+        return [total_pr]
+
+    dp = float(intercooler_dp or 0.0)
+    if dp > 1.0:
+        dp = dp / 100.0
+    dp = max(0.0, min(0.50, dp if math.isfinite(dp) else 0.0))
+
+    r_uniform = compute_stage_pressure_ratio(total_pr, dp, n_stages)
+
+    t_in = _coerce_float(t_in_k, 293.15)
+    t_in = max(100.0, min(2000.0, t_in))
+    ic_t = _coerce_float(ic_t_k, 293.15)
+    ic_t = max(100.0, min(2000.0, ic_t))
+
+    if abs(t_in - ic_t) < 1.0:
+        return [r_uniform] * n_stages
 
     # Equal Work optimization when inlet temperatures differ (ambient vs intercooler)
-    m = (k_isen - 1.0) / k_isen if k_isen > 1.05 else 0.25
+    k = _coerce_float(k_isen, 1.3)
+    m = (k - 1.0) / k if k > 1.05 else 0.25
 
     def eval_p_out(r1):
         w1_factor = (r1 ** m - 1.0)
-        p_curr = p_in_pa
-        for s in range(num_stages):
-            t_s = t_in_k if s == 0 else ic_t_k
-            r_s = max(1.001, (1.0 + (t_in_k / t_s) * w1_factor) ** (1.0 / m)) if s > 0 else r1
+        p_curr = p_in
+        for s in range(n_stages):
+            t_s = t_in if s == 0 else ic_t
+            r_s = max(1.001, (1.0 + (t_in / t_s) * w1_factor) ** (1.0 / m)) if s > 0 else r1
             p_out_s = p_curr * r_s
-            if s < num_stages - 1:
-                p_curr = p_out_s * (1.0 - intercooler_dp)
+            if s < n_stages - 1:
+                p_curr = p_out_s * (1.0 - dp)
             else:
                 p_curr = p_out_s
-        return p_curr - p_out_pa
+        return p_curr - p_out
 
     try:
         # Simple bisection solver
@@ -73,9 +125,9 @@ def optimize_stage_pressure_ratios(
 
     w1_factor = (r1_opt ** m - 1.0)
     ratios = []
-    for s in range(num_stages):
-        t_s = t_in_k if s == 0 else ic_t_k
-        r_s = max(1.001, (1.0 + (t_in_k / t_s) * w1_factor) ** (1.0 / m)) if s > 0 else r1_opt
+    for s in range(n_stages):
+        t_s = t_in if s == 0 else ic_t
+        r_s = max(1.001, (1.0 + (t_in / t_s) * w1_factor) ** (1.0 / m)) if s > 0 else r1_opt
         ratios.append(r_s)
     return ratios
 
@@ -149,11 +201,16 @@ def build_stage_result(
 
 
 def calculate_total_actual_poly_efficiency(staged_results, total_poly_head_kj_kg, poly_eff_tgt):
-    total_actual_delta_h_kj_kg = sum(stage["delta_h_kj_kg"] for stage in staged_results)
+    total_actual_delta_h_kj_kg = sum(
+        _coerce_float(stage.get("delta_h_kj_kg"), 0.0)
+        for stage in (staged_results or [])
+        if isinstance(stage, dict)
+    )
+    head = _coerce_float(total_poly_head_kj_kg, 0.0)
     if total_actual_delta_h_kj_kg > 0:
-        return max(0.0, min(1.0, total_poly_head_kj_kg / total_actual_delta_h_kj_kg))
-    last_stage = staged_results[-1] if staged_results else {}
-    raw_eff = float(last_stage.get("poly_eff_diagnostic", poly_eff_tgt))
+        return max(0.0, min(1.0, head / total_actual_delta_h_kj_kg))
+    last_stage = staged_results[-1] if (staged_results and isinstance(staged_results[-1], dict)) else {}
+    raw_eff = _coerce_float(last_stage.get("poly_eff_diagnostic", poly_eff_tgt), 0.75)
     if raw_eff > 1.0:
         raw_eff = raw_eff / 100.0
     return max(0.0, min(1.0, raw_eff))
@@ -252,7 +309,7 @@ def build_design_results_payload(
     return {
         "t_out": final_t_out_k - 273.15,
         "head_kj_kg": total_poly_head_kj_kg,
-        "compression_ratio": p_out_pa / p_in_pa,
+        "compression_ratio": (p_out_pa / p_in_pa) if (p_in_pa and p_in_pa > 0) else 1.0,
         "design_poly_efficiency": poly_eff_tgt,
         "actual_poly_efficiency": actual_poly_eff_total,
         "liquid_knockout_total_kg_h": round(total_knockout, 2),
@@ -298,11 +355,12 @@ def build_design_results_payload(
 
 
 def build_uncertainty_measurements(inputs):
+    inp = inputs if isinstance(inputs, dict) else {}
     return {
-        "p_in": float(inputs["p_in"]),
-        "p_out": float(inputs["p_out"]),
-        "t_in": float(inputs["t_in"]),
-        "flow": float(inputs["flow"]),
+        "p_in": _coerce_float(inp.get("p_in"), 101325.0),
+        "p_out": _coerce_float(inp.get("p_out"), 300000.0),
+        "t_in": _coerce_float(inp.get("t_in"), 300.0),
+        "flow": _coerce_float(inp.get("flow"), 10.0),
     }
 
 
