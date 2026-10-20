@@ -140,6 +140,26 @@ def test_turbine_selection_zero_and_negative_power_safety():
     recs_nan = TurbineSelector.select_units(float("nan"), {}, turbines)
     assert recs_nan == []
 
+    # None power must not crash
+    recs_none_pwr = TurbineSelector.select_units(None, {}, turbines)
+    assert recs_none_pwr == []
+
+    # Non-numeric string power must not crash
+    recs_str = TurbineSelector.select_units("invalid", {}, turbines)
+    assert recs_str == []
+
+    # None site_conditions must not crash
+    recs_none_site = TurbineSelector.select_units(1000.0, None, turbines)
+    assert isinstance(recs_none_site, list)
+
+    # None all_turbines_data must not crash
+    recs_none_data = TurbineSelector.select_units(1000.0, {}, None)
+    assert recs_none_data == []
+
+    # List with None or non-dict entries must not crash
+    recs_none_entries = TurbineSelector.select_units(1000.0, {}, [None, "invalid_turbine"])
+    assert recs_none_entries == []
+
 
 def test_turbine_correction_extreme_temperature_and_pressure_safety():
     """Verify that _correct_performance never divides by zero at absolute zero or zero ambient pressure."""

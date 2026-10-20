@@ -19,30 +19,40 @@ class TurbineSelector:
     """Türbinleri güç, verim ve aerodinamik analizlere göre derecelendiren sınıf."""
     
     @staticmethod
-    def select_units(required_power_kw: float, site_conditions: Dict[str, float], 
-                     all_turbines_data: List[Dict[str, Any]], limit: int = 5) -> List[TurbineRecommendation]:
+    def select_units(required_power_kw: float, site_conditions: Optional[Dict[str, float]], 
+                     all_turbines_data: Optional[List[Dict[str, Any]]], limit: int = 5) -> List[TurbineRecommendation]:
         """
         Kayıtlı türbin listesini filtreler, saha düzeltmelerini yapar ve en uygun olanları sıralar.
         """
         selected_recommendations: List[TurbineRecommendation] = []
         
-        if not math.isfinite(required_power_kw) or required_power_kw <= 0.0:
+        try:
+            req_pwr = float(required_power_kw) if required_power_kw is not None else 0.0
+        except (TypeError, ValueError):
+            req_pwr = 0.0
+
+        if not math.isfinite(req_pwr) or req_pwr <= 0.0:
             logger.warning(
                 f"Gerekli güç geçersiz veya sıfır ({required_power_kw} kW). "
                 f"Türbin seçimi yapılamaz."
             )
             return []
 
-        ambient_temp = site_conditions.get('ambient_temp', 15.0)
-        altitude = site_conditions.get('altitude', 0.0)
-        ambient_pressure = site_conditions.get('ambient_pressure', 101.325)
+        conditions = dict(site_conditions or {})
+        ambient_temp = conditions.get('ambient_temp', 15.0)
+        altitude = conditions.get('altitude', 0.0)
+        ambient_pressure = conditions.get('ambient_pressure', 101.325)
         
+        turbines = [t for t in (all_turbines_data or []) if isinstance(t, dict)]
+        if not turbines:
+            return []
+
         logger.info(
-            f"Ünite seçimi (V4.4) başlatılıyor. Gerekli güç: {required_power_kw:.0f} kW | "
+            f"Ünite seçimi (V4.4) başlatılıyor. Gerekli güç: {req_pwr:.0f} kW | "
             f"Amb: {ambient_temp}°C / {altitude}m / {ambient_pressure} kPa"
         )
         
-        for turbine in all_turbines_data:
+        for turbine in turbines:
             iso_power = turbine.get('iso_power_kw', 0)
             iso_heat_rate = turbine.get('iso_heat_rate_kj_kwh', 0)
             
@@ -56,14 +66,14 @@ class TurbineSelector:
             
             # 2. Ön Filtre (Sadece -%0 ile %150 aralığındaki türbinleri değerlendir)
             # Power Margin = (Available - Required) / Required * 100
-            power_margin_pct = ((corr_power - required_power_kw) / required_power_kw) * 100
+            power_margin_pct = ((corr_power - req_pwr) / req_pwr) * 100
             
             # Negatif marjları (Yetersizleri) reddet (V4.3 mantığı) veya çok büyükleri reddet
             if power_margin_pct < 0.0 or power_margin_pct > EngineSettings.MAX_ALLOWED_OVERSIZE_PCT:
                 continue
                 
             # 3. Aerodinamik Güvenlik Marjları (Surge / Stonewall)
-            aero_margins = TurbineSelector._calculate_aero_margins(turbine, site_conditions.get('flow'))
+            aero_margins = TurbineSelector._calculate_aero_margins(turbine, conditions.get('flow'))
             sm_pct = aero_margins['surge_margin_pct']
             sw_pct = aero_margins['stonewall_margin_pct']
             
