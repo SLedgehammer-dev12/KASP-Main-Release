@@ -4,6 +4,16 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.6.2] — 2026-10-20
+
+### Fixed
+- **Intercooler VLE Flash & Knockout Drum Hardening** — eliminated `ZeroDivisionError` in flash calculations near $K_i \approx 0$ and $\beta \to 1.0$. Prevented empty gas mixture crashes and downstream phantom stages when complete condensation occurs in intercooler knockout vessels.
+- **User Authentication Robustness** — hardened `validate_password_policy` and `UserManager` security question and recovery key reset methods against `None` and non-string inputs, eliminating `TypeError` and `AttributeError`.
+- **EosChain Locked-Stage Failure Recovery** — wrapped locked EOS calculations during intermediate stage integration to catch numerical convergence exceptions, register broken engines with `FallbackTracker`, and raise `EosChainBrokenError` so orchestrators can seamlessly retry with fallback EOS engines.
+- **Engineering Shootout Delta Protection** — prevented `TypeError` and division-by-zero crashes in `run_eos_shootout` and `run_method_shootout` when candidate or reference calculation returns `None` or zero power/head.
+
+---
+
 ## [v2.6.1] — 2026-10-06
 
 ### Fixed
