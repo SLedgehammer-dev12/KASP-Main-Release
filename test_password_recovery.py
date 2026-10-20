@@ -230,3 +230,58 @@ def test_login_dialog_recovery_button(qapp, user_mgr):
     assert hasattr(login_dlg, "_forgot_btn")
     assert login_dlg._forgot_btn.text() == "❓ Şifremi Unuttum"
     login_dlg.close()
+
+
+def test_user_manager_robustness_none_inputs(user_mgr):
+    """None ve geçersiz tipteki girdilerde UserManager çökmemeli, güvenli hata dönmelidir."""
+    # 1. validate_password_policy
+    assert validate_password_policy(None) == "Şifre boş olamaz."
+    assert validate_password_policy("") == "Şifre boş olamaz."
+    assert validate_password_policy(12345) == "Şifre boş olamaz."
+
+    # 2. get_security_question
+    q, err = user_mgr.get_security_question(None)
+    assert q is None
+    assert "belirtilmedi" in err
+
+    q, err = user_mgr.get_security_question("   ")
+    assert q is None
+    assert "belirtilmedi" in err
+
+    # Test kullanıcısı oluştur ve güvenlik bilgilerini ata
+    test_u, _ = user_mgr.create_user("robust_user", "OldPass123", role="user")
+    user_mgr.set_security_question(test_u.id, "Sorunuz?", "Cevap")
+    raw_key, _ = user_mgr.generate_and_save_recovery_key(test_u.id)
+
+    # 3. verify_security_question_and_reset
+    ok, err = user_mgr.verify_security_question_and_reset(None, "Cevap", "NewPass123")
+    assert not ok
+    assert "belirtilmedi" in err
+
+    ok, err = user_mgr.verify_security_question_and_reset("robust_user", "Cevap", None)
+    assert not ok
+    assert "boş olamaz" in err
+
+    # 4. verify_recovery_key_and_reset
+    ok, err = user_mgr.verify_recovery_key_and_reset(None, raw_key, "NewPass123")
+    assert not ok
+    assert "belirtilmedi" in err
+
+    ok, err = user_mgr.verify_recovery_key_and_reset("robust_user", raw_key, None)
+    assert not ok
+    assert "boş olamaz" in err
+
+    # 5. authenticate with None
+    assert user_mgr.authenticate(None, "pass") is None
+    assert user_mgr.authenticate("   ", "pass") is None
+    assert user_mgr.authenticate("admin", None) is None
+
+    # 6. create_user with None
+    u, err = user_mgr.create_user(None, "Pass1234")
+    assert u is None
+    assert "zorunludur" in err
+
+    u, err = user_mgr.create_user("   ", "Pass1234")
+    assert u is None
+    assert "zorunludur" in err
+

@@ -28,6 +28,8 @@ DEFAULT_SECURITY_QUESTIONS = [
 
 def validate_password_policy(password: str) -> str | None:
     """Şifre politikasını doğrular. Hata mesajı dönerse geçersizdir, None ise geçerlidir."""
+    if not password or not isinstance(password, str):
+        return "Şifre boş olamaz."
     if len(password) < 8:
         return "Şifre en az 8 karakter olmalıdır."
     if not re.search(r"[A-Z]", password):
@@ -60,25 +62,30 @@ class UserManager:
         self.db = db
 
     def authenticate(self, username: str, password: str):
-        user_dict = self.db.get_user_by_username(username)
+        clean_user = str(username or "").strip()
+        if not clean_user:
+            verify_password(password or "", _DUMMY_HASH)
+            logger.info("Auth basarisiz: Kullanici adi bos.")
+            return None
+        user_dict = self.db.get_user_by_username(clean_user)
         if not user_dict:
             verify_password(password or "", _DUMMY_HASH)
-            logger.info(f"Auth basarisiz: '{username}' kullanici adi bulunamadi.")
+            logger.info(f"Auth basarisiz: '{clean_user}' kullanici adi bulunamadi.")
             return None
         if not user_dict.get("is_active", 1):
             verify_password(password or "", _DUMMY_HASH)
-            logger.info(f"Auth basarisiz: '{username}' hesabi pasif.")
+            logger.info(f"Auth basarisiz: '{clean_user}' hesabi pasif.")
             return None
         stored_hash = user_dict.get("password_hash", "")
         if not stored_hash:
             verify_password(password or "", _DUMMY_HASH)
-            logger.warning(f"Auth basarisiz: '{username}' hash degiskeni bos.")
+            logger.warning(f"Auth basarisiz: '{clean_user}' hash degiskeni bos.")
             return None
-        if not verify_password(password, stored_hash):
-            logger.info(f"Auth basarisiz: '{username}' icin hatali sifre.")
+        if not verify_password(password or "", stored_hash):
+            logger.info(f"Auth basarisiz: '{clean_user}' icin hatali sifre.")
             return None
         self.db.update_user_login(user_dict["id"])
-        user_dict = self.db.get_user_by_username(username)
+        user_dict = self.db.get_user_by_username(clean_user)
         if not user_dict:
             return None
         return User(
@@ -97,19 +104,20 @@ class UserManager:
         )
 
     def create_user(self, username, password, role="user", full_name="", email=""):
-        if not username or not password:
+        clean_user = str(username or "").strip()
+        if not clean_user or not password:
             return None, "Kullanici adi ve sifre zorunludur."
         pw_error = validate_password_policy(password)
         if pw_error:
             return None, pw_error
-        if self.db.get_user_by_username(username):
-            return None, f"'{username}' kullanici adi zaten kayitli."
+        if self.db.get_user_by_username(clean_user):
+            return None, f"'{clean_user}' kullanici adi zaten kayitli."
         password_hash = hash_password(password)
-        user_id = self.db.create_user(username, password_hash, role, full_name, email)
+        user_id = self.db.create_user(clean_user, password_hash, role, full_name, email)
         if user_id is None:
             return None, "Kullanici olusturulamadi (benzersiz olmayan kullanici adi)."
-        logger.info(f"Kullanici olusturuldu: {username} (rol: {role})")
-        return User(id=user_id, username=username, role=role, full_name=full_name, email=email), None
+        logger.info(f"Kullanici olusturuldu: {clean_user} (rol: {role})")
+        return User(id=user_id, username=clean_user, role=role, full_name=full_name, email=email), None
 
     def list_users(self):
         users = self.db.get_all_users()
@@ -181,7 +189,10 @@ class UserManager:
 
     def get_security_question(self, username: str) -> tuple[str | None, str | None]:
         """Kullanıcı adından güvenlik sorusunu getirir."""
-        user_dict = self.db.get_user_by_username(username.strip())
+        clean_user = str(username or "").strip()
+        if not clean_user:
+            return None, "Kullanıcı adı belirtilmedi."
+        user_dict = self.db.get_user_by_username(clean_user)
         if not user_dict:
             return None, "Kullanıcı bulunamadı."
         q = user_dict.get("security_question", "")
@@ -194,15 +205,17 @@ class UserManager:
         self, username: str, answer: str, new_password: str
     ) -> tuple[bool, str | None]:
         """Güvenlik sorusu cevabını doğrulayıp yeni şifreyi tanımlar."""
-        username = username.strip()
-        locked, lock_msg = check_lockout(username)
+        clean_user = str(username or "").strip()
+        if not clean_user:
+            return False, "Kullanıcı adı belirtilmedi."
+        locked, lock_msg = check_lockout(clean_user)
         if locked:
             return False, f"Çok fazla hatalı deneme. {lock_msg}"
 
-        user_dict = self.db.get_user_by_username(username)
+        user_dict = self.db.get_user_by_username(clean_user)
         if not user_dict:
             verify_password(normalize_security_answer(answer), _DUMMY_HASH)
-            record_attempt(success=False, username=username)
+            record_attempt(success=False, username=clean_user)
             return False, "Kullanıcı bulunamadı."
         if not user_dict.get("is_active", 1):
             verify_password(normalize_security_answer(answer), _DUMMY_HASH)
@@ -214,7 +227,7 @@ class UserManager:
             return False, "Bu hesap için tanımlı güvenlik sorusu cevabı bulunmuyor."
 
         if not verify_password(normalize_security_answer(answer), stored_hash):
-            just_locked, msg = record_attempt(success=False, username=username)
+            just_locked, msg = record_attempt(success=False, username=clean_user)
             if just_locked:
                 return False, f"Çok fazla hatalı deneme. {msg}"
             return False, "Güvenlik sorusu cevabı hatalı."
@@ -226,8 +239,8 @@ class UserManager:
         new_hash = hash_password(new_password)
         ok = self.db.update_user(user_dict["id"], password_hash=new_hash, must_change_password=0)
         if ok:
-            record_attempt(success=True, username=username)
-            logger.info(f"Kullanıcı '{username}' güvenlik sorusu ile şifresini başarıyla sıfırladı.")
+            record_attempt(success=True, username=clean_user)
+            logger.info(f"Kullanıcı '{clean_user}' güvenlik sorusu ile şifresini başarıyla sıfırladı.")
             return True, None
         return False, "Şifre güncellenemedi."
 
@@ -250,15 +263,17 @@ class UserManager:
         Anahtar tek kullanımlıktır: başarılı kullanımdan sonra geçersizleştirilir ve
         yerine yeni bir kurtarma anahtarı üretilir (mesajla döndürülür).
         """
-        username = username.strip()
-        locked, lock_msg = check_lockout(username)
+        clean_user = str(username or "").strip()
+        if not clean_user:
+            return False, "Kullanıcı adı belirtilmedi."
+        locked, lock_msg = check_lockout(clean_user)
         if locked:
             return False, f"Çok fazla hatalı deneme. {lock_msg}"
 
-        user_dict = self.db.get_user_by_username(username)
+        user_dict = self.db.get_user_by_username(clean_user)
         if not user_dict:
             verify_password(normalize_recovery_key(recovery_key), _DUMMY_HASH)
-            record_attempt(success=False, username=username)
+            record_attempt(success=False, username=clean_user)
             return False, "Kullanıcı bulunamadı."
         if not user_dict.get("is_active", 1):
             verify_password(normalize_recovery_key(recovery_key), _DUMMY_HASH)
@@ -270,9 +285,10 @@ class UserManager:
             return False, "Bu hesap için tanımlı bir kurtarma anahtarı bulunmuyor."
 
         if not verify_password(normalize_recovery_key(recovery_key), stored_hash):
-            just_locked, msg = record_attempt(success=False, username=username)
+            just_locked, msg = record_attempt(success=False, username=clean_user)
             if just_locked:
                 return False, f"Çok fazla hatalı deneme. {msg}"
+            return False, "Geçersiz kurtarma anahtarı."
             return False, "Geçersiz kurtarma anahtarı."
 
         pw_error = validate_password_policy(new_password)
