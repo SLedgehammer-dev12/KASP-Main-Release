@@ -101,13 +101,17 @@ def run_eos_shootout(engine, base_inputs: dict,
 
     # Referansa göre sapma hesapla
     if reference:
-        ref_head = reference.get("head_kj_kg", 0)
-        ref_power = reference.get("power_gas_total_kw", 0)
+        ref_head = reference.get("head_kj_kg")
+        ref_power = reference.get("power_gas_total_kw")
         for r in results:
-            if not r["success"] or r["head_kj_kg"] is None or ref_head == 0:
+            if not r.get("success"):
                 continue
-            r["head_diff_pct"] = (r["head_kj_kg"] - ref_head) / ref_head * 100
-            r["power_diff_pct"] = (r["power_kw"] - ref_power) / ref_power * 100 if ref_power else 0
+            head = r.get("head_kj_kg")
+            if head is not None and ref_head:
+                r["head_diff_pct"] = (head - ref_head) / ref_head * 100.0
+            power = r.get("power_kw")
+            if power is not None and ref_power:
+                r["power_diff_pct"] = (power - ref_power) / ref_power * 100.0
 
     # Fallback zincir kaydini ilk sonuca ekle
     try:
@@ -188,13 +192,17 @@ def run_method_shootout(engine, base_inputs: dict,
 
     # Referansa göre sapma hesapla
     if reference:
-        ref_head = reference.get("head_kj_kg", 0)
-        ref_power = reference.get("power_gas_total_kw", 0)
+        ref_head = reference.get("head_kj_kg")
+        ref_power = reference.get("power_gas_total_kw")
         for r in results:
-            if not r.get("success") or r.get("head_kj_kg") is None or ref_head == 0:
+            if not r.get("success"):
                 continue
-            r["head_diff_pct"] = (r["head_kj_kg"] - ref_head) / ref_head * 100
-            r["power_diff_pct"] = (r["power_kw"] - ref_power) / ref_power * 100 if ref_power else 0
+            head = r.get("head_kj_kg")
+            if head is not None and ref_head:
+                r["head_diff_pct"] = (head - ref_head) / ref_head * 100.0
+            power = r.get("power_kw")
+            if power is not None and ref_power:
+                r["power_diff_pct"] = (power - ref_power) / ref_power * 100.0
 
     return results
 

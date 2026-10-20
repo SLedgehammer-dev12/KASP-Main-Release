@@ -218,3 +218,48 @@ def test_engineering_dashboard_method_detail_widgets(qapp):
     assert widgets["method_detail_frame"].isVisible() is False
     assert widgets["method_table"].selectionBehavior() == widgets["method_table"].SelectRows
 
+
+def test_shootout_handles_none_reference_and_power_values():
+    """Verify that run_eos_shootout and run_method_shootout safely handle None values
+    in reference head, candidate head, and power without throwing TypeError."""
+    from kasp.core.engineering import run_eos_shootout, run_method_shootout
+
+    class MockEngine:
+        def __init__(self):
+            self.thermo_solver = None
+
+        def calculate_design_performance(self, inputs):
+            if "is_method_shootout" in inputs:
+                if inputs.get("method") == "Metot 5: Huntington-RK45":
+                    return {"head_kj_kg": 100.0, "power_gas_total_kw": 50.0, "actual_poly_efficiency": 80.0}
+                return {"head_kj_kg": 105.0, "power_gas_total_kw": None, "actual_poly_efficiency": 81.0}
+            if inputs.get("eos_method") == "coolprop":
+                return {"head_kj_kg": None, "power_gas_total_kw": None, "actual_poly_efficiency": 80.0}
+            return {"head_kj_kg": 120.0, "power_gas_total_kw": None, "actual_poly_efficiency": 82.0}
+
+    mock_engine = MockEngine()
+    inputs = {
+        "p_in": 10.0, "p_in_unit": "bar",
+        "t_in": 25.0, "t_in_unit": "°C",
+        "p_out": 20.0, "p_out_unit": "bar",
+        "flow": 1000.0, "flow_unit": "kg/h",
+        "gas_comp": {"METHANE": 100.0},
+        "poly_eff": 80.0, "num_units": 1, "num_stages": 1,
+    }
+
+    # 1. EOS shootout should not crash when reference head/power is None
+    eos_res = run_eos_shootout(mock_engine, dict(inputs, eos_method="coolprop"))
+    assert len(eos_res) > 0
+    for r in eos_res:
+        assert r.get("head_diff_pct") is None
+
+    # 2. Method shootout should calculate head_diff_pct but safely skip power_diff_pct when candidate power is None
+    method_res = run_method_shootout(mock_engine, dict(inputs, is_method_shootout=True))
+    assert len(method_res) > 0
+    ref_method = method_res[0]
+    assert ref_method.get("head_diff_pct") == 0.0
+    candidate_method = method_res[1]
+    assert candidate_method.get("head_diff_pct") == 5.0
+    assert candidate_method.get("power_diff_pct") is None
+
+
