@@ -386,3 +386,78 @@ def test_thermo_methods_zero_and_percentage_poly_eff_no_crash():
     )
     assert abs(n_exp_frac - n_exp_pct) < 1e-6
 
+
+def test_thermo_methods_non_positive_pressure_raises_value_error():
+    """Verify methods 1-6 raise ValueError when given non-positive or invalid pressures."""
+    import logging
+    from kasp.core.properties import ThermodynamicSolver
+    from kasp.core.thermo_methods import ThermoMethodSuite
+
+    solver = ThermodynamicSolver()
+    suite = ThermoMethodSuite(thermo_solver=solver, logger=logging.getLogger("test_safety"))
+
+    # Test pressure coercion helper directly
+    with pytest.raises(ValueError, match="pozitif olmalıdır"):
+        ThermoMethodSuite._coerce_pressures(0.0, 100000.0)
+
+    with pytest.raises(ValueError, match="pozitif olmalıdır"):
+        ThermoMethodSuite._coerce_pressures(100000.0, -500.0)
+
+    with pytest.raises(ValueError, match="Geçersiz basınç"):
+        ThermoMethodSuite._coerce_pressures("not_a_number", 100000.0)
+
+    # Test all 6 methods raise ValueError on p_in <= 0
+    bad_p = 0.0
+    good_p = 200000.0
+    t_in = 300.0
+    eff = 0.75
+
+    with pytest.raises(ValueError):
+        suite.method_average_properties(bad_p, t_in, good_p, eff, "Methane", "coolprop")
+
+    with pytest.raises(ValueError):
+        suite.method_endpoint(bad_p, t_in, good_p, eff, "Methane", "coolprop")
+
+    with pytest.raises(ValueError):
+        suite.method_incremental_pressure(bad_p, t_in, good_p, eff, "Methane", "coolprop")
+
+    with pytest.raises(ValueError):
+        suite.method_direct_hs(bad_p, t_in, good_p, eff, "Methane", "coolprop")
+
+    with pytest.raises(ValueError):
+        suite.method_huntington_rk45(bad_p, t_in, good_p, eff, "Methane", "coolprop")
+
+    with pytest.raises(ValueError):
+        suite.method_schultz_3exp(bad_p, t_in, good_p, eff, "Methane", "coolprop")
+
+
+def test_thermo_methods_zero_pressure_difference_early_exit():
+    """Verify methods 1-6 cleanly return T_in, 0 head, and termination_reason='zero_dp' when Pin == Pout."""
+    import logging
+    from kasp.core.properties import ThermodynamicSolver
+    from kasp.core.thermo_methods import ThermoMethodSuite
+
+    solver = ThermodynamicSolver()
+    suite = ThermoMethodSuite(thermo_solver=solver, logger=logging.getLogger("test_safety"))
+
+    p = 200000.0
+    t_in = 310.15
+    eff = 0.78
+
+    methods = [
+        ("averaging", suite.method_average_properties),
+        ("endpoint", suite.method_endpoint),
+        ("incremental_pressure", suite.method_incremental_pressure),
+        ("direct_hs", suite.method_direct_hs),
+        ("huntington_rk45", suite.method_huntington_rk45),
+        ("schultz_3exp", suite.method_schultz_3exp),
+    ]
+
+    for name, m_func in methods:
+        t_out, head, z, hist = m_func(p, t_in, p, eff, "Methane", "coolprop")
+        assert abs(t_out - t_in) < 1e-6, f"{name}: T_out ({t_out}) != T_in ({t_in})"
+        assert head == 0.0, f"{name}: head ({head}) != 0.0"
+        assert z > 0.0, f"{name}: Z ({z}) non-positive"
+        assert hist.get("termination_reason") == "zero_dp", f"{name}: termination_reason != zero_dp"
+
+

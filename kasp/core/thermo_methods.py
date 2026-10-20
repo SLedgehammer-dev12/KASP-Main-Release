@@ -42,6 +42,17 @@ class ThermoMethodSuite:
         return max(2, min(self.MAX_INCREMENTAL_STEPS, step_count))
 
     @staticmethod
+    def _coerce_pressures(p_in, p_out) -> tuple[float, float]:
+        try:
+            pi = float(p_in)
+            po = float(p_out)
+        except (TypeError, ValueError):
+            raise ValueError(f"Geçersiz basınç girdisi (p_in={p_in}, p_out={p_out}).")
+        if not math.isfinite(pi) or pi <= 0.0 or not math.isfinite(po) or po <= 0.0:
+            raise ValueError(f"Giriş ve çıkış basınçları pozitif olmalıdır (p_in={p_in}, p_out={p_out}).")
+        return pi, po
+
+    @staticmethod
     def _coerce_poly_eff(value, *, default=0.75, min_eff=0.10, max_eff=0.999) -> float:
         """
         Politropik verimi standart fraksiyon (0.0 < eff < 1.0) aralığına normalize eder.
@@ -73,9 +84,31 @@ class ThermoMethodSuite:
         ) / 1000.0
 
     def method_average_properties(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
+        p_in, p_out = self._coerce_pressures(p_in, p_out)
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
         poly_eff = self._coerce_poly_eff(poly_eff)
+
+        try:
+            state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
+            k1, Z1 = state_in.k, state_in.Z
+        except Exception as error:
+            raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 1): {error}")
+
+        if abs(p_out - p_in) < 1.0:
+            return t_in, 0.0, Z1, {
+                "pressure": [p_in],
+                "temperature": [t_in],
+                "z_factor": [Z1],
+                "k_value": [k1],
+                "iteration": [0],
+                "method_used": "averaging",
+                "iteration_limit": max_iter,
+                "tolerance": tolerance,
+                "converged": True,
+                "termination_reason": "zero_dp",
+            }
+
         pr = p_out / p_in
         use_integral = pr > EngineSettings.PR_INTEGRATION_THRESHOLD
 
@@ -83,12 +116,6 @@ class ThermoMethodSuite:
             self.logger.info(
                 f"📊 API 617 Appendix C — İntegral metodu: PR={pr:.2f} > {EngineSettings.PR_INTEGRATION_THRESHOLD}"
             )
-
-        try:
-            state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
-            k1, Z1 = state_in.k, state_in.Z
-        except Exception as error:
-            raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 1): {error}")
 
         n_init = (k1 - 1) / (k1 * poly_eff)
         t2_guess = t_in * (p_out / p_in) ** n_init
@@ -202,6 +229,7 @@ class ThermoMethodSuite:
         return t2_guess, poly_head, z_avg_final, history
 
     def method_endpoint(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
+        p_in, p_out = self._coerce_pressures(p_in, p_out)
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
         poly_eff = self._coerce_poly_eff(poly_eff)
@@ -210,6 +238,20 @@ class ThermoMethodSuite:
             k1, Z1 = state_in.k, state_in.Z
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 2): {error}")
+
+        if abs(p_out - p_in) < 1.0:
+            return t_in, 0.0, Z1, {
+                "pressure": [p_in],
+                "temperature": [t_in],
+                "z_factor": [Z1],
+                "k_value": [k1],
+                "iteration": [0],
+                "method_used": "endpoint",
+                "iteration_limit": max_iter,
+                "tolerance": tolerance,
+                "converged": True,
+                "termination_reason": "zero_dp",
+            }
 
         n_init = (k1 - 1) / (k1 * poly_eff)
         t2_guess = t_in * (p_out / p_in) ** n_init
@@ -306,6 +348,7 @@ class ThermoMethodSuite:
         return t2_guess, poly_head, z_avg_final, history
 
     def method_incremental_pressure(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, step_count=10):
+        p_in, p_out = self._coerce_pressures(p_in, p_out)
         step_count = self._coerce_step_count(step_count)
         poly_eff = self._coerce_poly_eff(poly_eff)
 
@@ -315,6 +358,19 @@ class ThermoMethodSuite:
             mw = state_in.MW
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 3): {error}")
+
+        if abs(p_out - p_in) < 1.0:
+            return t_in, 0.0, z0, {
+                "pressure": [p_in],
+                "temperature": [t_in],
+                "z_factor": [z0],
+                "head_incremental": [0.0],
+                "step": [0],
+                "method_used": "incremental_pressure",
+                "step_count": 0,
+                "converged": True,
+                "termination_reason": "zero_dp",
+            }
 
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
 
@@ -371,6 +427,7 @@ class ThermoMethodSuite:
         return t_current, total_head, z_avg, history
 
     def method_direct_hs(self, p_in, t_in, p_out, poly_eff, gas_obj, eos):
+        p_in, p_out = self._coerce_pressures(p_in, p_out)
         poly_eff = self._coerce_poly_eff(poly_eff)
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
@@ -378,6 +435,18 @@ class ThermoMethodSuite:
             mw = state_in.MW
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 4): {error}")
+
+        if abs(p_out - p_in) < 1.0:
+            return t_in, 0.0, z1, {
+                "converged": True,
+                "method_used": "direct_hs",
+                "termination_reason": "zero_dp",
+                "iterations_hs": [],
+                "delta_h_actual": 0.0,
+                "eta_isen_final": poly_eff,
+                "t_isen_final": t_in,
+                "fallback_used": False,
+            }
 
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
         t_isen = self.find_isentropic_temperature(p_in, t_in, p_out, s1, gas_obj, eos, state_in)
@@ -606,6 +675,7 @@ class ThermoMethodSuite:
         dT/dP = [v * (1/eta_p - 1) + T * (dv/dT)_P] / Cp(P, T)
         H_p = integral_{P_in}^{P_out} v(P, T(P)) dP
         """
+        p_in, p_out = self._coerce_pressures(p_in, p_out)
         step_count = self._coerce_step_count(step_count, default=20)
         poly_eff = self._coerce_poly_eff(poly_eff)
         try:
@@ -807,6 +877,7 @@ class ThermoMethodSuite:
         n_v = k / [Y - X*(k-1)*(1/eta_p - 1)]
         m_T = (R*Z/Cp) * (1/eta_p + X)
         """
+        p_in, p_out = self._coerce_pressures(p_in, p_out)
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
         poly_eff = self._coerce_poly_eff(poly_eff)
@@ -818,6 +889,18 @@ class ThermoMethodSuite:
             mw = state_in.MW
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 6): {error}")
+
+        if abs(p_out - p_in) < 1.0:
+            return t_in, 0.0, z1, {
+                "pressure": [p_in],
+                "temperature": [t_in],
+                "z_factor": [z1],
+                "k_value": [k1],
+                "iteration": [0],
+                "converged": True,
+                "method_used": "schultz_3exp",
+                "termination_reason": "zero_dp",
+            }
 
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
         pr = p_out / p_in
