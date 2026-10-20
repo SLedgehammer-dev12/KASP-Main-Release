@@ -208,13 +208,24 @@ class EosChain:
         if self._locked_eos is not None:
             if not self._tracker.is_eos_broken(self._locked_eos):
                 go = self._build_gas_obj(self._locked_eos)
-                state = self._solver._dispatch(P_pa, T_k, go, self._locked_eos)
-                if self._locked_fallback:
-                    state.raw_props["fallback"] = True
-                    state.raw_props["fallback_layer"] = "eos"
-                    state.raw_props["fallback_from"] = preferred_eos
-                    state.raw_props["fallback_to"] = self._locked_eos
-                return state
+                try:
+                    state = self._solver._dispatch(P_pa, T_k, go, self._locked_eos)
+                    if self._locked_fallback:
+                        state.raw_props["fallback"] = True
+                        state.raw_props["fallback_layer"] = "eos"
+                        state.raw_props["fallback_from"] = preferred_eos
+                        state.raw_props["fallback_to"] = self._locked_eos
+                    return state
+                except Exception as exc:
+                    self._tracker.mark_eos_broken(self._locked_eos, str(exc))
+                    logger.warning(
+                        "⚠️ [EOS fallback] Kilitli EOS (%s) hesaplama sırasında başarısız oldu: %s. EosChainBrokenError tetikleniyor.",
+                        self._locked_eos,
+                        exc,
+                    )
+                    raise EosChainBrokenError(
+                        f"Kilitli EOS ({self._locked_eos}) calismiyor: {exc}"
+                    ) from exc
             # Kilitli EOS kirildi → hata firlat, stage yeniden baslatilsin
             raise EosChainBrokenError(
                 f"Kilitli EOS ({self._locked_eos}) calismiyor: "

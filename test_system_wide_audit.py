@@ -11,7 +11,7 @@ import pytest
 
 from kasp.core.thermo import ThermoEngine
 from kasp.core.properties import ThermodynamicState
-from kasp.core.fallback import EosChain, FallbackTracker
+from kasp.core.fallback import EosChain, FallbackTracker, EosChainBrokenError
 from kasp.core.units import UnitSystem
 from kasp.core.thermo_design_support import optimize_stage_pressure_ratios
 from kasp.config_manager import ConfigManager
@@ -276,3 +276,38 @@ def test_item_14_end_to_end_multimethod_verification():
     assert abs(p4 - p6) / p4 < 0.01
     assert abs(t4 - t5) < 0.5
     assert abs(t4 - t6) < 0.5
+
+
+def test_eos_chain_locked_failure_triggers_eos_chain_broken_error():
+    """Verify that when a locked EOS fails during intermediate stage calculations,
+    EosChain catches the exception, marks the EOS as broken in tracker, and raises EosChainBrokenError."""
+    tracker = FallbackTracker()
+    
+    class MockSolver:
+        def __init__(self):
+            self.call_count = 0
+            
+        def _dispatch(self, p, t, gas_obj, eos):
+            self.call_count += 1
+            if self.call_count == 1:
+                return ThermodynamicState(
+                    P=p, T=t, H=1000.0, S=10.0, Z=0.95, k=1.33, MW=16.04,
+                    Cp=2000.0, Cv=1500.0, density=1.0, phase="gas",
+                    speed_of_sound=400.0, raw_props={}
+                )
+            raise ValueError("CoolProp numerical solver failed at high pressure")
+
+    solver = MockSolver()
+    chain = EosChain(tracker, solver, raw_composition={"METHANE": 100.0})
+    
+    # 1. First call locks "coolprop"
+    st1 = chain.get_properties(1e5, 300.0, "coolprop")
+    assert chain._locked_eos == "coolprop"
+    assert not tracker.is_eos_broken("coolprop")
+    
+    # 2. Second call must trigger EosChainBrokenError and mark "coolprop" broken
+    with pytest.raises(EosChainBrokenError) as exc_info:
+        chain.get_properties(2e5, 350.0, "coolprop")
+    assert "coolprop" in str(exc_info.value)
+    assert tracker.is_eos_broken("coolprop")
+
