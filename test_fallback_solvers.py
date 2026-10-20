@@ -182,3 +182,64 @@ def test_benchmark_solver_executes_comparisons():
     assert len(comparisons[0]["methods"]) == 3
 
 
+def test_aerodynamic_calculation_guards():
+    """Verify that CompressorAerodynamics methods safely handle zero, negative, None,
+    and non-numeric inputs without throwing unhandled exceptions."""
+    solver = ThermodynamicSolver()
+    gas_comp = {"METHANE": 1.0}
+    normalized = GasMixtureBuilder.validate_and_normalize(gas_comp)
+    gas_obj = GasMixtureBuilder.build_thermo_data(normalized)
+
+    # 1. calculate_polytropic_exponent_integral guards
+    # Zero or negative inlet pressure
+    n1, k1, diag1 = CompressorAerodynamics.calculate_polytropic_exponent_integral(
+        0.0, 300.0, 10.0e5, 0.8, solver, gas_obj, "pr"
+    )
+    assert k1 == 1.3
+    assert diag1["steps_used"] == 0
+
+    # Zero or negative outlet pressure
+    n2, k2, diag2 = CompressorAerodynamics.calculate_polytropic_exponent_integral(
+        10.0e5, 300.0, 0.0, 0.8, solver, gas_obj, "pr"
+    )
+    assert k2 == 1.3
+    assert diag2["steps_used"] == 0
+
+    # Equal inlet and outlet pressure (p_in == p_out)
+    n3, k3, diag3 = CompressorAerodynamics.calculate_polytropic_exponent_integral(
+        10.0e5, 300.0, 10.0e5, 0.8, solver, gas_obj, "pr"
+    )
+    assert k3 > 1.0
+    assert diag3["steps_used"] == 0
+
+    # None or non-numeric inputs
+    n4, k4, diag4 = CompressorAerodynamics.calculate_polytropic_exponent_integral(
+        None, "invalid", 10.0e5, None, solver, gas_obj, "pr"
+    )
+    assert k4 == 1.3
+
+    # 2. _calculate_z_average_logarithmic guards
+    assert CompressorAerodynamics._calculate_z_average_logarithmic(None, 1.0) == 1.0
+    assert CompressorAerodynamics._calculate_z_average_logarithmic(0.0, 0.9) == 1.0
+    assert CompressorAerodynamics._calculate_z_average_logarithmic(-0.5, -0.5) == 1.0
+    assert abs(CompressorAerodynamics._calculate_z_average_logarithmic(0.9, 0.9) - 0.9) < 1e-6
+    z_log = CompressorAerodynamics._calculate_z_average_logarithmic(0.8, 1.2)
+    assert 0.8 < z_log < 1.2
+
+    # 3. calculate_mechanical_loss guards
+    loss_none = CompressorAerodynamics.calculate_mechanical_loss(None, None)
+    assert loss_none >= 10.0
+    loss_str = CompressorAerodynamics.calculate_mechanical_loss("invalid", "invalid")
+    assert loss_str >= 10.0
+    loss_valid = CompressorAerodynamics.calculate_mechanical_loss(1.5, 5000.0)
+    assert 10.0 <= loss_valid <= 500.0
+
+    # 4. calculate_thermal_efficiency guards
+    assert CompressorAerodynamics.calculate_thermal_efficiency(None) == 0.0
+    assert CompressorAerodynamics.calculate_thermal_efficiency("invalid") == 0.0
+    assert CompressorAerodynamics.calculate_thermal_efficiency(0.0) == 0.0
+    assert CompressorAerodynamics.calculate_thermal_efficiency(-1000.0) == 0.0
+    assert 0.35 < CompressorAerodynamics.calculate_thermal_efficiency(9000.0) < 0.45
+
+
+

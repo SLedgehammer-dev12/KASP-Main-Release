@@ -263,12 +263,21 @@ class CompressorAerodynamics:
     @staticmethod
     def _calculate_z_average_logarithmic(z_in: float, z_out: float) -> float:
         """ASME PTC 10 Logaritmik Sıkıştırılabilirlik Ortalaması"""
-        if abs(z_out - z_in) < 1e-6:
-             return (z_in + z_out) / 2.0
         try:
-             return (z_out - z_in) / math.log(z_out / z_in)
+            zi = float(z_in) if z_in is not None else 1.0
+            zo = float(z_out) if z_out is not None else 1.0
+        except (TypeError, ValueError):
+            return 1.0
+
+        if not math.isfinite(zi) or zi <= 0.0 or not math.isfinite(zo) or zo <= 0.0:
+            return 1.0
+
+        if abs(zo - zi) < 1e-6:
+            return (zi + zo) / 2.0
+        try:
+            return (zo - zi) / math.log(zo / zi)
         except (ValueError, ZeroDivisionError):
-             return (z_in + z_out) / 2.0
+            return (zi + zo) / 2.0
 
     @staticmethod
     def calculate_mechanical_loss(inlet_vol_flow_m3s: float, reference_power_kw: float = None) -> float:
@@ -285,15 +294,25 @@ class CompressorAerodynamics:
 
         Limitation: Kayıp, referans gücün %10'unu geçemez; küçük makinelerde taban 10 kW.
         """
-        acmh_unit = max(1.0, inlet_vol_flow_m3s * 3600.0) # m3/h'a çevir
+        try:
+            vol_flow = float(inlet_vol_flow_m3s) if inlet_vol_flow_m3s is not None else 0.0
+        except (TypeError, ValueError):
+            vol_flow = 0.0
+
+        acmh_unit = max(1.0, vol_flow * 3600.0)  # m3/h'a çevir
 
         loss_kw = 0.65 * math.pow(acmh_unit, 0.45)
-        loss_kw = max(10.0, loss_kw) # Min kayıp limiti
+        loss_kw = max(10.0, loss_kw)  # Min kayıp limiti
 
-        limit_pct = EngineSettings.PTC10_MECHANICAL_LOSS_LIMIT / 100.0 # 0.10
+        limit_pct = EngineSettings.PTC10_MECHANICAL_LOSS_LIMIT / 100.0  # 0.10
 
-        if reference_power_kw is not None and reference_power_kw > 0.0:
-            max_allowed_loss = reference_power_kw * limit_pct
+        try:
+            ref_pwr = float(reference_power_kw) if reference_power_kw is not None else None
+        except (TypeError, ValueError):
+            ref_pwr = None
+
+        if ref_pwr is not None and math.isfinite(ref_pwr) and ref_pwr > 0.0:
+            max_allowed_loss = ref_pwr * limit_pct
             if loss_kw > max_allowed_loss:
                 logger.debug(f"Mekanik kayıp sınırlandırıldı: {loss_kw:.1f}x -> {max_allowed_loss:.1f}")
                 loss_kw = max_allowed_loss
@@ -305,8 +324,14 @@ class CompressorAerodynamics:
         """Isıl değerin güce dönüşümü (Temel Termodinami 2.Yasa Verimi)"""
         # 1 kWh = 3600 kJ
         # Verim = 3600 / HeatRate
-        if heat_rate_kj_kwh <= 0: return 0.0
-        therm_eff = 3600.0 / heat_rate_kj_kwh
+        try:
+            hr = float(heat_rate_kj_kwh) if heat_rate_kj_kwh is not None else 0.0
+        except (TypeError, ValueError):
+            hr = 0.0
+
+        if not math.isfinite(hr) or hr <= 0.0:
+            return 0.0
+        therm_eff = 3600.0 / hr
         return max(0.0, min(1.0, therm_eff))
 
     @staticmethod
@@ -420,13 +445,61 @@ class CompressorAerodynamics:
             poly_eff_val = poly_eff_val / 100.0
         poly_eff = max(0.10, min(0.999, poly_eff_val))
 
+        try:
+            p_in_val = float(p_in)
+            p_out_val = float(p_out)
+            t_in_val = float(t_in)
+        except (TypeError, ValueError):
+            p_in_val, p_out_val, t_in_val = 0.0, 0.0, 0.0
+
+        if (
+            p_in_val <= 0.0
+            or p_out_val <= 0.0
+            or t_in_val <= 0.0
+            or not math.isfinite(p_in_val)
+            or not math.isfinite(p_out_val)
+            or not math.isfinite(t_in_val)
+        ):
+            k_def = 1.3
+            n_def = (k_def - 1.0) / (k_def * poly_eff)
+            return n_def, k_def, {
+                'pressures': [p_in_val, p_out_val],
+                'k_values': [k_def],
+                'temperatures': [t_in_val],
+                'z_factors': [1.0],
+                'k_min': k_def,
+                'k_max': k_def,
+                'k_range_percent': 0.0,
+                'steps_used': 0,
+            }
+
+        if abs(p_out_val - p_in_val) < 1e-5:
+            try:
+                state_single = thermo_solver.get_properties(p_in_val, t_in_val, gas_obj, eos)
+                k_single = float(state_single.k) if getattr(state_single, 'k', 0) > 1.0 else 1.3
+                z_single = float(state_single.Z) if getattr(state_single, 'Z', 0) > 0 else 1.0
+            except Exception:
+                k_single = 1.3
+                z_single = 1.0
+            n_single = (k_single - 1.0) / (k_single * poly_eff)
+            return n_single, k_single, {
+                'pressures': [p_in_val, p_out_val],
+                'k_values': [k_single],
+                'temperatures': [t_in_val],
+                'z_factors': [z_single],
+                'k_min': k_single,
+                'k_max': k_single,
+                'k_range_percent': 0.0,
+                'steps_used': 0,
+            }
+
         # Geometrik basınç adımları (üstel sıkıştırma için daha uygun)
-        pressures = np.geomspace(p_in, p_out, steps + 1)
+        pressures = np.geomspace(p_in_val, p_out_val, steps + 1)
 
         k_values = []
         temperatures = []
         z_factors = []
-        t_current = t_in
+        t_current = t_in_val
 
         for i in range(steps):
             p_start = pressures[i]
@@ -451,11 +524,18 @@ class CompressorAerodynamics:
             t_current = t_current * (p_end / p_start) ** n_step
 
         # Basınç farkına göre ağırlıklı ortalama k (ASME PTC 10 uyumlu)
-        pressure_diffs = np.diff(pressures)
-        weights = pressure_diffs / np.sum(pressure_diffs)
-        k_integral = float(np.average(k_values, weights=weights))
+        pressure_diffs = np.abs(np.diff(pressures))
+        diff_sum = float(np.sum(pressure_diffs))
+        if diff_sum > 0:
+            weights = pressure_diffs / diff_sum
+            k_integral = float(np.average(k_values, weights=weights))
+        else:
+            k_integral = float(np.mean(k_values)) if k_values else 1.3
 
         n_minus_1_over_n = (k_integral - 1) / (k_integral * poly_eff)
+
+        k_mean = float(np.mean(k_values)) if k_values else 1.3
+        k_range_pct = ((max(k_values) - min(k_values)) / k_mean) * 100.0 if k_mean > 0 else 0.0
 
         analysis_data = {
             'pressures':      pressures.tolist(),
@@ -464,7 +544,7 @@ class CompressorAerodynamics:
             'z_factors':      z_factors,
             'k_min':          min(k_values),
             'k_max':          max(k_values),
-            'k_range_percent': ((max(k_values) - min(k_values)) / np.mean(k_values)) * 100,
+            'k_range_percent': k_range_pct,
             'steps_used':     steps,
         }
 
