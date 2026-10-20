@@ -242,9 +242,13 @@ def perform_vle_flash(
             "liquid_mw": feed_mw,
         }
 
-    # 4. İki fazlı ayrışma dengesi
-    y_raw = {c: z[c] * k_values[c] / (1.0 + beta * (k_values[c] - 1.0)) for c in z}
-    x_raw = {c: z[c] / (1.0 + beta * (k_values[c] - 1.0)) for c in z}
+    # 4. İki fazlı ayrışma dengesi (sıfıra bölme emniyetli)
+    def _safe_vle_denom(ki: float) -> float:
+        d = 1.0 + beta * (ki - 1.0)
+        return d if abs(d) > 1e-15 else (1e-15 if d >= 0 else -1e-15)
+
+    y_raw = {c: z[c] * k_values[c] / _safe_vle_denom(k_values[c]) for c in z}
+    x_raw = {c: z[c] / _safe_vle_denom(k_values[c]) for c in z}
 
     tot_y = sum(y_raw.values())
     tot_x = sum(x_raw.values())

@@ -203,6 +203,42 @@ class ThermoDesignOrchestrator:
             stage_t_in = curr_t_in
             stage_mass_flow = curr_mass_flow
 
+            # Önceki kademe ara-soğutucusunda tam yoğuşma olduysa gaz debisi kalmamıştır
+            if stage_mass_flow <= 1e-6 or not curr_gas_comp:
+                self.logger.warning(
+                    f"⚠️ Kademe {stage}: Önceki ara-soğutucuda akışkanın tamamı yoğuştuğu için gaz debisi 0 kg/s. "
+                    "Bu kademe pasif olarak kaydedildi."
+                )
+                staged_results.append(
+                    build_stage_result(
+                        stage=stage,
+                        p_in=stage_p_in,
+                        t_in=stage_t_in,
+                        p_out=curr_p_out,
+                        t_out=stage_t_in,
+                        head_kj_kg=0.0,
+                        poly_eff_design=poly_eff_tgt,
+                        poly_eff_diagnostic=0.0,
+                        power_gas_kw=0.0,
+                        delta_h_kj_kg=0.0,
+                        power_consistency_check_kw=0.0,
+                        z_avg=1.0,
+                        method_history={"converged": False, "termination_reason": "total_condensation_upstream"},
+                        fallback_used=False,
+                        fallback_sources=[],
+                        compressor_selectable=False,
+                        selection_warnings=["Önceki ara-soğutucuda akışkanın tamamı yoğuştu (sıvı knockout) - gaz debisi yok"],
+                        analysis_scope="NOT_SELECTABLE",
+                        energy_balance_ok=False,
+                        delta_h_source="zero_flow",
+                        invalid_stage_power=True,
+                        liquid_knockout_kg_h=0.0,
+                        mass_flow_kgs=0.0,
+                    )
+                )
+                any_invalid_stage = True
+                continue
+
             # Method hesaplamasi — EosChainBrokenError veya Metot 4 hatasinda yeniden dene
             retries = 0
             while True:
@@ -386,24 +422,35 @@ class ThermoDesignOrchestrator:
                         if vle_res.get("is_two_phase") and vle_res.get("liquid_knockout_kg_h", 0.0) > 0.001:
                             stage_liquid_knockout = vle_res["liquid_knockout_kg_h"]
                             total_liquid_knockout_kg_h += stage_liquid_knockout
-                            curr_mass_flow = vle_res["vapor_mass_flow_kgs"]
-                            curr_gas_comp = vle_res["vapor_composition"]
-                            # Sonraki kademeler icin curr_gas_obj'yi yeni gaz kompozisyonu ile guncelle
-                            if eos == "coolprop":
-                                curr_gas_obj = GasMixtureBuilder.build_coolprop_string(curr_gas_comp)
-                            elif eos == "neqsim":
-                                curr_gas_obj = GasMixtureBuilder.build_neqsim_input(curr_gas_comp)
+                            curr_mass_flow = max(0.0, float(vle_res.get("vapor_mass_flow_kgs", 0.0)))
+                            curr_gas_comp = vle_res.get("vapor_composition") or {}
+
+                            # Tam yoğuşma durumu (buhar fazı kalmadı)
+                            if curr_mass_flow <= 1e-6 or not curr_gas_comp:
+                                curr_mass_flow = 0.0
+                                curr_gas_comp = {}
+                                self.logger.warning(
+                                    f"⚠️ Kademe {stage} sonrası ara-soğutucuda akışkanın tamamı "
+                                    f"({stage_liquid_knockout:.2f} kg/h) yoğuştu (Knockout Drum). "
+                                    f"Kalan gaz kütle debisi 0 kg/s olduğundan sonraki kompresör kademeleri çalışamaz."
+                                )
                             else:
-                                curr_gas_obj = GasMixtureBuilder.build_thermo_data(curr_gas_comp)
+                                # Sonraki kademeler icin curr_gas_obj'yi yeni gaz kompozisyonu ile guncelle
+                                if eos == "coolprop":
+                                    curr_gas_obj = GasMixtureBuilder.build_coolprop_string(curr_gas_comp)
+                                elif eos == "neqsim":
+                                    curr_gas_obj = GasMixtureBuilder.build_neqsim_input(curr_gas_comp)
+                                else:
+                                    curr_gas_obj = GasMixtureBuilder.build_thermo_data(curr_gas_comp)
 
-                            if eos_chain is not None:
-                                eos_chain._raw_composition = curr_gas_comp
-                                eos_chain._gas_obj_cache.clear()
+                                if eos_chain is not None:
+                                    eos_chain._raw_composition = curr_gas_comp
+                                    eos_chain._gas_obj_cache.clear()
 
-                            self.logger.info(
-                                f"💧 Kademe {stage} sonrasi ara-sogutucuda {stage_liquid_knockout:.2f} kg/h sivi ayristirildi "
-                                f"(Knockout Drum). Sonraki kademe kutle debisi: {curr_mass_flow:.4f} kg/s."
-                            )
+                                self.logger.info(
+                                    f"💧 Kademe {stage} sonrasi ara-sogutucuda {stage_liquid_knockout:.2f} kg/h sivi ayristirildi "
+                                    f"(Knockout Drum). Sonraki kademe kutle debisi: {curr_mass_flow:.4f} kg/s."
+                                )
                     except Exception as exc:
                         self.logger.warning(f"Ara-soğutucu VLE flash hesaplama hatası: {exc}")
 

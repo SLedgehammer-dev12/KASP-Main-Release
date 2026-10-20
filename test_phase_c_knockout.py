@@ -115,3 +115,43 @@ def test_single_stage_no_intercooler():
     assert res["liquid_knockout_total_kg_h"] == 0.0
     assert len(res["stages"]) == 1
     assert res["stages"][0]["mass_flow_kgs"] == pytest.approx(8.0, abs=1e-4)
+
+
+def test_vle_flash_zero_division_guard():
+    """K_i ~ 0 veya K_i ~ inf durumunda paydada sıfıra bölme (ZeroDivisionError) oluşmamalıdır."""
+    # Ağır hidrokarbon içeren karışımda Wilson K değerleri dekan için 0'a çok yakın olabilir
+    comp = {"Methane": 99.9, "Decane": 0.1}
+    # Yüksek basınç, düşük sıcaklıkta flash hesabı
+    res = perform_vle_flash(p_pa=50e5, t_k=250.0, composition=comp, mass_flow_kgs=5.0)
+    assert res is not None
+    assert "vapor_fraction" in res
+    assert 0.0 <= res["vapor_fraction"] <= 1.0
+
+
+def test_multistage_total_condensation_intercooler():
+    """Ara-soğutucuda akışkanın tamamı yoğuştuğunda (100% sıvı knockout) çökme olmamalıdır."""
+    engine = ThermoEngine()
+    inputs = {
+        "p_in": 1.0, "p_in_unit": "bar",
+        "p_out": 20.0, "p_out_unit": "bar",
+        "t_in": 150.0, "t_in_unit": "°C",
+        "intercooler_t": 10.0, "intercooler_t_unit": "°C",
+        "intercooler_dp": 0.02,
+        "num_stages": 2,
+        "flow": 5.0, "flow_unit": "kg/s",
+        "gas_comp": {"DECANE": 100.0},
+        "eos_method": "pr",
+        "method": "Metot 2 (Endpoint)",
+        "poly_eff": 80.0,
+        "enable_uncertainty": False,
+    }
+    res = engine.calculate_design_performance(inputs)
+    assert res is not None
+    # 5 kg/s * 3600 = 18000 kg/h tamamı sıvı knockout olmalı
+    assert res["liquid_knockout_total_kg_h"] == pytest.approx(18000.0, rel=1e-3)
+    # Kademe 2'ye gaz debisi kalmadığı için debi 0 kg/s ve seçilemez olmalı
+    assert res["stages"][1]["mass_flow_kgs"] == 0.0
+    assert res["stages"][1]["power_gas_kw"] == 0.0
+    assert res["stages"][1]["compressor_selectable"] is False
+    assert any("tamamı yoğuştu" in w for w in res.get("warnings", []))
+
