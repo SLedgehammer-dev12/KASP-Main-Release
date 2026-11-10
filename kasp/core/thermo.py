@@ -35,6 +35,7 @@ from kasp.core.thermo_support import (
     convert_pressure_to_pa as convert_pressure_to_pa_helper,
     convert_result_value as convert_result_value_helper,
     convert_temperature_to_k as convert_temperature_to_k_helper,
+    isentropic_exponent as isentropic_exponent_helper,
 )
 
 # Eski yardımcılar ve Sabitler
@@ -102,7 +103,7 @@ class ThermoEngine:
             return GasMixtureBuilder.build_coolprop_string(comp_frac)
         elif eos_method == 'neqsim':
             return GasMixtureBuilder.build_neqsim_input(comp_frac)
-        elif eos_method in ['pr', 'srk', 'aga8', 'thermopack', 'ccp', 'dwsim']:
+        elif eos_method in ['pr', 'srk', 'aga8', 'gerg2008', 'thermopack', 'ccp', 'dwsim']:
             return GasMixtureBuilder.build_thermo_data(comp_frac)
         else:
             raise ValueError(f"Bilinmeyen EOS metodu: {eos_method}")
@@ -110,19 +111,20 @@ class ThermoEngine:
     def _get_thermo_properties(self, p_pa, t_k, gas_obj, eos_method):
         """Legacy dictionary bekleyen eski kod kısımları için köprü (Bridge)."""
         state = self.thermo_solver.get_properties(p_pa, t_k, gas_obj, eos_method)
+        k_s = isentropic_exponent_helper(state)
         speed_of_sound = state.raw_props.get('speed_of_sound')
         if speed_of_sound is None or not math.isfinite(speed_of_sound) or speed_of_sound <= 0:
             if getattr(state, "speed_of_sound", 0.0) and math.isfinite(state.speed_of_sound) and state.speed_of_sound > 0:
                 speed_of_sound = state.speed_of_sound
             else:
                 try:
-                    if state.density > 0 and p_pa > 0 and state.k > 0:
-                        speed_of_sound = math.sqrt(max(state.k * p_pa / state.density, 0.0))
+                    if state.density > 0 and p_pa > 0 and k_s > 0:
+                        speed_of_sound = math.sqrt(max(k_s * p_pa / state.density, 0.0))
                 except Exception:
                     speed_of_sound = None
                 if speed_of_sound is None or not math.isfinite(speed_of_sound) or speed_of_sound <= 0:
                     speed_of_sound = math.sqrt(
-                        max(1.0, state.k)
+                        max(1.0, k_s)
                         * (8314.462618 / max(1e-3, state.MW))
                         * max(1.0, state.Z)
                         * max(1.0, t_k)
@@ -132,6 +134,7 @@ class ThermoEngine:
             'S': state.S,
             'Z': state.Z,
             'k': state.k,
+            'k_s': k_s,
             'rho': state.density,
             'Cp': state.Cp,
             'Cv': state.Cv,
@@ -537,11 +540,17 @@ class ThermoEngine:
         """
         from kasp.core.aerodynamics import (
             clear_calculation_cancel,
+            begin_calculation_run,
+            end_calculation_run,
             reset_fallback_comparisons,
             set_current_stage,
             get_fallback_comparisons,
         )
-        clear_calculation_cancel()
+        scoped_rid = inputs.get("run_id") if isinstance(inputs, dict) else None
+        if scoped_rid:
+            begin_calculation_run(scoped_rid)
+        else:
+            clear_calculation_cancel()
         reset_fallback_comparisons()
         set_current_stage("Performans")
         solver_method = inputs.get("solver_method", "auto")
@@ -690,6 +699,8 @@ class ThermoEngine:
             self.logger.error(f"Performans değerlendirme hatası: {e}")
             raise
         finally:
+            if scoped_rid:
+                end_calculation_run(scoped_rid)
             self.thermo_solver.end_run_tracking()
 
     def calculate_polytropic_efficiency(self, p1_pa, t1_k, p2_pa, t2_k, gas_comp, eos_method):
@@ -724,11 +735,19 @@ class ThermoEngine:
 
     def analyze_operating_envelope(self, compressor_data, operating_conditions):
         try:
+            if not compressor_data or not isinstance(compressor_data, dict):
+                compressor_data = {}
+            if not operating_conditions or not isinstance(operating_conditions, dict):
+                operating_conditions = {}
+
             surge_flow = float(compressor_data.get('surge_flow') or 0.0)
             stonewall_flow = float(compressor_data.get('stonewall_flow') or 0.0)
             op_flow = float(operating_conditions.get('flow') or 0.0)
 
-            if surge_flow <= 0 and stonewall_flow in (500.0, 1000.0, 9999.0):
+            # Check placeholder bounds
+            if surge_flow in (0.0, 500.0, 1000.0, 9999.0) or surge_flow <= 0.05:
+                surge_flow = 0.0
+            if stonewall_flow in (0.0, 500.0, 1000.0, 9999.0) or stonewall_flow <= 0.05:
                 stonewall_flow = 0.0
 
             if op_flow <= 0 or (surge_flow <= 0 and stonewall_flow <= 0):
@@ -759,9 +778,9 @@ class ThermoEngine:
 
             available_margins = [m for m in (surge_dist, sw_dist) if m is not None]
             return {
-                'surge_distance_percent': surge_dist if surge_dist is not None else 0.0,
-                'stonewall_distance_percent': sw_dist if sw_dist is not None else 0.0,
-                'safe_operating_margin': min(available_margins) if available_margins else 0.0,
+                'surge_distance_percent': surge_dist,
+                'stonewall_distance_percent': sw_dist,
+                'safe_operating_margin': min(available_margins) if available_margins else None,
                 'operating_region': region,
                 'recommendations': recs
             }
@@ -770,31 +789,42 @@ class ThermoEngine:
 
     def generate_summary_report(self, inputs, results, selected_units):
         try:
+             inp = inputs if (inputs and isinstance(inputs, dict)) else {}
+             res = results if (results and isinstance(results, dict)) else {}
+             units = selected_units if selected_units else []
+
+             def _norm_eff(val_raw, default_pct):
+                 try:
+                     val = float(val_raw) if val_raw is not None else float(default_pct)
+                 except (TypeError, ValueError):
+                     val = float(default_pct)
+                 return val / 100.0 if val > 1.0 else val
+
              return {
-                 'project_name': inputs.get('project_name', 'Bilinmiyor'),
+                 'project_name': inp.get('project_name', 'Bilinmiyor'),
                  'calculation_date': datetime.datetime.now().isoformat(),
                  'basic_parameters': {
-                     'num_units': inputs.get('num_units', 1),
-                     'compression_ratio': results.get('compression_ratio', 1.0),
-                     'power_per_unit': results.get('power_unit_kw', 0),
-                     'total_power': results.get('power_unit_total_kw', 0),
-                     'outlet_temperature': results.get('t_out', 0)
+                     'num_units': inp.get('num_units', 1),
+                     'compression_ratio': res.get('compression_ratio', 1.0),
+                     'power_per_unit': res.get('power_unit_kw', 0),
+                     'total_power': res.get('power_unit_total_kw', 0),
+                     'outlet_temperature': res.get('t_out', 0)
                  },
                  'efficiency_metrics': {
-                     'poly_efficiency': float(inputs.get('poly_eff', 85)) / 100.0,
-                     'actual_poly_efficiency': results.get('actual_poly_efficiency', 0),
-                     'thermal_efficiency': float(inputs.get('therm_eff', 35)) / 100.0,
-                     'heat_rate': results.get('heat_rate', 0)
+                     'poly_efficiency': _norm_eff(inp.get('poly_eff'), 85),
+                     'actual_poly_efficiency': res.get('actual_poly_efficiency', 0),
+                     'thermal_efficiency': _norm_eff(inp.get('therm_eff'), 35),
+                     'heat_rate': res.get('heat_rate', 0)
                  },
                  'recommended_turbines': [
                      {
                          'rank': i + 1,
-                         'turbine': u.turbine_name,
-                         'power': u.available_power_kw,
-                         'efficiency': u.efficiency_rating,
-                         'score': u.selection_score
-                     } for i, u in enumerate(selected_units[:3])
-                 ] if selected_units else [],
+                         'turbine': getattr(u, 'turbine_name', u.get('turbine_name', str(u)) if isinstance(u, dict) else str(u)),
+                         'power': getattr(u, 'available_power_kw', u.get('available_power_kw', 0) if isinstance(u, dict) else 0),
+                         'efficiency': getattr(u, 'efficiency_rating', u.get('efficiency_rating', '') if isinstance(u, dict) else ''),
+                         'score': getattr(u, 'selection_score', u.get('selection_score', 0) if isinstance(u, dict) else 0)
+                     } for i, u in enumerate(units[:3])
+                 ] if units else [],
                  'system_performance': self.performance_monitor.get_statistics()
              }
         except Exception as e:
@@ -802,8 +832,18 @@ class ThermoEngine:
              return {}
 
     def _evaluate_performance_status(self, deviations):
-        max_dev = max(abs(deviations['deviation_poly_eff']), abs(deviations['deviation_therm_eff']),
-                      abs(deviations['deviation_heat_rate']), abs(deviations['deviation_power']))
+        if not deviations or not isinstance(deviations, dict):
+            return {'status': 'UNKNOWN', 'color': 'gray', 'description': 'Bilinmiyor', 'recommendation': 'Sapma verisi yok.'}
+
+        try:
+            dev_poly = float(deviations.get('deviation_poly_eff', 0.0) or 0.0)
+            dev_therm = float(deviations.get('deviation_therm_eff', 0.0) or 0.0)
+            dev_hr = float(deviations.get('deviation_heat_rate', 0.0) or 0.0)
+            dev_pwr = float(deviations.get('deviation_power', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            dev_poly, dev_therm, dev_hr, dev_pwr = 0.0, 0.0, 0.0, 0.0
+
+        max_dev = max(abs(dev_poly), abs(dev_therm), abs(dev_hr), abs(dev_pwr))
                       
         if max_dev <= 2.0:
             return {'status': 'EXCELLENT', 'color': 'green', 'description': 'İdeal', 'recommendation': 'Müdahale gerekmez.'}
@@ -881,7 +921,13 @@ class ThermoEngine:
             raise ValueError(f"Cikis basinci ({p_out_pa/1e5:.2f} bar) giristen kucuk/esit olamaz.")
 
         eos = inputs.get("eos_method") or inputs.get("eos") or "coolprop"
-        gas_comp = inputs.get("gas_comp") or inputs.get("gas_composition") or {}
+        raw_gas_comp = inputs.get("gas_comp") or inputs.get("gas_composition") or {}
+        if raw_gas_comp:
+            canonical = GasMixtureBuilder._canonicalize_composition(raw_gas_comp)
+            gas_comp = GasMixtureBuilder._normalize_percentages(canonical)
+            inputs["gas_comp"] = gas_comp
+        else:
+            gas_comp = raw_gas_comp
         gas_obj = self._create_gas_object(gas_comp, eos)
         total_mass_flow_kgs = self.convert_flow_to_kgs(
             float(inputs["flow"]),
@@ -984,10 +1030,12 @@ class ThermoEngine:
 
         try:
             from kasp.config_manager import get_config_manager
+            from kasp.core.settings import EngineSettings
             config = get_config_manager()
-            max_complex_iter = int(config.get("coolprop.max_complex_iter", 3))
+            fallback_cap = getattr(EngineSettings, "DEFAULT_COOLPROP_COMPLEX_MAX_ITER", 10)
+            max_complex_iter = int(config.get("coolprop.max_complex_iter", fallback_cap))
         except Exception:
-            max_complex_iter = 3
+            max_complex_iter = 10
 
         capped_iter = min(requested_max_iter, max_complex_iter)
         if capped_iter < requested_max_iter:
@@ -1013,7 +1061,7 @@ class ThermoEngine:
             results["fuel_gas_density_std"] = None
 
     def _add_uncertainty_result(self, results, inputs, p_in_pa, p_out_pa, t_in_k, mass_flow_per_unit):
-        if not self.uncertainty_analyzer or not inputs.get("enable_uncertainty", True):
+        if not self.uncertainty_analyzer or not inputs.get("enable_uncertainty", False):
             results["uncertainty"] = None
             return
 
@@ -1108,7 +1156,10 @@ class ThermoEngine:
             gas_obj=fuel_gas_obj,
             eos_method=context.get("eos", "pr")
         )
-        therm_raw = inputs.get("therm_eff", EngineSettings.DEFAULT_THERMAL_EFFICIENCY_PCT)
+        try:
+            therm_raw = float(inputs.get("therm_eff", EngineSettings.DEFAULT_THERMAL_EFFICIENCY_PCT) or EngineSettings.DEFAULT_THERMAL_EFFICIENCY_PCT)
+        except (TypeError, ValueError):
+            therm_raw = float(EngineSettings.DEFAULT_THERMAL_EFFICIENCY_PCT)
         therm_eff = therm_raw / 100.0 if therm_raw > 1.0 else therm_raw
 
         fuel_kw = motor_kw / therm_eff if therm_eff > 0 else 0.0
@@ -1148,10 +1199,16 @@ class ThermoEngine:
         start_time = datetime.datetime.now()
         from kasp.core.aerodynamics import (
             clear_calculation_cancel,
+            begin_calculation_run,
+            end_calculation_run,
             reset_fallback_comparisons,
             get_fallback_comparisons,
         )
-        clear_calculation_cancel()
+        scoped_rid = inputs.get("run_id") if isinstance(inputs, dict) else None
+        if scoped_rid:
+            begin_calculation_run(scoped_rid)
+        else:
+            clear_calculation_cancel()
         reset_fallback_comparisons()
         try:
             fallback_tracking = None
@@ -1287,6 +1344,9 @@ class ThermoEngine:
         except Exception as error:
             self.logger.error(f"Design performance error: {error}", exc_info=True)
             raise AdvancedThermodynamicError(f"Hesaplama hatasi (V4.5): {error}")
+        finally:
+            if scoped_rid:
+                end_calculation_run(scoped_rid)
 
     def _calculate_with_consistency(self, inputs):
         start_time = datetime.datetime.now()
@@ -1310,9 +1370,12 @@ class ThermoEngine:
         results = {}
         bounded = False
 
+        want_uncertainty = bool(inputs.get("enable_uncertainty", False))
         for iteration in range(max_iter):
             inputs_temp = dict(inputs)
             inputs_temp["poly_eff"] = eta_current
+            # Ara iterasyonlarda 9 katlik belirsizlik hesabini devre disi birak (performans)
+            inputs_temp["enable_uncertainty"] = False
 
             try:
                 results = self.calculate_design_performance(inputs_temp)
@@ -1372,6 +1435,23 @@ class ThermoEngine:
         results["consistency_history"] = history
         results["consistency_converged"] = converged
         results["final_residual"] = residual
+
+        # Son yakinasmis cozum icin belirsizlik analizi (eger talep edilmisse)
+        if want_uncertainty and results and results.get("uncertainty") is None:
+            try:
+                final_inputs = dict(inputs)
+                final_inputs["poly_eff"] = eta_current
+                context = self._prepare_design_context(final_inputs)
+                self._add_uncertainty_result(
+                    results,
+                    final_inputs,
+                    context["p_in_pa"],
+                    context["p_out_pa"],
+                    context["t_in_k"],
+                    context["mass_flow_per_unit"],
+                )
+            except Exception as e:
+                self.logger.debug("Tutarlilik sonrasi belirsizlik ekleme hatasi: %s", e)
 
         elapsed = (datetime.datetime.now() - start_time).total_seconds()
         self.logger.info(f"Tutarlilik hesabi tamamlandi: {elapsed:.1f}s, {len(history)} iter")

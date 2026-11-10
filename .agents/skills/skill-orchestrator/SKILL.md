@@ -7,9 +7,9 @@ description: >-
   manages end-to-end task lifecycles with state tracking and quality gates.
 ---
 
-# Dynamic Skill Orchestrator
+# Dynamic Skill Orchestrator (Müdür)
 
-The **Dynamic Skill Orchestrator** is an executive workflow coordinator designed to dynamically plan, route, execute, and verify complex multi-phase software development tasks by chaining and orchestrating specialized agent skills and subagents.
+The **Müdür (Dynamic Skill Orchestrator)** is the executive workflow coordinator and chief manager designed to dynamically plan, route, execute, and verify complex multi-phase software development tasks by commanding and orchestrating specialized agent skills and subagents.
 
 ---
 
@@ -79,7 +79,7 @@ Create an explicit, trackable execution table:
 ### Phase 3: Stage-by-Stage Execution
 - **When invoking a skill**: Load its `SKILL.md` rules and execute its operational procedures faithfully.
 - **When delegating to subagents**: Use `invoke_subagent` with clear, role-specific prompts and wait for asynchronous completion notifications.
-- **Context Hygiene**: Keep stage transcripts lean; save intermediate data to artifacts rather than cluttering conversation memory.
+- **Context Hygiene & Caveman Protocol**: Subagents communicate via the Caveman protocol (`[target] [action] [reason]. [next step].`) to slash token usage by ~70%; save intermediate data to artifacts rather than cluttering conversation memory.
 
 ### Phase 4: Quality Gate & Checkpoint Verification
 - Run regression tests (`pytest`, linting, or validation scripts).
@@ -110,6 +110,13 @@ Create an explicit, trackable execution table:
 - **Stage 2**: Automated regression suite.
 - **Stage 3**: Version bump (`release_metadata.py`, spec files).
 - **Stage 4**: DMG/Binary build and changelog generation.
+
+### Template 4: `Disciplined Feature & Bugfix Pipeline (Graphify + Superpowers)`
+- **Stage 1**: `graphify` $\rightarrow$ Run `impact <target>`, map downstream callers and find all linked `test_*.py` suites.
+- **Stage 2**: `superpowers` (Brainstorm & Plan) $\rightarrow$ Formulate execution plan using `templates/plan_template.md`.
+- **Stage 3**: `superpowers` (TDD Red) $\rightarrow$ Write failing test asserting desired behavior.
+- **Stage 4**: `superpowers` (TDD Green) $\rightarrow$ Implement minimal targeted code change.
+- **Stage 5**: `superpowers` (Refactor & Gate) $\rightarrow$ Clean up and run `superpowers_tdd.py run <linked_tests>`. Zero regressions.
 
 ---
 

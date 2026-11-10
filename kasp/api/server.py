@@ -28,6 +28,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from kasp.core.thermo import ThermoEngine
 from kasp.core.properties import COOLPROP_LOADED
 from kasp.core.constants import SUPPORTED_GASES, UNIT_OPTIONS, DEFAULT_COMPOSITION
+from kasp.api.v1 import api_v1
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -43,6 +44,8 @@ _RAW_ORIGINS = os.environ.get("KASP_API_ALLOWED_ORIGINS", "")
 ALLOWED_ORIGINS = [o.strip() for o in _RAW_ORIGINS.split(",") if o.strip()] or [
     "http://127.0.0.1:8000",
     "http://localhost:8000",
+    "http://127.0.0.1:8080",
+    "http://localhost:8080",
 ]
 try:
     RATE_LIMIT_PER_MIN = max(1, int(os.environ.get("KASP_API_RATE_LIMIT", "60")))
@@ -101,20 +104,30 @@ async def get_constants():
         "default_composition": DEFAULT_COMPOSITION
     }
 
+# Mount API v1 Routers
+app.include_router(api_v1)
+
+# Ensure web static directory exists
+_web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../web"))
+os.makedirs(_web_dir, exist_ok=True)
+
 # Mount Static Files
-app.mount("/static", StaticFiles(directory=os.path.abspath(os.path.join(os.path.dirname(__file__), "../web"))), name="static")
+app.mount("/static", StaticFiles(directory=_web_dir), name="static")
 
 @app.get("/")
 async def read_index():
-    return FileResponse(os.path.abspath(os.path.join(os.path.dirname(__file__), "../web/index.html")))
+    index_path = os.path.join(_web_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "KASP Web Platform API is running. UI not yet deployed."}
 
-# CORS - yalnizca yapilandirilmis origin'ler (varsayilan: yerel)
+# CORS - yalnizca yapilandirilmis origin'ler
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token", "X-Session-Id"],
 )
 
 engine = ThermoEngine()

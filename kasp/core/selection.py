@@ -303,7 +303,7 @@ class TurbineSelector:
             surge_score = max(0.0, surge_score - stonewall_penalty)
 
         # 4. TİP SKORU
-        type_score = EngineSettings.TURBINE_TYPE_SCORES.get(turbine_type, 65)
+        type_score = EngineSettings.get_turbine_type_score(turbine_type)
 
         # TOTAL AĞIRLIKLANDIRMA
         total_score = (

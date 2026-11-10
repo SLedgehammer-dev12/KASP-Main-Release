@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 
 from kasp.core.exceptions import UnitConversionError
 from kasp.core.constants import R_UNIVERSAL_J_MOL_K
@@ -31,6 +32,28 @@ def percent_deviation(actual, expected):
     if expected == 0:
         return 0.0 if actual == 0 else float("inf")
     return ((actual - expected) / expected) * 100.0
+
+
+def isentropic_exponent(state, default=1.4):
+    """Return the true isentropic exponent κ_s when available, else Cp/Cv.
+
+    `ThermodynamicState.k` is retained as Cp/Cv for backward compatibility,
+    while `k_s` (computed from a²ρ/P or supplied by the EOS) is the exponent
+    that should be used in isentropic temperature and polytropic relations.
+    """
+    k_s = getattr(state, "k_s", 0.0)
+    try:
+        if k_s is not None and math.isfinite(float(k_s)) and float(k_s) > 1.0:
+            return float(k_s)
+    except (TypeError, ValueError):
+        pass
+    k = getattr(state, "k", 0.0)
+    try:
+        if k is not None and math.isfinite(float(k)) and float(k) > 1.0:
+            return float(k)
+    except (TypeError, ValueError):
+        pass
+    return default
 
 
 STANDARD_VOLUME_UNITS = {"Sm3/h", "Sm³/h", "SmÂ³/h"}
@@ -102,6 +125,12 @@ def convert_flow_to_kgs(
     """Convert volumetric or molar flow values to mass flow in kg/s."""
     try:
         value_float = float(value)
+        if not math.isfinite(value_float) or value_float <= 0:
+            raise UnitConversionError(
+                f"Debi değeri pozitif ve sonlu bir sayı olmalıdır (girilen: {value})",
+                value,
+                unit,
+            )
 
         if unit == "kg/s":
             return value_float
@@ -169,25 +198,44 @@ def _convert_power_value(value: float, from_unit: str, to_unit: str) -> float:
 
 
 def _convert_head_value(value: float, from_unit: str, to_unit: str) -> float:
-    # 1 Btu/lb = 2.326 kJ/kg  ->  1 kJ/kg = 0.4299226... Btu/lb
-    if from_unit == "kJ/kg" and to_unit == "ft-lbf/lbm":
-        return value * 334.55256555
-    if from_unit == "ft-lbf/lbm" and to_unit == "kJ/kg":
-        return value / 334.55256555
-    if from_unit == "kJ/kg" and to_unit == "Btu/lb":
-        return value * 0.4299226139
-    if from_unit == "Btu/lb" and to_unit == "kJ/kg":
-        return value / 0.4299226139
-    raise UnitConversionError(f"Desteklenmeyen head donusumu: {from_unit} -> {to_unit}")
+    if from_unit == to_unit:
+        return value
+
+    # Canonical base: kJ/kg
+    # 1 kJ/kg = 334.55256555 ft-lbf/lbm
+    # 1 kJ/kg = 0.4299226139 Btu/lb
+    # 1 kJ/kg = 1000 J/kg / 9.80665 m/s^2 = 101.97162129779282 m
+    kj_per_kg = value
+    if from_unit == "ft-lbf/lbm":
+        kj_per_kg = value / 334.55256555
+    elif from_unit == "Btu/lb":
+        kj_per_kg = value / 0.4299226139
+    elif from_unit == "m":
+        kj_per_kg = value * 9.80665 / 1000.0
+    elif from_unit != "kJ/kg":
+        raise UnitConversionError(f"Desteklenmeyen head birimi: {from_unit}")
+
+    if to_unit == "kJ/kg":
+        return kj_per_kg
+    if to_unit == "ft-lbf/lbm":
+        return kj_per_kg * 334.55256555
+    if to_unit == "Btu/lb":
+        return kj_per_kg * 0.4299226139
+    if to_unit == "m":
+        return kj_per_kg * 1000.0 / 9.80665
+    raise UnitConversionError(f"Desteklenmeyen hedef head birimi: {to_unit}")
 
 
 def _convert_heat_rate_value(value: float, from_unit: str, to_unit: str) -> float:
+    if from_unit == to_unit:
+        return value
+
     base_value = value
     if from_unit == "Btu/kWh":
         base_value = value / 0.947817
     elif from_unit == "kcal/kWh":
         base_value = value / 0.239006
-    elif from_unit == "Btu/hp-hr":
+    elif from_unit in ("Btu/hp-hr", "Btu/hp.hr", "Btu/hph"):
         base_value = value / 0.706787
     elif from_unit != "kJ/kWh":
         raise UnitConversionError(f"Desteklenmeyen isi orani birimi: {from_unit}")
@@ -198,18 +246,21 @@ def _convert_heat_rate_value(value: float, from_unit: str, to_unit: str) -> floa
         return base_value * 0.947817
     if to_unit == "kcal/kWh":
         return base_value * 0.239006
-    if to_unit == "Btu/hp-hr":
+    if to_unit in ("Btu/hp-hr", "Btu/hp.hr", "Btu/hph"):
         return base_value * 0.706787
     raise UnitConversionError(f"Desteklenmeyen hedef isi orani birimi: {to_unit}")
 
 
 def _convert_heating_value(value: float, from_unit: str, to_unit: str) -> float:
+    if from_unit == to_unit:
+        return value
+
     kj_per_kg = value
     if from_unit == "MJ/kg":
         kj_per_kg = value * 1000.0
     elif from_unit == "kcal/kg":
         kj_per_kg = value * 4.184
-    elif from_unit == "Btu/lbm":
+    elif from_unit in ("Btu/lbm", "Btu/lb"):
         kj_per_kg = value * 2.326
     elif from_unit != "kJ/kg":
         raise UnitConversionError(f"Desteklenmeyen isil deger birimi: {from_unit}")
@@ -220,7 +271,7 @@ def _convert_heating_value(value: float, from_unit: str, to_unit: str) -> float:
         return kj_per_kg / 1000.0
     if to_unit == "kcal/kg":
         return kj_per_kg / 4.184
-    if to_unit == "Btu/lbm":
+    if to_unit in ("Btu/lbm", "Btu/lb"):
         return kj_per_kg / 2.326
     raise UnitConversionError(f"Desteklenmeyen hedef isil deger birimi: {to_unit}")
 
@@ -238,11 +289,28 @@ def _convert_fuel_flow(
     standard_temp_k=288.15,
     normal_temp_k=273.15,
 ):
+    if from_unit == to_unit:
+        return value
+
+    def _get_std_density(is_std: bool):
+        if thermo_solver is None or gas_obj is None or eos_method is None:
+            raise UnitConversionError(
+                f"Yakit debisini hacim birimine/biriminden cevirmek icin gaz ozellikleri gerekli"
+            )
+        ref_temp = standard_temp_k if is_std else normal_temp_k
+        density = thermo_solver.get_properties(std_press_pa, ref_temp, gas_obj, eos_method).density
+        if density <= 0:
+            raise UnitConversionError("Standart yogunluk hesaplanamadi")
+        return density
+
     kg_per_hour = value
     if from_unit == "kg/s":
         kg_per_hour = value * 3600.0
     elif from_unit == "lb/h":
         kg_per_hour = value * 0.45359237
+    elif from_unit in STANDARD_VOLUME_UNITS or from_unit in NORMAL_VOLUME_UNITS:
+        rho = _get_std_density(from_unit in STANDARD_VOLUME_UNITS)
+        kg_per_hour = value * rho
     elif from_unit != "kg/h":
         raise UnitConversionError(f"Desteklenmeyen yakit debisi birimi: {from_unit}")
 
@@ -254,14 +322,7 @@ def _convert_fuel_flow(
         return kg_per_hour / 0.45359237
 
     if to_unit in STANDARD_VOLUME_UNITS or to_unit in NORMAL_VOLUME_UNITS:
-        if thermo_solver is None or gas_obj is None or eos_method is None:
-            raise UnitConversionError(
-                f"Yakit debisini {to_unit} birimine cevirmek icin gaz ozellikleri gerekli"
-            )
-        reference_temp = standard_temp_k if to_unit in STANDARD_VOLUME_UNITS else normal_temp_k
-        density = thermo_solver.get_properties(std_press_pa, reference_temp, gas_obj, eos_method).density
-        if density <= 0:
-            raise UnitConversionError("Standart yogunluk hesaplanamadi")
+        density = _get_std_density(to_unit in STANDARD_VOLUME_UNITS)
         return kg_per_hour / density
 
     if to_unit == "J/h":
@@ -333,41 +394,51 @@ def convert_result_value(
 
 def build_summary_report(inputs, results, selected_units, performance_stats, *, calculation_date=None):
     calculation_date = calculation_date or datetime.datetime.now().isoformat()
+    inp = inputs if (inputs and isinstance(inputs, dict)) else {}
+    res = results if (results and isinstance(results, dict)) else {}
+
+    def _norm_eff(val_raw, default_pct):
+        try:
+            val = float(val_raw) if val_raw is not None else float(default_pct)
+        except (TypeError, ValueError):
+            val = float(default_pct)
+        return val / 100.0 if val > 1.0 else val
+
     recommended_turbines = []
     for index, unit in enumerate((selected_units or [])[:3]):
         recommended_turbines.append(
             {
                 "rank": index + 1,
                 "turbine": getattr(unit, "turbine_name", None)
-                or unit.get("turbine_name")
-                or unit.get("turbine"),
+                or (unit.get("turbine_name") if isinstance(unit, dict) else None)
+                or (unit.get("turbine") if isinstance(unit, dict) else str(unit)),
                 "power": getattr(unit, "available_power_kw", None)
                 if hasattr(unit, "available_power_kw")
-                else unit.get("available_power_kw", 0),
+                else (unit.get("available_power_kw", 0) if isinstance(unit, dict) else 0),
                 "efficiency": getattr(unit, "efficiency_rating", None)
                 if hasattr(unit, "efficiency_rating")
-                else unit.get("efficiency_rating"),
+                else (unit.get("efficiency_rating") if isinstance(unit, dict) else None),
                 "score": getattr(unit, "selection_score", None)
                 if hasattr(unit, "selection_score")
-                else unit.get("selection_score", 0),
+                else (unit.get("selection_score", 0) if isinstance(unit, dict) else 0),
             }
         )
 
     return {
-        "project_name": inputs.get("project_name", "Bilinmiyor"),
+        "project_name": inp.get("project_name", "Bilinmiyor"),
         "calculation_date": calculation_date,
         "basic_parameters": {
-            "num_units": inputs.get("num_units", 1),
-            "compression_ratio": results.get("compression_ratio", 1.0),
-            "power_per_unit": results.get("power_unit_kw", 0),
-            "total_power": results.get("power_unit_total_kw", 0),
-            "outlet_temperature": results.get("t_out", 0),
+            "num_units": inp.get("num_units", 1),
+            "compression_ratio": res.get("compression_ratio", 1.0),
+            "power_per_unit": res.get("power_unit_kw", 0),
+            "total_power": res.get("power_unit_total_kw", 0),
+            "outlet_temperature": res.get("t_out", 0),
         },
         "efficiency_metrics": {
-            "poly_efficiency": float(inputs.get("poly_eff", 85)) / 100.0,
-            "actual_poly_efficiency": results.get("actual_poly_efficiency", 0),
-            "thermal_efficiency": float(inputs.get("therm_eff", 35)) / 100.0,
-            "heat_rate": results.get("heat_rate", 0),
+            "poly_efficiency": _norm_eff(inp.get("poly_eff"), 85),
+            "actual_poly_efficiency": res.get("actual_poly_efficiency", 0),
+            "thermal_efficiency": _norm_eff(inp.get("therm_eff"), 35),
+            "heat_rate": res.get("heat_rate", 0),
         },
         "recommended_turbines": recommended_turbines,
         "system_performance": performance_stats,
@@ -375,12 +446,23 @@ def build_summary_report(inputs, results, selected_units, performance_stats, *, 
 
 
 def evaluate_performance_status(deviations):
-    max_deviation = max(
-        abs(deviations["deviation_poly_eff"]),
-        abs(deviations["deviation_therm_eff"]),
-        abs(deviations["deviation_heat_rate"]),
-        abs(deviations["deviation_power"]),
-    )
+    if not deviations or not isinstance(deviations, dict):
+        return {
+            "status": "UNKNOWN",
+            "color": "gray",
+            "description": "Bilinmiyor",
+            "recommendation": "Sapma verisi yok.",
+        }
+
+    try:
+        dev_poly = float(deviations.get("deviation_poly_eff", 0.0) or 0.0)
+        dev_therm = float(deviations.get("deviation_therm_eff", 0.0) or 0.0)
+        dev_hr = float(deviations.get("deviation_heat_rate", 0.0) or 0.0)
+        dev_pwr = float(deviations.get("deviation_power", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        dev_poly, dev_therm, dev_hr, dev_pwr = 0.0, 0.0, 0.0, 0.0
+
+    max_deviation = max(abs(dev_poly), abs(dev_therm), abs(dev_hr), abs(dev_pwr))
 
     if max_deviation <= 2.0:
         return {

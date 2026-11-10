@@ -11,6 +11,7 @@ import threading
 from typing import Any
 
 from kasp.core.mixture import GasMixtureBuilder
+from kasp.core.thermo_support import isentropic_exponent
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +405,10 @@ class SolverChain:
         return T, residual
 
     def _k_based_fallback(self, state_in, p_out: float) -> float:
-        k = state_in.k if state_in.k > 1.0 else 1.3
-        pr = p_out / state_in.P
+        k = max(1.001, isentropic_exponent(state_in))
+        p_in = max(1.0, float(getattr(state_in, "P", 1.0) or 1.0))
+        p_out_safe = max(p_in, float(p_out or p_in))
+        pr = max(1.0, p_out_safe / p_in)
         n_isen = (k - 1.0) / k
-        return state_in.T * (pr**n_isen)
+        t_in = max(1.0, float(getattr(state_in, "T", 288.15) or 288.15))
+        return t_in * (pr**n_isen)

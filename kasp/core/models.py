@@ -22,6 +22,7 @@ class ThermodynamicState:
     Cv: float           # Sabit hacimde özgül ısı (J/kg/K)
     density: float      # Yoğunluk (kg/m³)
     phase: str          # 'gas', 'liquid', 'supercritical', vs.
+    k_s: float = 0.0    # Gerçek izentropik üs κ_s = a²ρ/P
     speed_of_sound: float = 0.0  # Ses hızı (m/s)
     raw_props: Dict[str, Any] = field(default_factory=dict) # Orijinal kütüphane property verisi
 

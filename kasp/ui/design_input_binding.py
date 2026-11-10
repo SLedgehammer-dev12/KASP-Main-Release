@@ -7,54 +7,71 @@ from kasp.core.contracts import get_design_input_defaults, normalize_design_inpu
 
 def eos_method_from_ui_text(selected_text):
     """Translate a UI combo label into the engine eos_method code."""
-    if "CoolProp" in selected_text:
+    if not selected_text:
         return "coolprop", None
-    if "thermopack" in selected_text:
-        return "thermopack", None
-    if "AGA8" in selected_text:
-        # AGA8 sadece boru gazı (pipeline) için GERG-2008, kompresör için önerilmez
-        return "aga8", None
-    if "ccp" in selected_text:
-        return "ccp", None
-    if "Peng-Robinson" in selected_text:
-        return "pr", None
-    if "NeqSim" in selected_text:
-        if "Eksik" in selected_text or "Yok" in selected_text or "Java" in selected_text:
-            return None, "EOS Hatası: NeqSim kullanmak için Java (JRE/JDK) ve jpype1 kurmalı, neqsim.jar eklemelisiniz."
-        return "neqsim", None
-    if "SRK" in selected_text:
-        return "srk", None
-    if "DWSIM" in selected_text:
-        if "Eksik" in selected_text or "Yok" in selected_text:
-            return None, "EOS Hatası: DWSIM kütüphanesini kullanmak için pythonnet kurmalı ve DWSIM DTL DLL dosyasını eklemelisiniz (pip install pythonnet)."
-        return "dwsim", None
-    if "Kütüphane Yok" in selected_text:
+
+    raw = str(selected_text).strip()
+    upper = raw.upper()
+
+    if "KÜTÜPHANE YOK" in upper or "KUTUPHANE YOK" in upper:
         return None, "EOS Hatası: Geçerli bir EOS metodu seçiniz (Kütüphane yüklü değil)."
 
-    normalized = selected_text.lower().strip()
-    if normalized in {"coolprop", "pr", "srk", "thermopack", "ccp", "dwsim", "neqsim", "aga8"}:
+    if "NEQSIM" in upper:
+        if any(w in upper for w in ("EKSIK", "YOK", "JAVA")):
+            return None, "EOS Hatası: NeqSim kullanmak için Java (JRE/JDK) ve jpype1 kurmalı, neqsim.jar eklemelisiniz."
+        return "neqsim", None
+
+    if "DWSIM" in upper:
+        if any(w in upper for w in ("EKSIK", "YOK")):
+            return None, "EOS Hatası: DWSIM kütüphanesini kullanmak için pythonnet kurmalı ve DWSIM DTL DLL dosyasını eklemelisiniz (pip install pythonnet)."
+        return "dwsim", None
+
+    if "COOLPROP" in upper or "HEOS" in upper:
+        return "coolprop", None
+    if "THERMOPACK" in upper:
+        return "thermopack", None
+    if "GERG" in upper:
+        return "gerg2008", None
+    if "AGA8" in upper:
+        # AGA8-DC92 (ISO 12213-2) boru gazı için referans; kompresör tasarımında dikkatli kullanılmalı
+        return "aga8", None
+    if "CCP" in upper:
+        return "ccp", None
+    if "PENG-ROBINSON" in upper or "PENG ROBINSON" in upper or "(PR)" in upper or upper == "PR":
+        return "pr", None
+    if "SRK" in upper or "SOAVE" in upper:
+        return "srk", None
+
+    normalized = raw.lower()
+    if normalized in {"coolprop", "pr", "srk", "thermopack", "ccp", "dwsim", "neqsim", "aga8", "gerg2008"}:
         return normalized, None
     return normalized, f"EOS Hatası: Bilinmeyen veya yanlış eşleşen EOS metodu: {selected_text}"
 
 
 def solver_method_from_ui_text(selected_text):
     """Translate a UI combo label into the engine solver_method code."""
-    if "Benchmark" in selected_text and "Auto" not in selected_text:
+    if not selected_text:
+        return "auto"
+    upper = str(selected_text).upper()
+    if "BENCHMARK" in upper and "AUTO" not in upper:
         return "benchmark"
-    if "AJ-NR" in selected_text:
+    if "AJ-NR" in upper or "AJ_NR" in upper:
         return "aj_nr"
-    if "FD-NR" in selected_text:
+    if "FD-NR" in upper or "FD_NR" in upper:
         return "fd_nr"
-    if "Brent" in selected_text:
+    if "BRENT" in upper:
         return "brent"
     return "auto"
 
 
 def lhv_source_from_ui_text(selected_text):
     """Translate a UI combo label into the engine lhv source code."""
-    if "Thermo" in selected_text:
+    if not selected_text:
+        return "kasp"
+    upper = str(selected_text).upper()
+    if "THERMO" in upper:
         return "thermo"
-    if "ISO 6976" in selected_text:
+    if "ISO 6976" in upper or "ISO6976" in upper:
         return "iso6976"
     return "kasp"
 

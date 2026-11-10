@@ -78,3 +78,10 @@ releases/
 git_yedek/
 .jdk/
 .opencode/
+.graphify/
+
+# Scratch media & documents in root
+/*.pdf
+/*.jpeg
+/*.jpg
+

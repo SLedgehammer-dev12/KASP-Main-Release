@@ -1,21 +1,10 @@
-"""Lightweight runtime localization helpers for the KASP desktop UI."""
+"""Lightweight runtime localization helpers for the KASP desktop UI and headless services."""
 
 from __future__ import annotations
 
-from PyQt5.QtWidgets import (
-    QAction,
-    QAbstractButton,
-    QComboBox,
-    QDialog,
-    QGroupBox,
-    QLabel,
-    QLineEdit,
-    QMenu,
-    QPlainTextEdit,
-    QTabWidget,
-    QTextEdit,
-    QWidget,
-)
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from PyQt5.QtWidgets import QWidget
 
 from kasp.config_manager import get_config_manager
 from release_metadata import APP_VERSION, RELEASE_TAG
@@ -167,9 +156,36 @@ _SUBSTRING_TRANSLATIONS = {
     "Performans değerlendirmesi yapma yetkiniz yok.": "You are not authorized to run performance evaluations.",
     "Kullanıcı yönetimi işlemi için yetkiniz yok.": "You are not authorized to manage users.",
     "En az 8 karakter, büyük/küçük harf ve rakam": "At least 8 chars, upper/lowercase and digit",
+    # ── Calculation progress steps ──
+    "Hesaplama başlatılıyor...": "Initializing calculation...",
+    "Girişler doğrulanıyor...": "Validating inputs...",
+    "Gaz karışımı oluşturuluyor...": "Creating gas mixture...",
+    "Hesaplamalar başlıyor...": "Thermodynamic calculations starting...",
+    "Termodinamik özellikler hesaplanıyor...": "Calculating thermodynamic properties...",
+    "EOS motoru çalıştırılıyor...": "Running EOS engine...",
+    "Güç gereksinimleri hesaplanıyor...": "Calculating power requirements...",
+    "Yakıt tüketimi analiz ediliyor...": "Analyzing fuel consumption...",
+    "Uygun türbinler aranıyor...": "Searching for suitable turbines...",
+    "Uyumlu türbinler filtreleniyor...": "Filtering compatible turbines...",
+    "Türbin seçenekleri sıralanıyor...": "Ranking turbine options...",
+    "Sonuçlar tamamlanıyor...": "Finalizing results...",
+    "Hesaplama tamamlandı!": "Calculation complete!",
 }
 
 _EN_TO_TR_SUBSTRINGS = {
+    "Initializing calculation...": "Hesaplama başlatılıyor...",
+    "Validating inputs...": "Girişler doğrulanıyor...",
+    "Creating gas mixture...": "Gaz karışımı oluşturuluyor...",
+    "Thermodynamic calculations starting...": "Hesaplamalar başlıyor...",
+    "Calculating thermodynamic properties...": "Termodinamik özellikler hesaplanıyor...",
+    "Running EOS engine...": "EOS motoru çalıştırılıyor...",
+    "Calculating power requirements...": "Güç gereksinimleri hesaplanıyor...",
+    "Analyzing fuel consumption...": "Yakıt tüketimi analiz ediliyor...",
+    "Searching for suitable turbines...": "Uygun türbinler aranıyor...",
+    "Filtering compatible turbines...": "Uyumlu türbinler filtreleniyor...",
+    "Ranking turbine options...": "Türbin seçenekleri sıralanıyor...",
+    "Finalizing results...": "Sonuçlar tamamlanıyor...",
+    "Calculation complete!": "Hesaplama tamamlandı!",
     "Pressure is required": "Basınç değeri zorunludur",
     "Pressure must be a finite number": "Basınç sonlu bir sayı olmalıdır",
     "Absolute pressure must be > 0": "Mutlak basınç > 0 olmalıdır",
@@ -207,17 +223,19 @@ def set_language(lang: str) -> None:
 
 
 def refresh_all_windows(window: QWidget | None = None) -> None:
-    from PyQt5.QtWidgets import QApplication
-    seen = set()
-    if window is not None:
-        apply_window_language(window)
-        seen.add(id(window))
-    app = QApplication.instance()
-    if not app:
-        return
-    for widget in app.topLevelWidgets():
-        if id(widget) not in seen:
-            apply_window_language(widget)
+    try:
+        from kasp.ui.i18n_qt import refresh_all_windows as _refresh
+        _refresh(window)
+    except ImportError:
+        pass
+
+
+def apply_window_language(widget: QWidget) -> None:
+    try:
+        from kasp.ui.i18n_qt import apply_window_language as _apply
+        _apply(widget)
+    except ImportError:
+        pass
 
 
 def tr(text: str) -> str:
@@ -234,82 +252,3 @@ def tr(text: str) -> str:
     for source, target in _SUBSTRING_TRANSLATIONS.items():
         translated = translated.replace(source, target)
     return translated
-
-
-def _translate_combo(combo: QComboBox) -> None:
-    for index in range(combo.count()):
-        current = combo.itemText(index)
-        original = combo.itemData(index)
-        if original is None:
-            combo.setItemData(index, current)
-            original = current
-        combo.setItemText(index, tr(str(original)))
-
-
-def _translate_widget(widget: QWidget) -> None:
-    if isinstance(widget, QTabWidget):
-        for index in range(widget.count()):
-            current = widget.tabText(index)
-            original = widget.property("tr_tab_" + str(index))
-            if original is None:
-                widget.setProperty("tr_tab_" + str(index), current)
-                original = current
-            widget.setTabText(index, tr(str(original)))
-
-    if isinstance(widget, QGroupBox):
-        current = widget.title()
-        original = widget.property("tr_text")
-        if original is None:
-            widget.setProperty("tr_text", current)
-            original = current
-        widget.setTitle(tr(str(original)))
-    elif isinstance(widget, (QLabel, QAbstractButton)):
-        current = widget.text()
-        original = widget.property("tr_text")
-        if original is None:
-            widget.setProperty("tr_text", current)
-            original = current
-        widget.setText(tr(str(original)))
-
-    if isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
-        current = widget.placeholderText()
-        if current:
-            original = widget.property("tr_placeholder")
-            if original is None:
-                widget.setProperty("tr_placeholder", current)
-                original = current
-            widget.setPlaceholderText(tr(str(original)))
-
-    if widget.windowTitle():
-        current = widget.windowTitle()
-        original = widget.property("tr_title")
-        if original is None:
-            widget.setProperty("tr_title", current)
-            original = current
-        widget.setWindowTitle(tr(str(original)))
-
-    if widget.toolTip():
-        current = widget.toolTip()
-        original = widget.property("tr_tooltip")
-        if original is None:
-            widget.setProperty("tr_tooltip", current)
-            original = current
-        widget.setToolTip(tr(str(original)))
-
-    if isinstance(widget, QComboBox):
-        _translate_combo(widget)
-
-
-def apply_window_language(widget: QWidget) -> None:
-    _translate_widget(widget)
-    for child in widget.findChildren(QWidget):
-        _translate_widget(child)
-
-    for menu in widget.findChildren(QMenu):
-        menu.setTitle(tr(menu.title()))
-
-    for action in widget.findChildren(QAction):
-        action.setText(tr(action.text()))
-
-    if isinstance(widget, QDialog):
-        widget.setWindowTitle(tr(widget.windowTitle()))

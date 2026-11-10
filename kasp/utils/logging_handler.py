@@ -1,8 +1,17 @@
 import logging
 import os
 import sys
+import collections
+import threading
 from release_metadata import APP_VERSION
-from PyQt5.QtCore import QObject, pyqtSignal
+
+try:
+    from PyQt5.QtCore import QObject, pyqtSignal
+    QT_LOGGING_AVAILABLE = True
+except ImportError:
+    QT_LOGGING_AVAILABLE = False
+    QObject = object
+    pyqtSignal = None
 
 # Custom log level for iteration details
 ITERATION = 15  # Between DEBUG (10) and INFO (20)
@@ -16,23 +25,92 @@ def iteration(self, message, *args, **kwargs):
 # Add iteration method to Logger class
 logging.Logger.iteration = iteration
 
-class LogEmitter(QObject):
-    log_signal = pyqtSignal(str)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-
-class QLogHandler(logging.Handler):
-    def __init__(self, parent=None):
+class MemoryRingLogHandler(logging.Handler):
+    """Thread-safe memory ring buffer log handler for Web REST/SSE endpoints."""
+    def __init__(self, capacity=1000):
         super().__init__()
-        self.emitter = LogEmitter(parent)
-        self.log_signal = self.emitter.log_signal
-        self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        self.capacity = capacity
+        self.buffer = collections.deque(maxlen=capacity)
+        self._lock = threading.Lock()
+        self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s'))
 
     def emit(self, record):
-        msg = self.format(record)
-        self.log_signal.emit(msg)
+        try:
+            msg = self.format(record)
+            with self._lock:
+                self.buffer.append({
+                    "timestamp": record.created,
+                    "asctime": getattr(record, "asctime", ""),
+                    "level": record.levelname,
+                    "name": record.name,
+                    "message": record.getMessage(),
+                    "formatted": msg
+                })
+        except Exception:
+            self.handleError(record)
+
+    def get_logs(self, limit=100, level=None):
+        try:
+            limit_val = int(limit) if limit is not None else 100
+        except (ValueError, TypeError):
+            limit_val = 100
+
+        if limit_val <= 0:
+            return []
+
+        with self._lock:
+            logs = list(self.buffer)
+        if level:
+            level_upper = str(level).upper()
+            logs = [entry for entry in logs if entry["level"] == level_upper]
+        return logs[-limit_val:]
+
+    def clear(self):
+        with self._lock:
+            self.buffer.clear()
+
+
+_global_memory_log_handler = None
+_log_handler_lock = threading.Lock()
+
+
+def get_memory_log_handler(capacity=1000) -> MemoryRingLogHandler:
+    global _global_memory_log_handler
+    with _log_handler_lock:
+        if _global_memory_log_handler is None:
+            _global_memory_log_handler = MemoryRingLogHandler(capacity=capacity)
+            root_logger = logging.getLogger()
+            root_logger.addHandler(_global_memory_log_handler)
+        return _global_memory_log_handler
+
+
+if QT_LOGGING_AVAILABLE:
+    class LogEmitter(QObject):
+        log_signal = pyqtSignal(str)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+
+
+    class QLogHandler(logging.Handler):
+        def __init__(self, parent=None):
+            super().__init__()
+            self.emitter = LogEmitter(parent)
+            self.log_signal = self.emitter.log_signal
+            self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+        def emit(self, record):
+            msg = self.format(record)
+            self.log_signal.emit(msg)
+else:
+    class QLogHandler(logging.Handler):
+        def __init__(self, parent=None):
+            super().__init__()
+            self.log_signal = None
+
+        def emit(self, record):
+            pass
 
 from logging.handlers import RotatingFileHandler
 

@@ -141,3 +141,89 @@ def test_dwsim_ui_binding():
     assert "pythonnet" in err
 
 
+
+
+def test_gerg2008_eos_state_solver():
+    """GERG-2008 (pyaga8) must be a real, callable backend and match AGA8-DC92 closely."""
+    solver = ThermodynamicSolver()
+    gas_data = {
+        "ids": ["methane", "ethane", "propane", "nitrogen", "carbon dioxide"],
+        "mol_fractions": [0.88, 0.07, 0.03, 0.01, 0.01],
+        "MW": 18.27,
+    }
+
+    gerg = solver.get_properties(20.0e5, 298.15, gas_data, "gerg2008")
+    aga8 = solver.get_properties(20.0e5, 298.15, gas_data, "aga8")
+
+    assert gerg.raw_props["fallback"] is False
+    assert gerg.Z > 0.5
+    assert gerg.density > 0.0
+    # GERG-2008 and AGA8-DC92 are different correlations but should agree closely
+    # for a lean natural-gas mixture.
+    assert abs(gerg.Z - aga8.Z) / aga8.Z < 0.005
+    assert abs(gerg.density - aga8.density) / aga8.density < 0.005
+    # True isentropic exponent is stored separately from Cp/Cv.
+    assert 1.0 < gerg.raw_props["isentropic_exponent"] < 2.0
+    assert 1.0 < gerg.raw_props["cp_cv_ratio"] < 2.0
+
+
+def test_gerg2008_design_calculation_runs():
+    """Selecting GERG-2008 from the UI must not raise 'Bilinmeyen EOS metodu'."""
+    inputs = {
+        "p_in": 20.0,
+        "p_in_unit": "bar(a)",
+        "p_out": 60.0,
+        "p_out_unit": "bar(a)",
+        "t_in": 25.0,
+        "t_in_unit": "°C",
+        "flow": 12.0,
+        "flow_unit": "kg/s",
+        "gas_comp": {
+            "METHANE": 88.0,
+            "ETHANE": 7.0,
+            "PROPANE": 3.0,
+            "NITROGEN": 1.0,
+            "CARBONDIOXIDE": 1.0,
+        },
+        "eos_method": "gerg2008",
+        "method": "Metot 6: Schultz 3-Üslü Gerçek Gaz",
+        "poly_eff": 82.0,
+        "num_stages": 2,
+        "intercooler_t": 35.0,
+    }
+    results = ThermoEngine().calculate_design_performance(inputs)
+    assert results["t_out"] > 0.0
+    assert results["power_shaft_total_kw"] > 0.0
+    assert results["_effective_eos"] == "gerg2008"
+
+
+def test_true_isentropic_exponent_and_cp_cv_are_distinct():
+    """k_s (a²ρ/P) must be stored separately from Cp/Cv for real gases."""
+    solver = ThermodynamicSolver()
+    gas_data = {
+        "ids": ["methane", "ethane", "propane", "nitrogen", "carbon dioxide"],
+        "mol_fractions": [0.88, 0.07, 0.03, 0.01, 0.01],
+        "MW": 18.27,
+    }
+    state = solver.get_properties(20.0e5, 298.15, gas_data, "gerg2008")
+    computed = state.speed_of_sound ** 2 * state.density / state.P
+    assert state.k_s == pytest.approx(computed, rel=1e-6)
+    assert state.k_s < state.k  # real-gas κ_s differs from Cp/Cv
+
+
+def test_dak_z_factor_estimate():
+    """DAK estimate must be physical and close to the GERG-2008 reference."""
+    from kasp.core.z_factor import estimate_z_factor
+
+    composition = {
+        "METHANE": 88.0,
+        "ETHANE": 7.0,
+        "PROPANE": 3.0,
+        "NITROGEN": 1.0,
+        "CARBONDIOXIDE": 1.0,
+    }
+    estimate = estimate_z_factor(composition, 20.0e5, 298.15)
+    assert estimate["valid"] is True
+    assert 0.5 < estimate["z_factor"] < 1.05
+    # GERG-2008 reference for the same state is ~0.95545.
+    assert abs(estimate["z_factor"] - 0.95545) < 0.01

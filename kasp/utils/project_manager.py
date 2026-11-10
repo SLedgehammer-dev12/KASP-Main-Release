@@ -8,7 +8,37 @@ import datetime
 import logging
 import os
 import tempfile
+import math
 from pathlib import Path
+
+
+def sanitize_json_payload(obj):
+    """Recursively convert NaN/Inf to None, numpy types to Python primitives, dates to ISO strings."""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return {str(k): sanitize_json_payload(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_json_payload(v) for v in obj]
+    if isinstance(obj, (set, frozenset)):
+        return [sanitize_json_payload(v) for v in obj]
+    if hasattr(obj, "item") and callable(obj.item):
+        try:
+            return sanitize_json_payload(obj.item())
+        except (TypeError, ValueError):
+            pass
+    if hasattr(obj, "tolist") and callable(obj.tolist):
+        try:
+            return sanitize_json_payload(obj.tolist())
+        except (TypeError, ValueError):
+            pass
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    return obj
 
 
 def _json_default_serializer(obj):
@@ -33,7 +63,7 @@ class ProjectManager:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.last_error = None
     
-    def save_project(self, filepath, inputs, results=None):
+    def save_project(self, filepath, inputs, results=None, modules=None, station_data=None):
         """
         Projeyi JSON formatında kaydeder
         
@@ -41,6 +71,8 @@ class ProjectManager:
             filepath: Kayıt dosya yolu (.kasp)
             inputs: Kullanıcı girdileri dictionary
             results: Hesaplama sonuçları (opsiyonel)
+            modules: Entegrasyon modülü sonuçları (opsiyonel)
+            station_data: İstasyon modeli sonuçları (opsiyonel)
         """
         try:
             project_data = {
@@ -95,10 +127,13 @@ class ProjectManager:
                     'altitude': inputs.get('altitude', 0),
                     'humidity': inputs.get('humidity', 60)
                 },
-                'results': results if results else None
+                'results': results if results else None,
+                'modules': modules or {},
+                'station_data': station_data,
             }
             
             # JSON olarak atomik kaydet
+            project_data = sanitize_json_payload(project_data)
             filepath = Path(filepath)
             if not filepath.suffix:
                 filepath = filepath.with_suffix('.kasp')
@@ -173,7 +208,19 @@ class ProjectManager:
                     inputs[key] = default_val
             
             project_data['schema_version'] = self.VERSION
-        
+
+        # Integration module schemas are versioned independently from the
+        # project schema, so migrate them even when the project is current.
+        try:
+            from kasp.integrations.schema import migrate_modules_payload, migrate_results_payload
+
+            if isinstance(project_data.get("modules"), dict):
+                project_data["modules"] = migrate_modules_payload(project_data.get("modules"))
+            if isinstance(project_data.get("results"), dict):
+                project_data["results"] = migrate_results_payload(project_data.get("results"))
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.warning("Modül şema migrasyonu atlandı: %s", exc)
+
         return project_data
     
     def load_project(self, filepath):
@@ -200,6 +247,14 @@ class ProjectManager:
             
             inputs = project_data.get('inputs', {})
             results = project_data.get('results')
+            modules = project_data.get('modules')
+            station_data = project_data.get('station_data')
+            if modules or station_data:
+                results = dict(results or {})
+                if modules:
+                    results.setdefault('module_results', modules)
+                if station_data:
+                    results.setdefault('station_data', station_data)
             
             self.last_error = None
             self.logger.info(f"Proje yüklendi: {filepath}")

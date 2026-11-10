@@ -5,9 +5,11 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import re
 
 from kasp.core.contracts import get_design_input_defaults
 from kasp.utils.reporting import ReportGenerator
+from kasp.utils.project_manager import sanitize_json_payload
 
 DESIGN_REPORT_UNITS = {
     "power_unit": "kW",
@@ -21,10 +23,15 @@ DESIGN_REPORT_UNITS = {
 
 def sanitize_project_basename(name, fallback):
     """Return a filesystem-friendly basename preserving current UI behavior."""
-    value = (name or "").strip()
+    value = str(name or "").strip()
     if not value:
-        value = fallback
-    return value.replace(" ", "_")
+        return fallback
+    # Strip forbidden filesystem chars: / \ : * ? " < > | and control chars
+    value = re.sub(r'[\/\\:\*\?"<>\|\x00-\x1f]', "_", value)
+    value = value.replace(" ", "_")
+    # Collapse multiple consecutive underscores and strip trailing/leading punctuation
+    value = re.sub(r"_+", "_", value).strip("._")
+    return value or fallback
 
 
 def default_design_report_filename(project_name):
@@ -40,13 +47,16 @@ def default_performance_report_filename(unit_name):
 
 
 def build_results_export_payload(inputs, results, selected_units, *, exported_at=None):
-    """Build the JSON payload used by results export."""
-    return {
+    """Build the JSON payload used by results export (sanitized for RFC 8259)."""
+    exported = exported_at or datetime.datetime.now()
+    exported_value = exported.isoformat() if hasattr(exported, "isoformat") else str(exported)
+    payload = {
         "inputs": inputs,
         "results": results,
         "selected_units": selected_units,
-        "date": (exported_at or datetime.datetime.now()).isoformat(),
+        "date": exported_value,
     }
+    return sanitize_json_payload(payload)
 
 
 class DocumentWorkflowController:

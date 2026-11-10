@@ -136,7 +136,7 @@ def test_complex_coolprop_design_iteration_limit_is_capped():
         "NITROGEN": 3.0,
     }
 
-    assert engine._limit_design_method_iterations(inputs, "coolprop", 25) == 3
+    assert engine._limit_design_method_iterations(inputs, "coolprop", 25) == 10
     assert engine._limit_design_method_iterations(inputs, "pr", 25) == 25
 
 

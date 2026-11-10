@@ -105,16 +105,19 @@ class CalculationWorker(QObject):
             percentage: Progress percentage (0-100)
             message: Status message
         """
+        from kasp.i18n import tr
+        localized_message = tr(message)
+
         # Emit both old and new signals for compatibility
         self.progress.emit(percentage)
-        self.progress_detailed.emit(percentage, message)
+        self.progress_detailed.emit(percentage, localized_message)
         
         # Calculate and emit time estimate
         eta = self.progress_tracker.update(percentage)
         if eta is not None:
             self.time_remaining.emit(eta)
         
-        self.logger.debug(f"Progress: {percentage}% - {message}")
+        self.logger.debug(f"Progress: {percentage}% - {localized_message}")
 
     def run(self):
         """
@@ -161,13 +164,13 @@ class CalculationWorker(QObject):
 
     def _run_body(self):
         """Step-wise calculation body (runs under this worker's run-ID)."""
-        self.emit_progress(0, "Initializing calculation...")
+        self.emit_progress(0, "Hesaplama başlatılıyor...")
         if self._cancel_requested:
             self.cancelled.emit()
             return
 
         # Step 2: Input validation (5%)
-        self.emit_progress(5, "Validating inputs...")
+        self.emit_progress(5, "Girişler doğrulanıyor...")
         self.logger.info("🚀 Calculation worker started")
         self.logger.info(f"Selected EOS: {self.inputs.get('eos_method', 'N/A').upper()}")
 
@@ -176,7 +179,7 @@ class CalculationWorker(QObject):
             return
 
         # Step 3: Gas object creation (10%)
-        self.emit_progress(10, "Creating gas mixture...")
+        self.emit_progress(10, "Gaz karışımı oluşturuluyor...")
 
         # Step 4: Thermodynamic calculations (20-60%)
         self.emit_progress(20, "Hesaplamalar başlıyor...")
@@ -202,13 +205,13 @@ class CalculationWorker(QObject):
             self.cancelled.emit()
             return
 
-        self.emit_progress(50, "Calculating power requirements...")
+        self.emit_progress(50, "Güç gereksinimleri hesaplanıyor...")
 
         if self._cancel_requested:
             self.cancelled.emit()
             return
 
-        self.emit_progress(60, "Analyzing fuel consumption...")
+        self.emit_progress(60, "Yakıt tüketimi analiz ediliyor...")
 
         # --- Unit Selection Phase (70-95%) ---
         # Pass un-margined driver/motor power so API 617 4% margin is not double-counted
@@ -231,7 +234,7 @@ class CalculationWorker(QObject):
             'flow':             results_raw.get('mass_flow_per_unit_kgs'),
         }
 
-        self.emit_progress(70, "Searching for suitable turbines...")
+        self.emit_progress(70, "Uygun türbinler aranıyor...")
         self.logger.info(
             f"Phase 2: Unit selection starting. "
             f"Required power (per unit): {required_power_per_unit_kw:.2f} kW"
@@ -241,7 +244,7 @@ class CalculationWorker(QObject):
             self.cancelled.emit()
             return
 
-        self.emit_progress(80, "Filtering compatible turbines...")
+        self.emit_progress(80, "Uyumlu türbinler filtreleniyor...")
 
         selected_units = self.engine.select_units(
             required_power_per_unit_kw,
@@ -254,7 +257,7 @@ class CalculationWorker(QObject):
             self.cancelled.emit()
             return
 
-        self.emit_progress(90, "Ranking turbine options...")
+        self.emit_progress(90, "Türbin seçenekleri sıralanıyor...")
         self.logger.info(f"Phase 2: Unit selection complete. Found {len(selected_units)} units ✓")
 
         if self._cancel_requested:
@@ -262,13 +265,13 @@ class CalculationWorker(QObject):
             return
 
         # Step 12: Finalization (95-100%)
-        self.emit_progress(95, "Finalizing results...")
+        self.emit_progress(95, "Sonuçlar tamamlanıyor...")
 
         if self._cancel_requested:
             self.cancelled.emit()
             return
 
-        self.emit_progress(100, "Calculation complete!")
+        self.emit_progress(100, "Hesaplama tamamlandı!")
         self.logger.info("✅ All calculations completed successfully")
 
         # Emit results

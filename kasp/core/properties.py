@@ -232,7 +232,7 @@ class ThermodynamicSolver:
         - Z ≤ 0.3 → 'liquid'
         - raw_phase 'twophase' (CoolProp) → 'two-phase'
         """
-        if raw_phase in ("ideal_fallback", "ideal", "gas", "liquid", "supercritical", "two-phase"):
+        if raw_phase in ("ideal_fallback", "z_factor_fallback", "ideal", "gas", "liquid", "supercritical", "two-phase"):
             return raw_phase
         if raw_phase == "twophase":
             return "two-phase"
@@ -261,6 +261,7 @@ class ThermodynamicSolver:
         fallback=False,
         mu=1.1e-5,
         speed_of_sound=None,
+        isentropic_exponent=None,
     ):
         if speed_of_sound is None or not math.isfinite(speed_of_sound) or speed_of_sound <= 0:
             speed_of_sound = ThermodynamicSolver._speed_of_sound(k, P_pa, density, Z)
@@ -269,6 +270,19 @@ class ThermodynamicSolver:
             if math.isfinite(float(speed_of_sound or 0.0))
             else 0.0
         )
+
+        # Gerçek izentropik üs: κ_s = a²·ρ/P. Cp/Cv'den farklıdır.
+        k_s_val = 0.0
+        try:
+            if isentropic_exponent is not None and math.isfinite(float(isentropic_exponent)):
+                k_s_val = float(isentropic_exponent)
+            elif speed_of_sound_val > 0.0 and density and float(density) > 0.0 and P_pa and float(P_pa) > 0.0:
+                k_s_val = (speed_of_sound_val ** 2) * float(density) / float(P_pa)
+        except (TypeError, ValueError, ZeroDivisionError):
+            k_s_val = 0.0
+        if not math.isfinite(k_s_val) or k_s_val <= 1.0:
+            k_s_val = float(k) if math.isfinite(float(k)) and float(k) > 1.0 else 1.4
+
         normalized_phase = ThermodynamicSolver._classify_phase(Z, density, phase)
         health_reasons = []
         # Standart J/(kg*K) birim sözleşmesi güvencesi
@@ -287,6 +301,8 @@ class ThermodynamicSolver:
             "raw_phase": phase,
             "mu": mu,
             "speed_of_sound": speed_of_sound_val,
+            "isentropic_exponent": k_s_val,
+            "cp_cv_ratio": float(k),
         }
         if health_reasons:
             raw["health_reasons"] = health_reasons
@@ -298,6 +314,7 @@ class ThermodynamicSolver:
             S=float(S),
             Z=float(Z),
             k=float(k),
+            k_s=float(k_s_val),
             MW=float(MW),
             Cp=norm_cp,
             Cv=norm_cv,
@@ -396,6 +413,8 @@ class ThermodynamicSolver:
             return self._solve_thermo_eos(P_pa, T_k, gas_obj, eos_method)
         elif eos_method == 'aga8':
             return self._solve_aga8(P_pa, T_k, gas_obj)
+        elif eos_method == 'gerg2008':
+            return self._solve_aga8(P_pa, T_k, gas_obj, method='gerg2008')
         elif eos_method == 'thermopack':
             return self._solve_thermopack(P_pa, T_k, gas_obj)
         elif eos_method == 'ccp':
@@ -626,30 +645,30 @@ class ThermodynamicSolver:
             return self._package_cache[pkg_key]
 
     def _get_coolprop_abstract_state(self, mixture_string: str):
-        """CoolProp AbstractState cache — karışım başına bir kez oluşturulur."""
-        with self._as_lock:
-            if mixture_string not in self._package_cache:
+        """CoolProp AbstractState cache — thread-local olarak tutulur (es zamanli isteklerde lock contention onlenir)."""
+        if not hasattr(self._run_tracking, "as_cache"):
+            self._run_tracking.as_cache = {}
+        if mixture_string not in self._run_tracking.as_cache:
+            try:
+                from CoolProp import AbstractState
+                AS = AbstractState("HEOS", mixture_string)
                 try:
-                    from CoolProp import AbstractState
-                    AS = AbstractState("HEOS", mixture_string)
-                    try:
-                        AS.build_phase_envelope("")
-                    except Exception as e:
-                        logger.debug("Phase envelope build failed for %s: %s", mixture_string, e)
-                    self._package_cache[mixture_string] = AS
-                except ImportError:
-                    self._package_cache[mixture_string] = None
-            return self._package_cache.get(mixture_string)
+                    AS.build_phase_envelope("")
+                except Exception as e:
+                    logger.debug("Phase envelope build failed for %s: %s", mixture_string, e)
+                self._run_tracking.as_cache[mixture_string] = AS
+            except Exception:
+                self._run_tracking.as_cache[mixture_string] = None
+        return self._run_tracking.as_cache.get(mixture_string)
 
     def _get_coolprop_phase(self, mixture_string: str, P_pa: float, T_k: float) -> str | None:
         """AbstractState.phase() ile güvenilir faz tespiti, karışımlarda faz zarfını yönetir."""
         try:
-            with self._as_lock:
-                AS = self._get_coolprop_abstract_state(mixture_string)
-                if AS is None:
-                    return None
-                AS.update(CP.PT_INPUTS, P_pa, T_k)
-                iphase = AS.phase()
+            AS = self._get_coolprop_abstract_state(mixture_string)
+            if AS is None:
+                return None
+            AS.update(CP.PT_INPUTS, P_pa, T_k)
+            iphase = AS.phase()
             from CoolProp import iphase_gas, iphase_liquid, iphase_supercritical
             from CoolProp import iphase_supercritical_gas, iphase_supercritical_liquid
             from CoolProp import iphase_twophase, iphase_not_imposed
@@ -692,7 +711,7 @@ class ThermodynamicSolver:
             except Exception:
                 phase_str = None
         
-        return self._build_state(
+        state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
             H=H,
@@ -708,6 +727,11 @@ class ThermodynamicSolver:
             mu=CP.PropsSI('V', 'P', P_pa, 'T', T_k, mixture_string),
             speed_of_sound=a,
         )
+        # a² = (∂P/∂ρ)_s → k_s = a²·ρ/P. CoolProp'ın "isentropic_exponent"
+        # çıktısı Cp/Cv ile aynı olabildiğinden gerçek k_s ayrıca saklanır.
+        state.raw_props["isentropic_exponent"] = (a * a * D / P_pa) if a and D and P_pa > 0 else 0.0
+        state.raw_props["cp_cv_ratio"] = k
+        return state
         
     def _solve_thermo_eos(self, P_pa: float, T_k: float, gas_data: dict, eos_method: str) -> ThermodynamicState:
         """Thermo PR/SRK modülünü kullanarak özellikleri çözer."""
@@ -891,11 +915,12 @@ class ThermodynamicSolver:
         state.raw_props["fallback_reason"] = reason
         return state
 
-    def _solve_aga8(self, P_pa: float, T_k: float, gas_data: dict) -> ThermodynamicState:
-        """AGA8-DC92 Detail (ISO 12213-2) standardını kullanarak özellikleri çözer.
+    def _solve_aga8(self, P_pa: float, T_k: float, gas_data: dict, method: str = 'aga8') -> ThermodynamicState:
+        """AGA8-DC92 Detail (ISO 12213-2) veya GERG-2008 (Kunz-Wagner 2012) çözer.
 
-        Not: pyaga8.Detail/Composition AGA8-DC92 (Starling-Savidge 1992) metodudur;
-        GERG-2008 (Kunz-Wagner 2012) farklı korelasyondur — isimlendirme buna göre düzeltildi.
+        `method='aga8'` → pyaga8.Detail (AGA8-DC92 / ISO 12213-2)
+        `method='gerg2008'` → pyaga8.Gerg2008 (GERG-2008 referans modeli)
+
         Geçerlilik penceresi (yakl. T=143–473 K, P≤30 MPa, doğalgaz kompozisyonu) dışında
         çağrıldığında uyarı üretilir.
         """
@@ -936,45 +961,52 @@ class ThermodynamicSolver:
                 raise ValueError(f"AGA8 standardı '{c_id}' bileşenini desteklemez.")
             setattr(comp, field, fraction)
             
-        detail = pyaga8.Detail()
-        detail.set_composition(comp)
-        
-        # pyaga8 birimleri: basınç kPa, sıcaklık K (P_pa/1e3)
-        detail.pressure = P_pa / 1e3
-        detail.temperature = T_k
+        engine = pyaga8.Gerg2008() if method == 'gerg2008' else pyaga8.Detail()
+        engine.set_composition(comp)
 
+        # pyaga8 birimleri: basınç kPa, sıcaklık K (P_pa/1e3)
+        engine.pressure = P_pa / 1e3
+        engine.temperature = T_k
+
+        method_label = "GERG-2008" if method == 'gerg2008' else "AGA8-DC92 (ISO 12213-2)"
         aga8_warnings = []
         if not (143.0 <= T_k <= 473.0):
-            msg = f"AGA8-DC92 (ISO 12213-2) sıcaklık aralığı dışı: T={T_k:.1f} K (önerilen 143–473 K). Sonuç ekstrapole."
+            msg = f"{method_label} sıcaklık aralığı dışı: T={T_k:.1f} K (önerilen 143–473 K). Sonuç ekstrapole."
             logger.warning(msg)
             aga8_warnings.append(msg)
-        if detail.pressure > 30000.0:
-            msg = f"AGA8-DC92 (ISO 12213-2) basınç aralığı dışı: P={detail.pressure / 1000.0:.1f} MPa (önerilen ≤30 MPa). Sonuç ekstrapole."
+        if engine.pressure > 30000.0:
+            msg = f"{method_label} basınç aralığı dışı: P={engine.pressure / 1000.0:.1f} MPa (önerilen ≤30 MPa). Sonuç ekstrapole."
             logger.warning(msg)
             aga8_warnings.append(msg)
-        
-        detail.calc_density()
-        detail.calc_properties()
-        
+
+        # GERG-2008 pyaga8 API'sinde calc_density(verbose) imzası kullanılır.
+        if method == 'gerg2008':
+            engine.calc_density(0)
+        else:
+            engine.calc_density()
+        engine.calc_properties()
+
         # Değerlerin okunması
-        Z = detail.z
-        MW_g_mol = detail.mm # g/mol
-        molar_mass = MW_g_mol / 1000.0 # kg/mol
-        
+        Z = engine.z
+        MW_g_mol = engine.mm  # g/mol
+        molar_mass = MW_g_mol / 1000.0  # kg/mol
+
         # Yoğunluk: d (mol/L) -> kg/m³
-        # d [mol/L] * 1000 [L/m³] * molar_mass [kg/mol]
-        density = detail.d * 1e3 * molar_mass
-        
+        density = engine.d * 1e3 * molar_mass
+
         # Isı kapasiteleri: cp, cv (J/mol.K) -> J/kg.K
-        Cp = detail.cp / molar_mass
-        Cv = detail.cv / molar_mass
+        Cp = engine.cp / molar_mass
+        Cv = engine.cv / molar_mass
         k = Cp / Cv if Cv > 0 else 1.4
-        
+
+        # pyaga8.kappa gerçek izentropik üstür (Cp/Cv değil).
+        true_isentropic_exponent = float(getattr(engine, 'kappa', 0.0) or 0.0)
+
         # Mutlak entalpi ve entropi: h (J/mol) -> J/kg, s (J/mol.K) -> J/kg.K
-        H = detail.h / molar_mass
-        S = detail.s / molar_mass
-        
-        speed_of_sound = detail.w
+        H = engine.h / molar_mass
+        S = engine.s / molar_mass
+
+        speed_of_sound = engine.w
         
         # Faz denetimi: Z aşırı düşükse sıvılaşma/yoğuşma riski vardır
         phase_str = 'gas'
@@ -994,7 +1026,8 @@ class ThermodynamicSolver:
             density=density,
             phase=phase_str,
             fallback=False,
-            speed_of_sound=speed_of_sound
+            speed_of_sound=speed_of_sound,
+            isentropic_exponent=true_isentropic_exponent,
         )
         if aga8_warnings:
             state.raw_props.setdefault("health_reasons", []).extend(aga8_warnings)
@@ -1048,49 +1081,50 @@ class ThermodynamicSolver:
             tp_id = THERMOPACK_MAPPING.get(canonical, canonical)
             tp_ids.append(tp_id)
             
-        eos = self._get_thermopack_eos(tuple(tp_ids), 'PR')
-        
-        # Calculate specific volume and phase
-        internal_fallback = False
-        try:
-            v, = eos.specific_volume(T_k, P_pa, zs, eos.VAPPH)
-            phase_str = 'gas'
-        except Exception:
+        with self._as_lock:
+            eos = self._get_thermopack_eos(tuple(tp_ids), 'PR')
+            
+            # Calculate specific volume and phase
+            internal_fallback = False
             try:
-                v, = eos.specific_volume(T_k, P_pa, zs, eos.LIQPH)
-                phase_str = 'liquid'
+                v, = eos.specific_volume(T_k, P_pa, zs, eos.VAPPH)
+                phase_str = 'gas'
             except Exception:
-                v = 8.314462 * T_k / P_pa
-                phase_str = 'ideal'
-                internal_fallback = True
-                
-        # Calculate MW and density
-        MW_g_mol = sum(zs[i] * MOLAR_MASSES[reverse_map.get(str(ids[i]).lower(), str(ids[i]).upper())] for i in range(len(zs)))
-        molar_mass = MW_g_mol / 1000.0 # kg/mol
-        
-        density = molar_mass / v # kg/m^3
-        Z = P_pa * v / (8.314462 * T_k)
-        
-        # Enthalpy and entropy
-        thermo_phase_arg = eos.VAPPH if phase_str in ('gas', 'ideal') else eos.LIQPH
-        h_molar, cp_molar = eos.enthalpy(T_k, P_pa, zs, thermo_phase_arg, dhdt=True)
-        H = h_molar / molar_mass
-        Cp = cp_molar / molar_mass
-        
-        s_molar, = eos.entropy(T_k, P_pa, zs, thermo_phase_arg)
-        S = s_molar / molar_mass
-        
-        # Internal energy for Cv
-        u_molar, cv_molar = eos.internal_energy_tv(T_k, v, zs, dedt=True)
-        Cv = cv_molar / molar_mass
-        
-        k = Cp / Cv if Cv > 0 else 1.4
-        
-        # Speed of sound
-        try:
-            speed_of_sound = eos.speed_of_sound_tv(T_k, v, zs)
-        except Exception:
-            speed_of_sound = self._speed_of_sound(k, P_pa, density)
+                try:
+                    v, = eos.specific_volume(T_k, P_pa, zs, eos.LIQPH)
+                    phase_str = 'liquid'
+                except Exception:
+                    v = 8.314462 * T_k / P_pa
+                    phase_str = 'ideal'
+                    internal_fallback = True
+                    
+            # Calculate MW and density
+            MW_g_mol = sum(zs[i] * MOLAR_MASSES[reverse_map.get(str(ids[i]).lower(), str(ids[i]).upper())] for i in range(len(zs)))
+            molar_mass = MW_g_mol / 1000.0 # kg/mol
+            
+            density = molar_mass / v # kg/m^3
+            Z = P_pa * v / (8.314462 * T_k)
+            
+            # Enthalpy and entropy
+            thermo_phase_arg = eos.VAPPH if phase_str in ('gas', 'ideal') else eos.LIQPH
+            h_molar, cp_molar = eos.enthalpy(T_k, P_pa, zs, thermo_phase_arg, dhdt=True)
+            H = h_molar / molar_mass
+            Cp = cp_molar / molar_mass
+            
+            s_molar, = eos.entropy(T_k, P_pa, zs, thermo_phase_arg)
+            S = s_molar / molar_mass
+            
+            # Internal energy for Cv
+            u_molar, cv_molar = eos.internal_energy_tv(T_k, v, zs, dedt=True)
+            Cv = cv_molar / molar_mass
+            
+            k = Cp / Cv if Cv > 0 else 1.4
+            
+            # Speed of sound
+            try:
+                speed_of_sound = eos.speed_of_sound_tv(T_k, v, zs)
+            except Exception:
+                speed_of_sound = self._speed_of_sound(k, P_pa, density)
             
         state = self._build_state(
             P_pa=P_pa,
@@ -1294,8 +1328,30 @@ class ThermodynamicSolver:
         
         Cv_ideal = Cp_ideal - R_specific
         k_ideal = Cp_ideal / Cv_ideal if Cv_ideal > 0 else 1.4
-        
-        Z_ideal = max(0.5, min(1.5, 1.0 - 0.1 * (P_pa / (STD_PRESS_PA * 10))))
+
+        # EOS'suz son çare: fiziksel bir P, T varsa önce DAK/Kay/Wichert-Aziz Z-faktörü dene.
+        z_estimate = None
+        if not unphysical_pt:
+            try:
+                from kasp.core.mixture import GasMixtureBuilder
+                from kasp.core.z_factor import estimate_z_factor
+
+                reverse_map = GasMixtureBuilder.REVERSE_THERMO_ID_MAP
+                composition_for_z = {}
+                for idx, component_id in enumerate(ids):
+                    if idx >= len(zs) or zs[idx] <= 0:
+                        continue
+                    canonical = reverse_map.get(str(component_id).lower(), str(component_id).upper())
+                    composition_for_z[canonical] = composition_for_z.get(canonical, 0.0) + float(zs[idx])
+                if composition_for_z:
+                    z_estimate = estimate_z_factor(composition_for_z, P_pa, T_k)
+            except Exception as exc:
+                logger.debug("Z-factor fallback (DAK) unavailable: %s", exc)
+
+        if z_estimate is not None:
+            Z_ideal = float(z_estimate["z_factor"])
+        else:
+            Z_ideal = max(0.5, min(1.5, 1.0 - 0.1 * (P_pa / (STD_PRESS_PA * 10))))
         rho_ideal = P_pa / (R_specific * T_k * Z_ideal) if T_k > 0 and R_specific > 0 else 1.0
         
         H_ideal = Cp_ideal * (T_k - 298.15)
@@ -1314,10 +1370,20 @@ class ThermodynamicSolver:
             Cp=Cp_ideal,
             Cv=Cv_ideal if Cv_ideal > 0 else Cp_ideal / 1.4,
             density=max(0.1, rho_ideal),
-            phase='ideal_fallback',
+            phase='z_factor_fallback' if z_estimate is not None else 'ideal_fallback',
             fallback=True,
             speed_of_sound=self._speed_of_sound(k_ideal, P_pa, max(rho_ideal, 0.1)),
         )
+        if z_estimate is not None:
+            state.raw_props["fallback_layer"] = "z_factor_dak"
+            state.raw_props["fallback_type"] = "z_factor_dak"
+            state.raw_props["z_factor_method"] = z_estimate["method"]
+            state.raw_props["z_factor_ppr"] = z_estimate["ppr"]
+            state.raw_props["z_factor_tpr"] = z_estimate["tpr"]
+            state.raw_props["z_factor_valid"] = z_estimate["valid"]
+            if z_estimate["warnings"]:
+                state.raw_props.setdefault("health_reasons", []).extend(z_estimate["warnings"])
+                state.raw_props["thermo_health"] = "WARNING"
         if unphysical_pt:
             state.raw_props["thermo_health"] = "CRITICAL"
             state.raw_props.setdefault("health_reasons", []).append(
@@ -1455,70 +1521,70 @@ class ThermodynamicSolver:
                 self._package_cache[cache_key] = pp
             else:
                 pp = self._package_cache[cache_key]
+                
+            ms = self._dwsim_Calculator.CreateMaterialStream(carray, comparray)
+            ms.SetPropertyPackage(pp)
             
-        ms = self._dwsim_Calculator.CreateMaterialStream(carray, comparray)
-        ms.SetPropertyPackage(pp)
-        
-        ms.SetTemperature(float(T_k))
-        ms.SetPressure(float(P_pa))
-        ms.SetFlashSpec("PT")
-        ms.Calculate()
-        
-        present_phases = list(ms.GetPresentPhases())
-        phase_label = "Vapor" if "Vapor" in present_phases else "Overall"
-        
-        try:
-            density = float(ms.GetSinglePhaseProp("density", phase_label, "Mass"))
-        except Exception:
-            density = float(ms.GetSinglePhaseProp("density", "Overall", "Mass"))
+            ms.SetTemperature(float(T_k))
+            ms.SetPressure(float(P_pa))
+            ms.SetFlashSpec("PT")
+            ms.Calculate()
             
-        try:
-            H = float(ms.GetSinglePhaseProp("enthalpy", phase_label, "Mass")) * 1000.0
-        except Exception:
-            H = float(ms.GetSinglePhaseProp("enthalpy", "Overall", "Mass")) * 1000.0
+            present_phases = list(ms.GetPresentPhases())
+            phase_label = "Vapor" if "Vapor" in present_phases else "Overall"
             
-        try:
-            S = float(ms.GetSinglePhaseProp("entropy", phase_label, "Mass")) * 1000.0
-        except Exception:
-            S = float(ms.GetSinglePhaseProp("entropy", "Overall", "Mass")) * 1000.0
-            
-        try:
-            Z = float(ms.GetSinglePhaseProp("compressibilityFactor", phase_label, "Mass"))
-        except Exception:
-            Z = float(ms.GetSinglePhaseProp("compressibilityFactor", "Overall", "Mass"))
-            
-        try:
-            cp_val = float(ms.GetSinglePhaseProp("heatCapacityCp", phase_label, "Mass")) * 1000.0
-        except Exception:
-            cp_val = float(ms.GetSinglePhaseProp("heatCapacityCp", "Overall", "Mass")) * 1000.0
-            
-        try:
-            cv_val = float(ms.GetSinglePhaseProp("heatCapacityCv", phase_label, "Mass")) * 1000.0
-        except Exception:
-            cv_val = float(ms.GetSinglePhaseProp("heatCapacityCv", "Overall", "Mass")) * 1000.0
-            
-        k = cp_val / cv_val if cv_val > 0 else 1.4
-        
-        try:
-            speed_of_sound = float(ms.GetSinglePhaseProp("speedOfSound", phase_label, "Mass"))
-        except Exception:
-            speed_of_sound = self._speed_of_sound(k, P_pa, density)
-
-        try:
-            mu_val = float(ms.GetSinglePhaseProp("viscosity", phase_label, "Mass"))
-        except Exception:
             try:
-                mu_val = float(ms.GetSinglePhaseProp("viscosity", "Overall", "Mass"))
+                density = float(ms.GetSinglePhaseProp("density", phase_label, "Mass"))
             except Exception:
-                mu_val = 1.1e-5
-
-        try:
-            tc_val = float(ms.GetSinglePhaseProp("thermalConductivity", phase_label, "Mass"))
-        except Exception:
+                density = float(ms.GetSinglePhaseProp("density", "Overall", "Mass"))
+                
             try:
-                tc_val = float(ms.GetSinglePhaseProp("thermalConductivity", "Overall", "Mass"))
+                H = float(ms.GetSinglePhaseProp("enthalpy", phase_label, "Mass")) * 1000.0
             except Exception:
-                tc_val = 0.0
+                H = float(ms.GetSinglePhaseProp("enthalpy", "Overall", "Mass")) * 1000.0
+                
+            try:
+                S = float(ms.GetSinglePhaseProp("entropy", phase_label, "Mass")) * 1000.0
+            except Exception:
+                S = float(ms.GetSinglePhaseProp("entropy", "Overall", "Mass")) * 1000.0
+                
+            try:
+                Z = float(ms.GetSinglePhaseProp("compressibilityFactor", phase_label, "Mass"))
+            except Exception:
+                Z = float(ms.GetSinglePhaseProp("compressibilityFactor", "Overall", "Mass"))
+                
+            try:
+                cp_val = float(ms.GetSinglePhaseProp("heatCapacityCp", phase_label, "Mass")) * 1000.0
+            except Exception:
+                cp_val = float(ms.GetSinglePhaseProp("heatCapacityCp", "Overall", "Mass")) * 1000.0
+                
+            try:
+                cv_val = float(ms.GetSinglePhaseProp("heatCapacityCv", phase_label, "Mass")) * 1000.0
+            except Exception:
+                cv_val = float(ms.GetSinglePhaseProp("heatCapacityCv", "Overall", "Mass")) * 1000.0
+                
+            k = cp_val / cv_val if cv_val > 0 else 1.4
+            
+            try:
+                speed_of_sound = float(ms.GetSinglePhaseProp("speedOfSound", phase_label, "Mass"))
+            except Exception:
+                speed_of_sound = self._speed_of_sound(k, P_pa, density)
+
+            try:
+                mu_val = float(ms.GetSinglePhaseProp("viscosity", phase_label, "Mass"))
+            except Exception:
+                try:
+                    mu_val = float(ms.GetSinglePhaseProp("viscosity", "Overall", "Mass"))
+                except Exception:
+                    mu_val = 1.1e-5
+
+            try:
+                tc_val = float(ms.GetSinglePhaseProp("thermalConductivity", phase_label, "Mass"))
+            except Exception:
+                try:
+                    tc_val = float(ms.GetSinglePhaseProp("thermalConductivity", "Overall", "Mass"))
+                except Exception:
+                    tc_val = 0.0
 
         MW_g_mol = sum(zs[i] * MOLAR_MASSES[reverse_map.get(str(ids[i]).lower(), str(ids[i]).upper())] for i in range(len(zs)))
         phase_str = 'gas' if phase_label == 'Vapor' else 'liquid'
@@ -1546,72 +1612,73 @@ class ThermodynamicSolver:
 
     def _load_neqsim(self) -> bool:
         """NeqSim Java kütüphanesini yükler — PyInstaller bundle uyumlu."""
-        if hasattr(self, "_neqsim_loaded"):
-            return self._neqsim_loaded
+        with self._as_lock:
+            if hasattr(self, "_neqsim_loaded"):
+                return self._neqsim_loaded
 
-        self._neqsim_loaded = False
-        self._neqsim_jvm_started = False
-
-        try:
-            import jpype
-            import jpype.imports
-        except ImportError as e:
-            logger.debug("jpype1 yüklü değil: %s", e)
-            return False
-
-        try:
-            import sys
-            import os
-
-            # JVM zaten başlatılmış mı?
-            if not jpype.isJVMStarted():
-                jar_candidates = [
-                    os.path.join(getattr(sys, "_MEIPASS", ""), "neqsim.jar"),
-                    os.path.join(getattr(sys, "_MEIPASS", ""), "kasp", "core", "libs", "neqsim.jar"),
-                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs", "neqsim.jar"),
-                    os.path.join(os.path.abspath("."), "kasp", "core", "libs", "neqsim.jar"),
-                    os.path.join(os.path.abspath("."), "neqsim.jar"),
-                ]
-
-                jar_path = None
-                for candidate in jar_candidates:
-                    if candidate and os.path.exists(candidate):
-                        jar_path = candidate
-                        break
-
-                if jar_path is None:
-                    logger.debug("neqsim.jar bulunamadı, arama yolları: %s", jar_candidates)
-                    return False
-
-                # JVM argümanları - classpath kwarg sona gelmeli
-                jpype.startJVM(
-                    "-Xms128m",
-                    "-Xmx512m",
-                    "-Djava.awt.headless=true",
-                    classpath=[jar_path],
-                )
-                self._neqsim_jvm_started = True
-                logger.info("JVM NeqSim için başlatıldı: %s", jar_path)
-
-            # NeqSim sınıflarını jpype JClass ile yükle
-            self._neqsim_SystemSrkCPA = jpype.JClass("neqsim.thermo.system.SystemSrkCPA")
-            self._neqsim_SystemSrkEos = jpype.JClass("neqsim.thermo.system.SystemSrkEos")
-            self._neqsim_SystemPrEos = jpype.JClass("neqsim.thermo.system.SystemPrEos")
-            # PhaseInterface opsiyonel, JPackage ile doğrula
-            try:
-                self._neqsim_PhaseInterface = jpype.JClass("neqsim.thermo.phase.PhaseInterface")
-            except Exception as e:
-                logger.debug("NeqSim PhaseInterface yüklenemedi: %s", e)
-                self._neqsim_PhaseInterface = None
-
-            self._neqsim_loaded = True
-            logger.info("🎉 NeqSim (Java) başarıyla yüklendi!")
-            return True
-
-        except Exception as e:
-            logger.warning(f"⚠️ NeqSim yükleme hatası: {e}")
             self._neqsim_loaded = False
-            return False
+            self._neqsim_jvm_started = False
+
+            try:
+                import jpype
+                import jpype.imports
+            except ImportError as e:
+                logger.debug("jpype1 yüklü değil: %s", e)
+                return False
+
+            try:
+                import sys
+                import os
+
+                # JVM zaten başlatılmış mı?
+                if not jpype.isJVMStarted():
+                    jar_candidates = [
+                        os.path.join(getattr(sys, "_MEIPASS", ""), "neqsim.jar"),
+                        os.path.join(getattr(sys, "_MEIPASS", ""), "kasp", "core", "libs", "neqsim.jar"),
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs", "neqsim.jar"),
+                        os.path.join(os.path.abspath("."), "kasp", "core", "libs", "neqsim.jar"),
+                        os.path.join(os.path.abspath("."), "neqsim.jar"),
+                    ]
+
+                    jar_path = None
+                    for candidate in jar_candidates:
+                        if candidate and os.path.exists(candidate):
+                            jar_path = candidate
+                            break
+
+                    if jar_path is None:
+                        logger.debug("neqsim.jar bulunamadı, arama yolları: %s", jar_candidates)
+                        return False
+
+                    # JVM argümanları - classpath kwarg sona gelmeli
+                    jpype.startJVM(
+                        "-Xms128m",
+                        "-Xmx512m",
+                        "-Djava.awt.headless=true",
+                        classpath=[jar_path],
+                    )
+                    self._neqsim_jvm_started = True
+                    logger.info("JVM NeqSim için başlatıldı: %s", jar_path)
+
+                # NeqSim sınıflarını jpype JClass ile yükle
+                self._neqsim_SystemSrkCPA = jpype.JClass("neqsim.thermo.system.SystemSrkCPA")
+                self._neqsim_SystemSrkEos = jpype.JClass("neqsim.thermo.system.SystemSrkEos")
+                self._neqsim_SystemPrEos = jpype.JClass("neqsim.thermo.system.SystemPrEos")
+                # PhaseInterface opsiyonel, JPackage ile doğrula
+                try:
+                    self._neqsim_PhaseInterface = jpype.JClass("neqsim.thermo.phase.PhaseInterface")
+                except Exception as e:
+                    logger.debug("NeqSim PhaseInterface yüklenemedi: %s", e)
+                    self._neqsim_PhaseInterface = None
+
+                self._neqsim_loaded = True
+                logger.info("🎉 NeqSim (Java) başarıyla yüklendi!")
+                return True
+
+            except Exception as e:
+                logger.warning(f"⚠️ NeqSim yükleme hatası: {e}")
+                self._neqsim_loaded = False
+                return False
 
     def _neqsim_available(self) -> bool:
         """NeqSim kullanım için hazır mı?"""
@@ -1623,6 +1690,13 @@ class ThermodynamicSolver:
         """NeqSim (CPA/SRK/PR) kullanarak özellikleri çözer."""
         if not self._load_neqsim():
             raise RuntimeError("NeqSim (Java/JVM) yüklenemedi. jpype1 ve neqsim.jar gereklidir.")
+
+        try:
+            import jpype
+            if jpype.isJVMStarted() and not jpype.isThreadAttachedToJVM():
+                jpype.attachThreadToJVM()
+        except Exception:
+            pass
 
         from kasp.core.mixture import GasMixtureBuilder
 

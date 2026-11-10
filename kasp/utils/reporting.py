@@ -394,6 +394,11 @@ class ReportGenerator:
                     
                     # Generate T-s diagram — tablo ile aynı fizik: etkin (fallback sonrası) EOS kullanılır
                     diagram_eos = str(eff_eos) if eff_eos else req_eos
+                    try:
+                        from kasp.utils.graphs import _render_ctx
+                        _render_ctx.headless = True
+                    except Exception:
+                        pass
                     ts_canvas = self.graph_generator.create_ts_diagram(
                         inputs, results, inputs.get('gas_comp', {}), diagram_eos
                     )
@@ -434,9 +439,11 @@ class ReportGenerator:
                     # Continue without diagrams - non-critical failure
             
             self._append_remaining_design_report_sections(story, inputs, results, selected_units, report_units, styles)
+            self._append_module_results_section(story, results, styles)
             
             doc.build(story)
-            self.logger.info(f"Gelişmiş tasarım raporu oluşturuldu: {self.file_path}")
+            target_desc = self.file_path if isinstance(self.file_path, str) else "bellek tamponu (BytesIO)"
+            self.logger.info(f"Gelişmiş tasarım raporu oluşturuldu: {target_desc}")
             
         except Exception as e:
             self.logger.error(f"Rapor oluşturma hatası: {e}", exc_info=True)
@@ -726,7 +733,7 @@ class ReportGenerator:
             
             # Calculate approximate values
             isentropic_eff_approx = actual_poly_eff * 0.96
-            mech_eff = inputs['mech_eff']
+            mech_eff = float(inputs.get('mech_eff', 98.0))
             
             poly_rating, poly_color = get_benchmark_rating(actual_poly_eff, 'polytropic_eff')
             isen_rating, isen_color = get_benchmark_rating(isentropic_eff_approx, 'isentropic_eff')
@@ -787,6 +794,152 @@ class ReportGenerator:
             self.logger.warning(f"Benchmarks section embedding failed: {e}", exc_info=True)
             # Continue without benchmarks section - non-critical failure
         
+    def _append_module_results_section(self, story, results, styles):
+        """Append PSV / API 5L / hydraulics / air-cooler / control-valve summaries."""
+        modules = (results or {}).get("module_results") or {}
+        station = (results or {}).get("station_data") or {}
+        if not modules and not station:
+            return
+
+        story.append(Spacer(1, 20))
+        story.append(Paragraph("9. ENTEGRE MODÜL SONUÇLARI", styles['Heading2']))
+        story.append(Paragraph(
+            "PSV (API 520/521), API 5L/BOTAŞ boru et kalınlığı, hidrolik, "
+            "fin-fan hava soğutucu (API 661) ve kontrol vanası (IEC 60534) özetleri.",
+            styles['Normal']
+        ))
+        story.append(Spacer(1, 8))
+
+        def _fmt(value, digits=3):
+            if value is None:
+                return "-"
+            if isinstance(value, bool):
+                return "Evet" if value else "Hayır"
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                return str(value)
+            if abs(num) >= 1000:
+                return f"{num:,.0f}"
+            return f"{num:.{digits}f}"
+
+        def _add_table(title, rows):
+            if not rows:
+                return
+            story.append(Paragraph(title, styles['Heading3']))
+            data = [[_L("Parametre", "Parameter"), _L("Değer", "Value")]]
+            data.extend(rows)
+            table = Table(data, colWidths=[230, 250])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495e')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
+                ('FONTNAME', (0, 1), (-1, -1), _FONT_REGULAR),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f4f6f7')),
+                ('ALIGN', (1, 1), (1, -1), 'RIGHT'),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 8))
+
+        module = modules.get("psv", {}) if isinstance(modules, dict) else {}
+        psv = (module.get("results") if isinstance(module, dict) else None) or {}
+        if not psv and station:
+            psv = ((station.get("equipment_sizing") or {}).get("safety_relief_and_blowdown") or {}).get("psv_sizing") or {}
+        if psv:
+            _add_table("9.1 PSV / Emniyet Vanası (API 520/521)", [
+                [_L("Gerekli Orifis Alanı", "Required Orifice Area"), f"{_fmt(psv.get('Required_Area_sqin') or psv.get('required_area_sqin'))} in²"],
+                [_L("Seçilen Orifis", "Selected Orifice"), f"{psv.get('Selected_Orifice_Letter') or psv.get('selected_orifice') or '-'} / {_fmt(psv.get('Selected_Orifice_Area_sqin') or psv.get('selected_orifice_area_sqin'))} in²"],
+                [_L("Orifis Yükü", "Orifice Loading"), f"%{_fmt(psv.get('Orifice_Loading_Pct') or psv.get('orifice_loading_pct'), 1)}"],
+                [_L("Akış Tipi", "Flow Type"), str(psv.get('Flow_Type') or psv.get('flow_type') or '-')],
+                [_L("Standart", "Standard"), str((module.get('provenance') or {}).get('standard') if isinstance(module, dict) else '-')],
+            ])
+
+        module = modules.get("api5l", {}) if isinstance(modules, dict) else {}
+        api5l = ((module.get("results") or {}).get("recommendation") if isinstance(module, dict) else None) or {}
+        if api5l:
+            _add_table("9.2 Boru Et Kalınlığı (API 5L / BOTAŞ)", [
+                [_L("Nominal Çap", "Nominal Size"), str(api5l.get('nominal_size_in') or '-')],
+                [_L("Malzeme", "Material"), str(api5l.get('material_grade') or '-')],
+                [_L("Standart / PSL", "Standard / PSL"), f"{api5l.get('standard') or '-'} / {api5l.get('psl_level') or '-'}"],
+                [_L("Gerekli Et Kalınlığı", "Required Thickness"), f"{_fmt(api5l.get('required_thickness_mm'), 2)} mm"],
+                [_L("Seçilen Nominal", "Selected Nominal"), f"{_fmt(api5l.get('selected_nominal_thickness_mm'), 2)} mm"],
+                [_L("BOTAŞ Standart", "BOTAŞ Standard"), f"{_fmt(api5l.get('botas_standard_thickness_mm'), 2)} mm"],
+                [_L("Uygunluk", "Sufficiency"), _fmt(api5l.get('is_sufficient'))],
+            ])
+
+        module = modules.get("pipe_hydraulics", {}) if isinstance(modules, dict) else {}
+        hyd = ((module.get("results") or {}).get("recommendation") if isinstance(module, dict) else None) or {}
+        if hyd:
+            _add_table("9.3 Hat Hidroliği (ASME B36.10M / API RP 14E)", [
+                [_L("Seçilen Çap / Schedule", "Selected Size / Schedule"), f"{hyd.get('nominal_size_in') or '-'} / Sch {hyd.get('schedule') or '-'}"],
+                [_L("Gaz Hızı", "Gas Velocity"), f"{_fmt(hyd.get('velocity_ms'), 2)} m/s"],
+                [_L("Erozyon Oranı", "Erosion Ratio"), f"%{_fmt(hyd.get('erosion_ratio_pct'), 1)}"],
+                [_L("Toplam Basınç Düşümü", "Total Pressure Drop"), f"{_fmt(hyd.get('pressure_drop_bar_total'), 3)} bar"],
+                [_L("Çıkış Basıncı", "Outlet Pressure"), f"{_fmt(hyd.get('outlet_pressure_bar'), 3)} bar"],
+                [_L("Durum", "Status"), str(hyd.get('velocity_status') or '-')],
+            ])
+
+        module = modules.get("air_cooler", {}) if isinstance(modules, dict) else {}
+        cooler = (module.get("results") if isinstance(module, dict) else None) or {}
+        if not cooler and station:
+            cooler = ((station.get("equipment_sizing") or {}).get("air_coolers") or {}).get("detailed_design") or {}
+        if cooler:
+            _add_table("9.4 Fin-Fan Hava Soğutucu (API 661)", [
+                [_L("Isıl Yük", "Heat Duty"), f"{_fmt(cooler.get('heat_duty_kw') or cooler.get('Q_kW'), 0)} kW"],
+                [_L("Gerekli / Gerçek Alan", "Required / Actual Area"), f"{_fmt(cooler.get('required_area_m2'), 1)} / {_fmt(cooler.get('actual_area_m2'), 1)} m²"],
+                [_L("Overdesign", "Overdesign"), f"%{_fmt(cooler.get('overdesign_pct'), 1)}"],
+                [_L("Gaz ΔP", "Gas ΔP"), f"{_fmt(cooler.get('gas_pressure_drop_bar') or cooler.get('gas_dP_bar'), 3)} bar"],
+                [_L("Fan Gücü", "Fan Power"), f"{_fmt(cooler.get('fan_power_kw') or cooler.get('fan_power_kW'), 1)} kW"],
+                [_L("Fan Uç Hızı", "Fan Tip Speed"), f"{_fmt(cooler.get('fan_tip_speed_ms') or cooler.get('fan_tip_speed_m_s'), 1)} m/s"],
+            ])
+
+        module = modules.get("control_valve", {}) if isinstance(modules, dict) else {}
+        valve = (module.get("results") if isinstance(module, dict) else None) or {}
+        if not valve and station:
+            eq = station.get("equipment_sizing") or {}
+            valve = (
+                ((eq.get("turbo_compressors") or {}).get("anti_surge_valve_sizing"))
+                or ((eq.get("station_recycle") or {}).get("pcv_sizing"))
+                or ((eq.get("air_coolers") or {}).get("cooler_bypass_valve_sizing"))
+                or {}
+            )
+        if valve:
+            _add_table("9.5 Kontrol Vanası (IEC 60534)", [
+                [_L("Servis / Hat", "Service / Path"), f"{valve.get('service') or '-'} / {valve.get('path') or '-'}"],
+                [_L("Gerekli Cv / Kv", "Required Cv / Kv"), f"{_fmt(valve.get('required_cv'), 2)} / {_fmt(valve.get('required_kv'), 2)}"],
+                [_L("Seçilen Vana", "Selected Valve"), f"{valve.get('valve_inch') or '-'} (DN{valve.get('valve_dn_mm') or '-'})"],
+                [_L("Açıklık", "Opening"), f"%{_fmt(valve.get('opening_percent'), 1)}"],
+                [_L("Choked", "Choked"), _fmt(valve.get('is_choked'))],
+                [_L("Gürültü", "Noise"), f"{_fmt(valve.get('noise_db'), 1)} dB"],
+                [_L("Uyarı", "Warning"), str(valve.get('warning') or '-')],
+            ])
+
+        if station:
+            sm = station.get("station_summary") or {}
+            eq = station.get("equipment_sizing") or {}
+            rows = [
+                [_L("Toplam Debi", "Total Flow"), f"{_fmt(sm.get('total_mass_flow_kgs'), 2)} kg/s"],
+                [_L("Basınç Oranı", "Pressure Ratio"), f"{_fmt(sm.get('pressure_ratio'), 2)} : 1"],
+                [_L("Toplam Güç", "Total Power"), f"{_fmt(sm.get('total_power_mw'), 2)} MW"],
+                [_L("Soğutucu Isıl Yükü", "Cooler Duty"), f"{_fmt(sm.get('cooler_heat_duty_mw'), 2)} MWth"],
+                [_L("Boru Standardı", "Pipe Standard"), f"{station.get('station_piping', {}).get('pipe_standard', '-')} / {station.get('station_piping', {}).get('psl_level', '-')}"],
+            ]
+            _add_table("9.6 İstasyon Özeti", rows)
+
+        # Collector warnings for traceability
+        warnings = []
+        for module_id, module in (modules or {}).items():
+            if isinstance(module, dict):
+                warnings.extend(module.get("warnings") or [])
+        if station:
+            warnings.extend(((station.get("equipment_sizing") or {}).get("air_coolers") or {}).get("design_warnings") or [])
+        if warnings:
+            story.append(Paragraph("9.7 Modül Uyarıları", styles['Heading3']))
+            for warning in warnings[:20]:
+                story.append(Paragraph(f"• {escape(str(warning))}", styles['Normal']))
+
     def generate_performance_report(self, inputs, results):
         """Performans raporu oluşturur - GELİŞTİRİLMİŞ"""
         if not REPORTLAB_LOADED:
@@ -851,7 +1004,8 @@ class ReportGenerator:
             self._append_remaining_performance_report_sections(story, inputs, results, styles)
             
             doc.build(story)
-            self.logger.info(f"Performance report created: {self.file_path}")
+            target_desc = self.file_path if isinstance(self.file_path, str) else "in-memory buffer (BytesIO)"
+            self.logger.info(f"Performance report created: {target_desc}")
             return True
             
         except Exception as e:

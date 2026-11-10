@@ -6,6 +6,7 @@ import threading
 import logging
 import os
 import re
+import copy
 
 
 # JSON şema doğrulama — her kayıt yüklenmeden önce kontrol edilir (P4-5).
@@ -188,6 +189,7 @@ class UnitDatabase:
             try:
                 conn.execute("PRAGMA busy_timeout = 5000;")
                 conn.execute("PRAGMA journal_mode = WAL;")
+                conn.execute("PRAGMA foreign_keys = ON;")
             except sqlite3.Error:
                 pass
             self._local.conn = conn
@@ -286,7 +288,18 @@ class UnitDatabase:
                     inputs_json TEXT,
                     results_json TEXT,
                     calculation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    user_notes TEXT
+                    user_notes TEXT,
+                    user_id INTEGER DEFAULT NULL
+                )
+            """)
+
+            # Kullanıcı kimlik doğrulama kilit tablosu (Web & Desktop güvenliği)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS AuthLockouts (
+                    username TEXT PRIMARY KEY,
+                    failure_count INTEGER DEFAULT 0,
+                    locked_until REAL DEFAULT 0,
+                    last_failure REAL DEFAULT 0
                 )
             """)
 
@@ -318,7 +331,7 @@ class UnitDatabase:
 
     def _add_column_if_not_exists(self, table_name, column_name, column_type):
         """Eksik kolonu tabloya ekler (SQL injection korumalı)"""
-        ALLOWED_TABLES = {"Turbines", "Compressors", "CalculationHistory", "Users"}
+        ALLOWED_TABLES = {"Turbines", "Compressors", "CalculationHistory", "Users", "AuthLockouts"}
         if table_name not in ALLOWED_TABLES:
             self.logger.error(f"Geçersiz tablo adı: {table_name}")
             return False
@@ -359,6 +372,14 @@ class UnitDatabase:
         self._add_column_if_not_exists('Users', 'security_question', 'TEXT DEFAULT ""')
         self._add_column_if_not_exists('Users', 'security_answer_hash', 'TEXT DEFAULT ""')
         self._add_column_if_not_exists('Users', 'recovery_key_hash', 'TEXT DEFAULT ""')
+        self._add_column_if_not_exists('CalculationHistory', 'user_id', 'INTEGER DEFAULT NULL')
+
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_calc_history_user ON CalculationHistory(user_id)")
+            self.get_connection().commit()
+        except sqlite3.Error as e:
+            self.logger.warning(f"CalculationHistory index oluşturulamadı: {e}")
 
         self.logger.info("VT Şema Güncellemesi Tamamlandı.")
     
@@ -430,7 +451,7 @@ class UnitDatabase:
         """Tüm türbin verilerini getir (önbellekli)"""
         with self._cache_lock:
             if self._cached_turbines is not None:
-                return [dict(t) for t in self._cached_turbines]
+                return copy.deepcopy(self._cached_turbines)
 
         try:
             cursor = self.get_cursor()
@@ -454,7 +475,7 @@ class UnitDatabase:
             
             with self._cache_lock:
                 self._cached_turbines = turbines
-                return [dict(t) for t in self._cached_turbines]
+                return copy.deepcopy(self._cached_turbines)
         except sqlite3.Error as e:
             self.logger.error(f"Türbin verileri getirme hatası: {e}")
             return []
@@ -463,7 +484,7 @@ class UnitDatabase:
         """Tüm kompresör verilerini getir (önbellekli)"""
         with self._cache_lock:
             if self._cached_compressors is not None:
-                return [dict(c) for c in self._cached_compressors]
+                return copy.deepcopy(self._cached_compressors)
 
         try:
             cursor = self.get_cursor()
@@ -484,7 +505,7 @@ class UnitDatabase:
             
             with self._cache_lock:
                 self._cached_compressors = compressors
-                return [dict(c) for c in self._cached_compressors]
+                return copy.deepcopy(self._cached_compressors)
         except sqlite3.Error as e:
             self.logger.error(f"Kompresör verileri getirme hatası: {e}")
             return []
@@ -568,6 +589,39 @@ class UnitDatabase:
             self.logger.error(f"Türbin ekleme hatası: {e}")
             return False
     
+    def update_turbine(self, turbine_id, data: dict):
+        """Türbin alanlarını güncelle"""
+        allowed = {
+            "manufacturer", "model", "type", "iso_power_kw", "iso_heat_rate_kj_kwh",
+            "performance_correction_data", "surge_flow", "stonewall_flow",
+            "max_pressure_ratio", "min_flow_kgs", "max_flow_kgs", "fuel_type"
+        }
+        updates = {}
+        for k, v in data.items():
+            if k in allowed:
+                if k == "performance_correction_data" and isinstance(v, dict):
+                    updates[k] = json.dumps(v)
+                else:
+                    updates[k] = v
+        if not updates:
+            return False
+        try:
+            cursor = self.get_cursor()
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            set_clause += ", last_updated = CURRENT_TIMESTAMP"
+            values = list(updates.values()) + [turbine_id]
+            cursor.execute(f"UPDATE Turbines SET {set_clause} WHERE id = ?", values)
+            self.get_connection().commit()
+            self.invalidate_catalog_cache()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
+            self.logger.error(f"Türbin güncelleme hatası: {e}")
+            return False
+
     def update_turbine_correction_data(self, turbine_id, correction_data):
         """Türbin düzeltme verilerini güncelle"""
         try:
@@ -648,6 +702,37 @@ class UnitDatabase:
                 pass
             self.logger.error(f"Kompresör ekleme hatası: {e}")
             return False
+
+    def update_compressor(self, compressor_id, data: dict):
+        """Kompresör alanlarını güncelle"""
+        allowed = {
+            "manufacturer", "model", "max_pressure_ratio",
+            "min_flow_kgs", "max_flow_kgs", "performance_map_data"
+        }
+        updates = {}
+        for k, v in data.items():
+            if k in allowed:
+                if k == "performance_map_data" and isinstance(v, dict):
+                    updates[k] = json.dumps(v)
+                else:
+                    updates[k] = v
+        if not updates:
+            return False
+        try:
+            cursor = self.get_cursor()
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values()) + [compressor_id]
+            cursor.execute(f"UPDATE Compressors SET {set_clause} WHERE id = ?", values)
+            self.get_connection().commit()
+            self.invalidate_catalog_cache()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
+            self.logger.error(f"Kompresör güncelleme hatası: {e}")
+            return False
     
     def delete_compressor(self, compressor_id):
         """Kompresör sil"""
@@ -665,7 +750,7 @@ class UnitDatabase:
             self.logger.error(f"Kompresör silme hatası: {e}")
             return False
     
-    def save_calculation_history(self, project_name, calculation_type, inputs, results, notes=""):
+    def save_calculation_history(self, project_name, calculation_type, inputs, results, notes="", user_id=None):
         """Hesaplama geçmişini kaydet"""
         try:
             cursor = self.get_cursor()
@@ -674,25 +759,32 @@ class UnitDatabase:
             results_json = json.dumps(results) if isinstance(results, dict) else str(results)
             
             cursor.execute("""
-                INSERT INTO CalculationHistory (project_name, calculation_type, inputs_json, results_json, user_notes)
-                VALUES (?, ?, ?, ?, ?)
-            """, (project_name, calculation_type, inputs_json, results_json, notes))
+                INSERT INTO CalculationHistory (project_name, calculation_type, inputs_json, results_json, user_notes, user_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (project_name, calculation_type, inputs_json, results_json, notes, user_id))
             
             self.get_connection().commit()
-            return True
+            return cursor.lastrowid
         except sqlite3.Error as e:
             try:
                 self.get_connection().rollback()
             except sqlite3.Error:
                 pass
             self.logger.error(f"Geçmiş kaydetme hatası: {e}")
-            return False
+            return None
     
-    def get_calculation_history(self, limit=50):
-        """Hesaplama geçmişini getir"""
+    def get_calculation_history(self, limit=50, user_id=None):
+        """Hesaplama geçmişini getir (isteğe bağlı kullanıcı filtresiyle)"""
         try:
             cursor = self.get_cursor()
-            cursor.execute("SELECT * FROM CalculationHistory ORDER BY calculation_date DESC LIMIT ?", (limit,))
+            if user_id is not None:
+                cursor.execute("""
+                    SELECT * FROM CalculationHistory 
+                    WHERE user_id = ? OR user_id IS NULL
+                    ORDER BY calculation_date DESC LIMIT ?
+                """, (user_id, limit))
+            else:
+                cursor.execute("SELECT * FROM CalculationHistory ORDER BY calculation_date DESC LIMIT ?", (limit,))
             
             history = []
             for row in cursor.fetchall():
@@ -701,6 +793,140 @@ class UnitDatabase:
         except sqlite3.Error as e:
             self.logger.error(f"Geçmiş getirme hatası: {e}")
             return []
+
+    def get_calculation_history_by_id(self, history_id, user_id=None):
+        """ID'ye göre tekil geçmiş kaydını getir"""
+        try:
+            cursor = self.get_cursor()
+            if user_id is not None:
+                cursor.execute("""
+                    SELECT * FROM CalculationHistory 
+                    WHERE id = ? AND (user_id = ? OR user_id IS NULL)
+                """, (history_id, user_id))
+            else:
+                cursor.execute("SELECT * FROM CalculationHistory WHERE id = ?", (history_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            self.logger.error(f"Geçmiş getirme hatası (id={history_id}): {e}")
+            return None
+
+    def delete_calculation_history(self, history_id, user_id=None):
+        """Hesaplama geçmişi kaydını sil"""
+        try:
+            cursor = self.get_cursor()
+            if user_id is not None:
+                cursor.execute("""
+                    DELETE FROM CalculationHistory 
+                    WHERE id = ? AND (user_id = ? OR user_id IS NULL)
+                """, (history_id, user_id))
+            else:
+                cursor.execute("DELETE FROM CalculationHistory WHERE id = ?", (history_id,))
+            self.get_connection().commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
+            self.logger.error(f"Geçmiş silme hatası (id={history_id}): {e}")
+            return False
+
+    # ─────────────────────── Kimlik Doğrulama ve Kilit (Auth Lockouts) ───────────────────────
+
+    def get_auth_lockout(self, username: str):
+        """Kullanıcının kilit durumunu getirir."""
+        clean_user = (username or "_global").strip().lower()
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT * FROM AuthLockouts WHERE username = ?", (clean_user,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            self.logger.error(f"Auth lockout getirme hatası: {e}")
+            return None
+
+    def check_auth_lockout(self, username: str) -> tuple[bool, str, float]:
+        """Kullanıcının kilitli olup olmadığını kontrol eder.
+        Döner: (is_locked, message, remaining_seconds)
+        """
+        import time
+        clean_user = (username or "_global").strip().lower()
+        row = self.get_auth_lockout(clean_user)
+        if not row:
+            return False, "", 0.0
+        
+        now = time.time()
+        locked_until = row.get("locked_until", 0.0) or 0.0
+        if locked_until > now:
+            remaining = int(locked_until - now)
+            mins = remaining // 60
+            secs = remaining % 60
+            time_str = f"{mins} dakika {secs} saniye" if mins > 0 else f"{secs} saniye"
+            return True, f"Çok fazla hatalı giriş. Hesap geçici olarak kilitlendi. Kalan süre: {time_str}", locked_until - now
+
+        return False, "", 0.0
+
+    def record_auth_attempt(self, username: str, success: bool) -> tuple[bool, str]:
+        """Giriş denemesini veritabanında kaydeder ve gerekirse hesabı kilitler."""
+        import time
+        clean_user = (username or "_global").strip().lower()
+        now = time.time()
+
+        if success:
+            self.reset_auth_lockout(clean_user)
+            return False, ""
+
+        # Lockout thresholds: (threshold, minutes)
+        levels = [(3, 1), (5, 5), (8, 15), (10, 60)]
+        row = self.get_auth_lockout(clean_user)
+        failures = 0
+        last_failure = 0.0
+
+        if row:
+            failures = row.get("failure_count", 0) or 0
+            last_failure = row.get("last_failure", 0.0) or 0.0
+            # 15 dakika inaktivite penceresi: Son hatadan sonra 15 dk geçtiyse sıfırla
+            if now - last_failure > 900.0:
+                failures = 0
+
+        failures += 1
+        locked_until = 0.0
+        lockout_msg = ""
+        is_locked = False
+
+        for thresh, duration_min in levels:
+            if failures >= thresh:
+                duration_sec = duration_min * 60.0
+                locked_until = now + duration_sec
+                lockout_msg = f"Çok fazla hatalı giriş ({failures}). Hesap {duration_min} dakika süreyle kilitlendi."
+                is_locked = True
+
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("""
+                INSERT INTO AuthLockouts (username, failure_count, locked_until, last_failure)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    failure_count = excluded.failure_count,
+                    locked_until = excluded.locked_until,
+                    last_failure = excluded.last_failure
+            """, (clean_user, failures, locked_until, now))
+            self.get_connection().commit()
+        except sqlite3.Error as e:
+            self.logger.error(f"Auth lockout kaydetme hatası: {e}")
+
+        return is_locked, lockout_msg
+
+    def reset_auth_lockout(self, username: str):
+        """Kullanıcının kilit kaydını sıfırlar."""
+        clean_user = (username or "_global").strip().lower()
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("DELETE FROM AuthLockouts WHERE username = ?", (clean_user,))
+            self.get_connection().commit()
+        except sqlite3.Error as e:
+            self.logger.error(f"Auth lockout sıfırlama hatası: {e}")
 
     # ─────────────────────── Kullanıcı Yönetimi ───────────────────────
 

@@ -10,6 +10,8 @@ import numpy as np
 import threading
 import time
 
+from kasp.core.thermo_support import isentropic_exponent
+
 _local_storage = threading.local()
 
 # Run-bazli iptal sinyalleri: her hesaplama kosusu kendi iptal jetonunu tasir.
@@ -150,12 +152,17 @@ class CompressorAerodynamics:
             except Exception as e3:
                 logger.debug(f"Brent isentropic solver failed ({e3}). Using k-based fallback.")
 
-        k = state_in.k
+        k = isentropic_exponent(state_in)
         if k <= 1.0:
             k = 1.3
 
+        p_in = max(1.0, float(state_in.P)) if (state_in and getattr(state_in, 'P', None) is not None) else 1.0
+        t_in = max(1.0, float(state_in.T)) if (state_in and getattr(state_in, 'T', None) is not None) else 300.0
+        p_out_safe = max(1.0, float(p_out))
+        pr = max(1.0001, p_out_safe / p_in)
+
         n_isen = (k - 1) / k
-        t_out_isen = state_in.T * math.pow((p_out / state_in.P), n_isen)
+        t_out_isen = t_in * math.pow(pr, n_isen)
 
         return t_out_isen
 
@@ -166,8 +173,17 @@ class CompressorAerodynamics:
         Calculates the Schultz polytropic head correction factor (f_t) per ASME PTC 10.
         """
         try:
+            if not state_in or not state_out:
+                return 1.0
+            p_in = getattr(state_in, 'P', 0.0)
+            p_out_val = float(p_out) if p_out is not None else 0.0
+            t_in = getattr(state_in, 'T', 0.0)
+            t_out = getattr(state_out, 'T', 0.0)
+            if p_in <= 0 or p_out_val <= 0 or t_in <= 0 or t_out <= 0:
+                return 1.0
+
             t_out_isen = CompressorAerodynamics.calculate_isentropic_temp_fallback(
-                state_in, p_out, thermo_solver, gas_obj, eos
+                state_in, p_out_val, thermo_solver, gas_obj, eos
             )
             state_isen = thermo_solver.get_properties(p_out, t_out_isen, gas_obj, eos)
             dh_isen = state_isen.H - state_in.H
@@ -175,7 +191,7 @@ class CompressorAerodynamics:
             if dh_isen <= 0:
                 return 1.0
                 
-            k1 = state_in.k
+            k1 = isentropic_exponent(state_in)
             if k1 <= 1.001:
                 k1 = 1.3
                 
@@ -336,8 +352,13 @@ class CompressorAerodynamics:
 
     @staticmethod
     def calculate_dimensionless_coeffs(results, inlet_props, mass_flow_kgs):
+        if not results or not isinstance(results, dict) or not inlet_props or not isinstance(inlet_props, dict):
+            return None
         try:
-            head_total_j_kg = float(results.get("head_kj_kg", 0)) * 1000.0
+            head_total_j_kg = float(results.get("head_kj_kg", 0) or 0) * 1000.0
+            if not math.isfinite(head_total_j_kg) or head_total_j_kg <= 0:
+                return None
+
             num_stages = max(
                 1,
                 int(
@@ -348,11 +369,23 @@ class CompressorAerodynamics:
             )
             head_stage_j_kg = head_total_j_kg / num_stages
 
-            rho = float(inlet_props.get("rho", 1.2))
-            a_sound = float(inlet_props.get("a", 340.0))
-            mu = float(inlet_props.get("mu", 1.8e-5))
+            rho = float(inlet_props.get("rho", 1.2) or 1.2)
+            a_sound = float(inlet_props.get("a", 340.0) or 340.0)
+            mu = float(inlet_props.get("mu", 1.8e-5) or 1.8e-5)
+            if not math.isfinite(rho) or rho <= 0:
+                rho = 1.2
+            if not math.isfinite(a_sound) or a_sound <= 0:
+                a_sound = 340.0
+            if not math.isfinite(mu) or mu <= 0:
+                mu = 1.8e-5
 
-            Q_m3s = mass_flow_kgs / rho if rho > 0 else 0
+            try:
+                m_flow = float(mass_flow_kgs) if mass_flow_kgs is not None else 0.0
+            except (TypeError, ValueError):
+                m_flow = 0.0
+            m_flow = max(0.0, m_flow)
+
+            Q_m3s = m_flow / rho if rho > 0 else 0.0
 
             # Santrifüj çark ucu çevresel hızı (kademe başına kafa ve hedef ψ≈0.50 ile)
             psi_target = 0.50
@@ -476,7 +509,7 @@ class CompressorAerodynamics:
         if abs(p_out_val - p_in_val) < 1e-5:
             try:
                 state_single = thermo_solver.get_properties(p_in_val, t_in_val, gas_obj, eos)
-                k_single = float(state_single.k) if getattr(state_single, 'k', 0) > 1.0 else 1.3
+                k_single = isentropic_exponent(state_single)
                 z_single = float(state_single.Z) if getattr(state_single, 'Z', 0) > 0 else 1.0
             except Exception:
                 k_single = 1.3
@@ -508,7 +541,7 @@ class CompressorAerodynamics:
 
             try:
                 state_mid = thermo_solver.get_properties(p_mid, t_current, gas_obj, eos)
-                k_mid = state_mid.k
+                k_mid = isentropic_exponent(state_mid)
                 z_mid = state_mid.Z
             except Exception:
                 k_mid = k_values[-1] if k_values else 1.4
@@ -561,13 +594,15 @@ class CompressorAerodynamics:
     ) -> tuple:
         """Finite Difference Newton-Raphson Solver"""
         S1    = state_in.S
-        k_avg = state_in.k
-        p_in  = state_in.P
-        t_in  = state_in.T
+        k_avg = isentropic_exponent(state_in)
+        p_in  = max(1.0, float(state_in.P)) if (state_in and getattr(state_in, 'P', None) is not None) else 1.0
+        t_in  = max(1.0, float(state_in.T)) if (state_in and getattr(state_in, 'T', None) is not None) else 300.0
+        p_out_safe = max(1.0, float(p_out))
+        pr = max(1.0001, p_out_safe / p_in)
 
         # İlk tahmin: politropik ilişki
         n_isen    = (k_avg - 1) / k_avg if k_avg > 1.0 else 0.2308
-        t2_guess  = t_in * (p_out / p_in) ** n_isen
+        t2_guess  = t_in * (pr ** n_isen)
 
         max_iter          = 20
         tolerance_entropy = 5.0   # J/kg/K
@@ -620,13 +655,15 @@ class CompressorAerodynamics:
     ) -> tuple:
         """Analytical Jacobian Newton-Raphson Solver using (dS/dT)_P = Cp/T"""
         S1    = state_in.S
-        k_avg = state_in.k
-        p_in  = state_in.P
-        t_in  = state_in.T
+        k_avg = isentropic_exponent(state_in)
+        p_in  = max(1.0, float(state_in.P)) if (state_in and getattr(state_in, 'P', None) is not None) else 1.0
+        t_in  = max(1.0, float(state_in.T)) if (state_in and getattr(state_in, 'T', None) is not None) else 300.0
+        p_out_safe = max(1.0, float(p_out))
+        pr = max(1.0001, p_out_safe / p_in)
 
         # İlk tahmin: politropik ilişki
         n_isen    = (k_avg - 1) / k_avg if k_avg > 1.0 else 0.2308
-        t2_guess  = t_in * (p_out / p_in) ** n_isen
+        t2_guess  = t_in * (pr ** n_isen)
 
         max_iter          = 20
         tolerance_entropy = 5.0   # J/kg/K
@@ -688,7 +725,7 @@ class CompressorAerodynamics:
                     return 1e6
 
         # Başlangıç tahmini (T2 >= T1 için kompresörde a = t_in)
-        k_est = state_in.k if (state_in.k and state_in.k > 1.0) else 1.3
+        k_est = isentropic_exponent(state_in)
         n_isen = (k_est - 1.0) / k_est
         pr = max(1.0001, p_out / max(1.0, state_in.P))
         t_est = t_in * (pr ** n_isen)

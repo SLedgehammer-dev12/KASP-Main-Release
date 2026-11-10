@@ -9,6 +9,7 @@ import numpy as np
 from kasp.core.aerodynamics import CompressorAerodynamics
 from kasp.core.settings import EngineSettings
 from kasp.core.constants import R_UNIVERSAL_J_MOL_K
+from kasp.core.thermo_support import isentropic_exponent
 
 
 class ThermoMethodSuite:
@@ -91,7 +92,7 @@ class ThermoMethodSuite:
 
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
-            k1, Z1 = state_in.k, state_in.Z
+            k1, Z1 = isentropic_exponent(state_in), state_in.Z
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 1): {error}")
 
@@ -142,7 +143,7 @@ class ThermoMethodSuite:
 
             try:
                 state_out = self.thermo_solver.get_properties(p_out, t2_old, gas_obj, eos)
-                k2, Z2 = state_out.k, state_out.Z
+                k2, Z2 = isentropic_exponent(state_out), state_out.Z
             except Exception as error:
                 raise RuntimeError(f"Çıkış özellikleri hesaplanamadı (Metot 1, iter {iteration}): {error}")
 
@@ -209,7 +210,7 @@ class ThermoMethodSuite:
         try:
             state_avg = self.thermo_solver.get_properties((p_in + p_out) / 2, (t_in + t2_guess) / 2, gas_obj, eos)
             z_avg_final = state_avg.Z
-            k_final = state_avg.k
+            k_final = isentropic_exponent(state_avg)
             mw = state_avg.MW
         except Exception:
             z_avg_final = Z1
@@ -235,7 +236,7 @@ class ThermoMethodSuite:
         poly_eff = self._coerce_poly_eff(poly_eff)
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
-            k1, Z1 = state_in.k, state_in.Z
+            k1, Z1 = isentropic_exponent(state_in), state_in.Z
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 2): {error}")
 
@@ -276,7 +277,7 @@ class ThermoMethodSuite:
 
             try:
                 state_out = self.thermo_solver.get_properties(p_out, t2_old, gas_obj, eos)
-                k2, Z2 = state_out.k, state_out.Z
+                k2, Z2 = isentropic_exponent(state_out), state_out.Z
             except Exception as error:
                 raise RuntimeError(f"Çıkış özellikleri hesaplanamadı (Metot 2, iter {iteration}): {error}")
 
@@ -314,7 +315,7 @@ class ThermoMethodSuite:
                     break
                 state_out_final = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
                 z2_final = state_out_final.Z
-                k2_final = max(1.02, min(1.8, float(state_out_final.k) if math.isfinite(state_out_final.k) else 1.4))
+                k2_final = max(1.02, min(1.8, isentropic_exponent(state_out_final)))
                 n_final_conv = max(0.02, min(0.45, (k2_final - 1) / (k2_final * poly_eff_clamped)))
                 z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, z2_final)
                 r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
@@ -396,7 +397,7 @@ class ThermoMethodSuite:
 
             try:
                 state_step = self.thermo_solver.get_properties(p_start, t_current, gas_obj, eos)
-                k_step = state_step.k
+                k_step = isentropic_exponent(state_step)
                 z_step = state_step.Z
             except Exception as error:
                 raise RuntimeError(f"Artımlı hesaplama hatası — Adım {index}: {error}")
@@ -431,7 +432,7 @@ class ThermoMethodSuite:
         poly_eff = self._coerce_poly_eff(poly_eff)
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
-            h1, s1, k1, z1 = state_in.H, state_in.S, state_in.k, state_in.Z
+            h1, s1, k1, z1 = state_in.H, state_in.S, isentropic_exponent(state_in), state_in.Z
             mw = state_in.MW
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 4): {error}")
@@ -565,7 +566,7 @@ class ThermoMethodSuite:
 
             try:
                 state_t2 = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
-                k2 = state_t2.k
+                k2 = isentropic_exponent(state_t2)
                 k_avg_new = (k1 + k2) / 2.0
                 self.logger.debug(
                     f"  Dış döngü {outer}: k₁={k1:.4f}, k₂={k2:.4f}, k_avg: {k_avg:.4f} → {k_avg_new:.4f}"
@@ -884,7 +885,7 @@ class ThermoMethodSuite:
         
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
-            z1, k1 = state_in.Z, state_in.k
+            z1, k1 = state_in.Z, isentropic_exponent(state_in)
             cp1 = max(100.0, float(state_in.Cp))
             mw = state_in.MW
         except Exception as error:
@@ -922,7 +923,7 @@ class ThermoMethodSuite:
             t2_old = t2_guess
             try:
                 state_out = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
-                z2, k2 = state_out.Z, state_out.k
+                z2, k2 = state_out.Z, isentropic_exponent(state_out)
                 cp2 = max(100.0, float(state_out.Cp))
             except Exception as error:
                 self.logger.warning(f"Metot 6 iterasyon hatası: {error}")
@@ -937,7 +938,7 @@ class ThermoMethodSuite:
             st_avg = self.thermo_solver.get_properties(p_avg, t_avg, gas_obj, eos)
             z_avg_pt = st_avg.Z
             cp_avg = max(100.0, float(st_avg.Cp))
-            k_avg = st_avg.k
+            k_avg = isentropic_exponent(st_avg)
             
             st_t_plus = self.thermo_solver.get_properties(p_avg, t_avg + dt, gas_obj, eos)
             dz_dt = (st_t_plus.Z - z_avg_pt) / dt

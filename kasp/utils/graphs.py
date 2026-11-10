@@ -9,9 +9,6 @@ warnings.filterwarnings("ignore", message="Ignoring fixed y limits to fulfill fi
 
 try:
     import matplotlib
-    matplotlib.use("Qt5Agg")
-    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-    from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
     from matplotlib.figure import Figure
     import matplotlib.pyplot as plt
     MATPLOTLIB_LOADED = True
@@ -19,11 +16,21 @@ try:
 except ImportError as import_error:
     MATPLOTLIB_LOADED = False
     MATPLOTLIB_IMPORT_ERROR = import_error
-    from PyQt5.QtWidgets import QWidget as FigureCanvas
-    NavigationToolbar = None
+    Figure = object
 
-from PyQt5.QtWidgets import QVBoxLayout, QLabel
-from PyQt5.QtCore import Qt
+try:
+    from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
+    from PyQt5.QtCore import Qt
+    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+    QT_AVAILABLE = True
+except ImportError:
+    QT_AVAILABLE = False
+    FigureCanvas = object
+    NavigationToolbar = None
+    QVBoxLayout = None
+    QLabel = None
+    Qt = None
 
 def _resolve_theme_bg():
     try:
@@ -34,61 +41,83 @@ def _resolve_theme_bg():
     return "#0F172A" if theme_name == "dark" else "#0E1726" if theme_name == "engineering" else "#F8F9FA"
 
 
-class MplCanvas(FigureCanvas):
-    """DPI-aware Matplotlib canvas with responsive resize and toolbar support."""
+if QT_AVAILABLE:
+    class MplCanvas(FigureCanvas):
+        """DPI-aware Matplotlib canvas with responsive resize and toolbar support."""
 
-    def __init__(self, parent=None, width=8, height=5, dpi=None, figure=None):
-        self._toolbar = None
-        if dpi is None:
-            try:
-                from kasp.ui.responsive import get_dpi
-                dpi = int(get_dpi())
-            except Exception:
-                dpi = 100
-        if MATPLOTLIB_LOADED:
-            if figure is not None:
-                # Worker thread'de uretilen hazir Figure'i canvas'a bagla (P3-20)
-                self.fig = figure
+        def __init__(self, parent=None, width=8, height=5, dpi=None, figure=None):
+            self._toolbar = None
+            if dpi is None:
+                try:
+                    from kasp.ui.responsive import get_dpi
+                    dpi = int(get_dpi())
+                except Exception:
+                    dpi = 100
+            if MATPLOTLIB_LOADED:
+                if figure is not None:
+                    # Worker thread'de uretilen hazir Figure'i canvas'a bagla (P3-20)
+                    self.fig = figure
+                else:
+                    theme_bg = _resolve_theme_bg()
+                    self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor=theme_bg)
+                FigureCanvas.__init__(self, self.fig)
+                self.setParent(parent)
+                self._default_size = (width, height)
             else:
-                theme_bg = _resolve_theme_bg()
-                self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor=theme_bg)
-            FigureCanvas.__init__(self, self.fig)
-            self.setParent(parent)
-            self._default_size = (width, height)
-        else:
-            FigureCanvas.__init__(self, parent)
-            self.layout = QVBoxLayout(self)
-            warning_label = QLabel("Grafik Modülü Yüklenemedi.\nMatplotlib kütüphanesi kurulu değil.")
-            warning_label.setAlignment(Qt.AlignCenter)
-            warning_label.setStyleSheet("color: red; font-weight: bold;")
-            self.layout.addWidget(warning_label)
+                FigureCanvas.__init__(self, parent)
+                self.layout = QVBoxLayout(self)
+                warning_label = QLabel("Grafik Modülü Yüklenemedi.\nMatplotlib kütüphanesi kurulu değil.")
+                warning_label.setAlignment(Qt.AlignCenter)
+                warning_label.setStyleSheet("color: red; font-weight: bold;")
+                self.layout.addWidget(warning_label)
 
-    def get_toolbar(self, parent=None):
-        """Matplotlib NavigationToolbar (Zoom, Pan, Home, Save) oluşturur veya döndürür."""
-        if not MATPLOTLIB_LOADED or NavigationToolbar is None or not hasattr(self, "fig"):
-            return None
-        if self._toolbar is None:
-            self._toolbar = NavigationToolbar(self, parent or self.parent())
-        return self._toolbar
+        def get_toolbar(self, parent=None):
+            """Matplotlib NavigationToolbar (Zoom, Pan, Home, Save) oluşturur veya döndürür."""
+            if not MATPLOTLIB_LOADED or NavigationToolbar is None or not hasattr(self, "fig"):
+                return None
+            if self._toolbar is None:
+                self._toolbar = NavigationToolbar(self, parent or self.parent())
+            return self._toolbar
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if not MATPLOTLIB_LOADED or not hasattr(self, "fig"):
-            return
-        w_px = event.size().width()
-        h_px = event.size().height()
-        if w_px < 50 or h_px < 50:
-            return
-        dpi = self.fig.get_dpi()
-        self.fig.set_size_inches(w_px / dpi, h_px / dpi, forward=True)
-        self.draw_idle()
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            if not MATPLOTLIB_LOADED or not hasattr(self, "fig"):
+                return
+            w_px = event.size().width()
+            h_px = event.size().height()
+            if w_px < 50 or h_px < 50:
+                return
+            dpi = self.fig.get_dpi()
+            self.fig.set_size_inches(w_px / dpi, h_px / dpi, forward=True)
+            self.draw_idle()
+else:
+    class MplCanvas:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("MplCanvas requires PyQt5, which is not available in headless/server mode.")
 
 
 class HeadlessCanvas:
-    """Qt'ye bagimli olmayan Figure sarmalayici; worker thread'de grafik uretmek icin (P3-20)."""
+    """Qt'ye bagimli olmayan Figure sarmalayici; worker thread ve web backend icin (P3-20)."""
 
     def __init__(self, width=8, height=5, dpi=100):
         self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor=_resolve_theme_bg())
+        if MATPLOTLIB_LOADED:
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            self._canvas = FigureCanvasAgg(self.fig)
+
+    def to_png_bytes(self, dpi=150) -> bytes:
+        import io
+        buf = io.BytesIO()
+        self.fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+        buf.seek(0)
+        return buf.getvalue()
+
+    def to_svg_bytes(self) -> str:
+        import io
+        buf = io.BytesIO()
+        self.fig.savefig(buf, format="svg", bbox_inches="tight")
+        buf.seek(0)
+        return buf.getvalue().decode("utf-8")
 
 
 _render_ctx = threading.local()
@@ -96,7 +125,7 @@ _render_ctx = threading.local()
 
 def _new_canvas(width, height):
     """Uretim ortamina gore MplCanvas veya HeadlessCanvas dondurur."""
-    if getattr(_render_ctx, "headless", False):
+    if getattr(_render_ctx, "headless", False) or not QT_AVAILABLE:
         return HeadlessCanvas(width=width, height=height)
     return MplCanvas(width=width, height=height)
 
@@ -108,6 +137,23 @@ class GraphGenerator:
         self.logger = logging.getLogger(self.__class__.__name__)
 
     @staticmethod
+    @staticmethod
+    def _safe_float(val, default=0.0):
+        """Dizi, liste, skaler veya None değerleri güvenle float'a dönüştürür."""
+        if val is None:
+            return default
+        try:
+            if isinstance(val, (list, tuple)):
+                nums = [float(x) for x in val if x is not None]
+                return float(sum(nums)) if nums else default
+            if hasattr(val, "shape"):
+                arr = np.asarray(val)
+                return float(np.sum(arr)) if arr.size > 0 else default
+            return float(val)
+        except Exception:
+            return default
+
+    @staticmethod
     def _extract_process_conditions(inputs, results=None):
         """inputs ve results sözlüklerinden basınç ve sıcaklık parametrelerini güvenle çıkarır."""
         inputs = inputs or {}
@@ -115,18 +161,15 @@ class GraphGenerator:
         p_out_unit = inputs.get("p_out_unit", inputs.get("p_unit", p_in_unit))
         t_in_unit = inputs.get("t_in_unit", inputs.get("t_unit", "°C"))
 
-        p_in_val = float(inputs.get("p_in", 1.01325))
-        p_out_val = float(inputs.get("p_out", max(p_in_val * 1.5, 2.0)))
-        t_in_val = float(inputs.get("t_in", 15.0))
+        p_in_val = GraphGenerator._safe_float(inputs.get("p_in"), 1.01325)
+        p_out_val = GraphGenerator._safe_float(inputs.get("p_out"), max(p_in_val * 1.5, 2.0))
+        t_in_val = GraphGenerator._safe_float(inputs.get("t_in"), 15.0)
 
         t_out_val = t_in_val + 30.0
         if results and isinstance(results, dict):
             raw_t_out = results.get("t_out")
             if raw_t_out is not None:
-                try:
-                    t_out_val = float(raw_t_out)
-                except (ValueError, TypeError):
-                    pass
+                t_out_val = GraphGenerator._safe_float(raw_t_out, t_out_val)
 
         return {
             "p_in_val": p_in_val,
@@ -329,7 +372,7 @@ class GraphGenerator:
             if len(t_actual_values) < 2:
                 trajectory_is_estimate = True
                 pressures = np.geomspace(p_in_pa, p_out_pa, 20)
-                poly_eff_frac = inputs.get('poly_eff', 85.0) / 100.0
+                poly_eff_frac = self._safe_float(inputs.get('poly_eff', 85.0), 85.0) / 100.0
                 k_val = props_in.k if props_in.k > 1.0 else 1.4
                 n_minus_1_over_n = (k_val - 1) / (k_val * poly_eff_frac)
                 for p in pressures:
@@ -368,11 +411,15 @@ class GraphGenerator:
             ax.legend(loc='best')
             
             # Verimlilik bilgisi
-            if (t_out_actual_k - t_in_k) > 0:
-                isen_efficiency = ((t_out_isen_k - t_in_k) / (t_out_actual_k - t_in_k)) * 100
-                text_str = f'İzentropik Verim: {isen_efficiency:.1f}%'
-                ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=10,
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            try:
+                delta_t = float(t_out_actual_k) - float(t_in_k)
+                if delta_t > 0:
+                    isen_efficiency = ((float(t_out_isen_k) - float(t_in_k)) / delta_t) * 100
+                    text_str = f'İzentropik Verim: {isen_efficiency:.1f}%'
+                    ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=10,
+                        verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            except Exception:
+                pass
             
             fig.tight_layout()
             return canvas
@@ -431,7 +478,7 @@ class GraphGenerator:
                 pressures_actual = list(pressures)
                 for p in pressures:
                     try:
-                        poly_eff_frac = inputs.get('poly_eff', 85.0) / 100.0
+                        poly_eff_frac = self._safe_float(inputs.get('poly_eff', 85.0), 85.0) / 100.0
                         n_minus_1_over_n = (props_in.k - 1) / (props_in.k * poly_eff_frac)
                         n = 1 / (1 - n_minus_1_over_n) if abs(n_minus_1_over_n) > 1e-6 else props_in.k
                         v = v_in * (p_in_pa / p) ** (1/n)
@@ -474,7 +521,7 @@ class GraphGenerator:
             ax.legend(loc='best')
             
             # İş bilgisi
-            work_poly = float(results.get('head_kj_kg', 0.0))
+            work_poly = self._safe_float(results.get('head_kj_kg', 0.0), 0.0)
             text_str = f'Politropik İş: {work_poly:.1f} kJ/kg'
             ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=10,
                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))

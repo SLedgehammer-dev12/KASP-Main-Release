@@ -10,6 +10,7 @@ class EngineSettings:
     PR_INTEGRATION_THRESHOLD = 4.0      # Basınç oranına göre sayısal integrasyon sınırı
     MAX_CONSISTENCY_ITERATIONS = 20     # İzentropik / Polytropik döngülerde maks limit
     CONSISTENCY_TOLERANCE = 0.5         # Delta H ve T için hedef tolerans (J/kg veya K)
+    DEFAULT_COOLPROP_COMPLEX_MAX_ITER = 10  # 8+ bileşenli CoolProp karışımlarında yakınsama sınırı
     PTC10_MECHANICAL_LOSS_LIMIT = 10.0  # Şaft limitinin %10'u (ASME PTC 10)
     DEFAULT_MECHANICAL_EFFICIENCY_PCT = 98.0  # Varsayılan mekanik verim (%)
     DEFAULT_THERMAL_EFFICIENCY_PCT = 35.0     # Varsayılan sürücü termal verimi (%)
@@ -36,6 +37,31 @@ class EngineSettings:
         'Heavy-Duty':       70,
         'Centrifugal':      60,
     }
+
+    @classmethod
+    def get_turbine_type_score(cls, turbine_type: str | None) -> float:
+        """Kayıtlı türbin tiplerini büyük/küçük harf, boşluk ve tire duyarsız normalize ederek puanlar."""
+        if not turbine_type:
+            return 65.0
+        normalized = str(turbine_type).lower().replace(" ", "-").replace("_", "-").strip()
+        for k, v in cls.TURBINE_TYPE_SCORES.items():
+            if k.lower() == normalized:
+                return float(v)
+
+        alias_map = {
+            "industrial/aero": 90.0,
+            "industrial-aero": 90.0,
+            "aero-derivative": 100.0,
+            "aero": 100.0,
+            "industrial": 80.0,
+            "heavy-duty": 70.0,
+            "heavy": 70.0,
+            "centrifugal": 60.0,
+        }
+        for k, v in alias_map.items():
+            if k in normalized:
+                return v
+        return 65.0
 
     # ─── Güç Marjı (Oversizing) Penaltıları (%) ───
     MAX_ALLOWED_OVERSIZE_PCT = 50.0     # İhtiyaçtan %50 büyükse filtreye takılır

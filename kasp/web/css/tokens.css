@@ -1,0 +1,138 @@
+/* KASP CSS Design Tokens - Perfect parity with ThemeManager.THEMES */
+
+:root {
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+
+  /* Sizing & Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-modal: 0 20px 25px -5px rgba(0, 0, 0, 0.25), 0 10px 10px -5px rgba(0, 0, 0, 0.1);
+}
+
+/* Light Theme (Default) */
+[data-theme="light"], :root {
+  --color-primary: #0078D4;
+  --color-primary-hover: #0063B1;
+  --color-primary-bg: #EBF5FB;
+  --color-secondary: #6C757D;
+  --color-success: #198754;
+  --color-warning: #FD7E14;
+  --color-danger: #DC3545;
+  --color-bg: #F8F9FA;
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #F1F5F9;
+  --color-surface-active: #E2E8F0;
+  --color-text: #1C1917;
+  --color-text-secondary: #6B7280;
+  --color-text-muted: #9CA3AF;
+  --color-border: #E5E7EB;
+  --color-border-focus: #0078D4;
+
+  --color-success-bg: #DCFCE7;
+  --color-success-text: #15803D;
+  --color-success-border: #BBF7D0;
+
+  --color-danger-bg: #FEE2E2;
+  --color-danger-text: #B91C1C;
+  --color-danger-border: #FECACA;
+
+  --color-warning-bg: #FEF3C7;
+  --color-warning-text: #B45309;
+  --color-warning-border: #FDE68A;
+
+  --chart-bg: #FFFFFF;
+  --chart-grid: #E5E7EB;
+}
+
+/* Dark Theme */
+[data-theme="dark"] {
+  --color-primary: #3B82F6;
+  --color-primary-hover: #2563EB;
+  --color-primary-bg: #1E3A8A33;
+  --color-secondary: #A855F7;
+  --color-success: #10B981;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+  --color-bg: #0F172A;
+  --color-surface: #1E293B;
+  --color-surface-hover: #334155;
+  --color-surface-active: #475569;
+  --color-text: #F8FAFC;
+  --color-text-secondary: #94A3B8;
+  --color-text-muted: #64748B;
+  --color-border: #334155;
+  --color-border-focus: #3B82F6;
+
+  --color-success-bg: #064E3B;
+  --color-success-text: #34D399;
+  --color-success-border: #059669;
+
+  --color-danger-bg: #7F1D1D;
+  --color-danger-text: #FCA5A5;
+  --color-danger-border: #B91C1C;
+
+  --color-warning-bg: #78350F;
+  --color-warning-text: #FBBF24;
+  --color-warning-border: #D97706;
+
+  --chart-bg: #1E293B;
+  --chart-grid: #334155;
+}
+
+/* Engineering High-Contrast Theme */
+[data-theme="engineering"] {
+  --color-primary: #00B4D8;
+  --color-primary-hover: #0096C7;
+  --color-primary-bg: #0077B633;
+  --color-secondary: #FF6F00;
+  --color-success: #2ECC71;
+  --color-warning: #F39C12;
+  --color-danger: #E74C3C;
+  --color-bg: #0E1726;
+  --color-surface: #1A2332;
+  --color-surface-hover: #253347;
+  --color-surface-active: #2E3E56;
+  --color-text: #E2E8F0;
+  --color-text-secondary: #94A3B8;
+  --color-text-muted: #64748B;
+  --color-border: #2E3A4E;
+  --color-border-focus: #00B4D8;
+
+  --color-success-bg: #1B3B2B;
+  --color-success-text: #2ECC71;
+  --color-success-border: #27AE60;
+
+  --color-danger-bg: #3B1C1C;
+  --color-danger-text: #E74C3C;
+  --color-danger-border: #C0392B;
+
+  --color-warning-bg: #3B2C1C;
+  --color-warning-text: #F39C12;
+  --color-warning-border: #D35400;
+
+  --chart-bg: #1A2332;
+  --chart-grid: #2E3A4E;
+}
