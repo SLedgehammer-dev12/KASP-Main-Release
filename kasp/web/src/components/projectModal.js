@@ -4,7 +4,7 @@
 
 import { icon } from "../../vendor/icons.js";
 import { closeModal, showToast } from "../store/uiStore.js";
-import { projectStore, recalculateGasTotal, recalculateLiveMetrics } from "../store/projectStore.js";
+import { hydrateProjectSnapshot } from "../store/projectStore.js";
 import { api } from "../api/client.js";
 
 function escapeHtml(str) {
@@ -95,20 +95,7 @@ export async function renderProjectModal(container) {
         const id = btn.getAttribute("data-id");
         const p = projects.find(x => x.id == id);
         if (p && p.inputs) {
-          const loadedModules = p.modules || (p.results && p.results.module_results) || {};
-          const loadedStation = p.station_data || (p.results && p.results.station_data) || null;
-          const loadedUnits = (p.results && p.results.selected_units) || p.selected_units || [];
-          const loadedCharts = (p.results && p.results.charts) || p.charts || null;
-          projectStore.setState({
-            inputs: p.inputs,
-            results: p.results || null,
-            selectedUnits: loadedUnits,
-            charts: loadedCharts,
-            modules: loadedModules,
-            stationData: loadedStation,
-          });
-          recalculateGasTotal();
-          recalculateLiveMetrics();
+          hydrateProjectSnapshot(p);
           showToast(`'${p.project_name}' çalışma alanına yüklendi.`);
           closeModal();
         }

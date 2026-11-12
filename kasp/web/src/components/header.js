@@ -5,7 +5,11 @@
 import { icon } from "../../vendor/icons.js";
 import { uiStore, setTheme, setLanguage, openModal, showToast } from "../store/uiStore.js";
 import { authStore, logoutUser } from "../store/authStore.js";
-import { projectStore, updateInput, runDesignCalculation, recalculateGasTotal, recalculateLiveMetrics } from "../store/projectStore.js";
+import {
+  projectStore,
+  updateInput,
+  hydrateProjectSnapshot,
+} from "../store/projectStore.js";
 import { t } from "../i18n/locales.js";
 import { api } from "../api/client.js";
 
@@ -178,13 +182,16 @@ export function renderHeader(container) {
     const saveBtn = container.querySelector("#btn-save-project");
     if (saveBtn) {
       saveBtn.addEventListener("click", async () => {
-        const { inputs, results, modules, stationData } = projectStore.getState();
+        const { inputs, results, selectedUnits, charts, warnings, modules, stationData } = projectStore.getState();
         try {
           await api.post("/api/v1/projects", {
             project_name: inputs.project_name,
             calculation_type: "Design",
             inputs,
             results,
+            selected_units: selectedUnits,
+            charts,
+            warnings,
             modules,
             station_data: stationData,
             notes: "Web arayüzünden kaydedildi.",
@@ -199,10 +206,23 @@ export function renderHeader(container) {
     const exportBtn = container.querySelector("#btn-export-kasp");
     if (exportBtn) {
       exportBtn.addEventListener("click", async () => {
-        const { inputs, results, modules, stationData } = projectStore.getState();
+        const { inputs, results, selectedUnits, charts, warnings, modules, stationData } = projectStore.getState();
         const filename = `${(inputs.project_name || "kasp_project").replace(/\s+/g, "_")}.kasp`;
         try {
-          await api.downloadFile("/api/v1/projects/export-kasp", { project_name: inputs.project_name, inputs, results, modules, station_data: stationData }, filename);
+          await api.downloadFile(
+            "/api/v1/projects/export-kasp",
+            {
+              project_name: inputs.project_name,
+              inputs,
+              results,
+              selected_units: selectedUnits,
+              charts,
+              warnings,
+              modules,
+              station_data: stationData,
+            },
+            filename
+          );
           showToast(".kasp proje dosyası başarıyla indirildi.", "success");
         } catch (err) {
           showToast("Proje indirme hatası: " + err.message, "danger");
@@ -258,7 +278,7 @@ export function renderHeader(container) {
     const moduleExcelBtn = container.querySelector("#btn-module-excel");
     if (moduleExcelBtn) {
       moduleExcelBtn.addEventListener("click", async () => {
-        const { inputs, results, modules, stationData } = projectStore.getState();
+        const { inputs, results, selectedUnits, warnings, modules, stationData } = projectStore.getState();
         if (!results && !stationData && !Object.keys(modules || {}).length) {
           showToast("Lütfen önce bir tasarım veya modül hesaplaması yapın.", "warning");
           return;
@@ -268,7 +288,14 @@ export function renderHeader(container) {
           showToast("Excel raporu hazırlanıyor...", "info");
           await api.downloadFile(
             "/api/v1/reports/modules-excel",
-            { inputs, results, modules, station_data: stationData },
+            {
+              inputs,
+              results,
+              selected_units: selectedUnits,
+              warnings,
+              modules,
+              station_data: stationData,
+            },
             `${safeName}_Modul_Raporu.xlsx`
           );
           showToast("Excel raporu başarıyla indirildi.", "success");
@@ -288,20 +315,7 @@ export function renderHeader(container) {
         try {
           const res = await api.post("/api/v1/projects/import-kasp", formData);
           if (res && res.inputs) {
-            const resModules = res.modules || (res.results && res.results.module_results) || {};
-            const resStation = res.station_data || (res.results && res.results.station_data) || null;
-            const resUnits = (res.results && res.results.selected_units) || res.selected_units || [];
-            const resCharts = (res.results && res.results.charts) || res.charts || null;
-            projectStore.setState({
-              inputs: res.inputs,
-              results: res.results || null,
-              selectedUnits: resUnits,
-              charts: resCharts,
-              modules: resModules,
-              stationData: resStation
-            });
-            recalculateGasTotal();
-            recalculateLiveMetrics();
+            hydrateProjectSnapshot(res);
             showToast("Proje başarıyla yüklendi.", "success");
           }
         } catch (err) {

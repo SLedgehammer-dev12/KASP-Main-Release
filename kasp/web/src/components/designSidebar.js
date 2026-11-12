@@ -5,58 +5,105 @@
  */
 
 import { icon } from "../../vendor/icons.js";
-import { projectStore, updateInput, applyPreset, runDesignCalculation } from "../store/projectStore.js";
+import {
+  projectStore,
+  updateInput,
+  applyPreset,
+  runDesignCalculation,
+  convertFlowWithMW,
+  convertPressureUnit,
+  convertTemperatureUnit,
+  computeGasMixtureMW,
+  recalculateLiveMetrics,
+  scheduleRecommendationsRefresh,
+  fetchRecommendations,
+  invalidateAirCoolerCache,
+  escapeHtml,
+} from "../store/projectStore.js";
 import { renderGasTable } from "./gasTable.js";
 import { t } from "../i18n/locales.js";
-import { uiStore } from "../store/uiStore.js";
+import { uiStore, showToast } from "../store/uiStore.js";
 
-function convertPressure(val, fromU, toU) {
-  if (!val || val <= 0 || fromU === toU) return val;
-  let barA = val;
-  if (fromU === "bar(g)") barA = val + 1.01325;
-  else if (fromU === "kPa") barA = val / 100.0;
-  else if (fromU === "psi") barA = val / 14.5038;
+const METHOD_CANONICAL_OPTIONS = [
+  { key: "Metot 6", value: "Metot 6: Schultz 3-Üslü Gerçek Gaz", label: "Metot 6: Schultz 3-Üslü (API 617 / ASME PTC 10)" },
+  { key: "Metot 5", value: "Metot 5: Huntington-RK45 Diferansiyel", label: "Metot 5: Huntington-RK45 Diferansiyel Entegrasyon" },
+  { key: "Metot 4", value: "Metot 4: Doğrudan H-S", label: "Metot 4: Doğrudan H-S (Entalpi-Entropi)" },
+  { key: "Metot 1", value: "Metot 1: Ortalama Özellikler", label: "Metot 1: Ortalama Özellikler" },
+  { key: "Metot 2", value: "Metot 2: Endpoint Yaklaşımı", label: "Metot 2: Endpoint Yaklaşımı" },
+  { key: "Metot 3", value: "Metot 3: Artımlı Basınç", label: "Metot 3: Artımlı Basınç" },
+];
 
-  let res = barA;
-  if (toU === "bar(g)") res = Math.max(0, barA - 1.01325);
-  else if (toU === "kPa") res = barA * 100.0;
-  else if (toU === "psi") res = barA * 14.5038;
-
-  return Math.round(res * 100) / 100;
+function resolveRecommendedMethodValue(recMethod) {
+  const raw = String(recMethod || "");
+  for (const item of METHOD_CANONICAL_OPTIONS) {
+    if (raw.includes(item.key)) return item.value;
+  }
+  return "Metot 6: Schultz 3-Üslü Gerçek Gaz";
 }
 
-function convertTemperature(val, fromU, toU) {
-  if (fromU === toU) return val;
-  let c = val;
-  if (fromU === "K") c = val - 273.15;
-  else if (fromU === "°F") c = (val - 32.0) * (5.0 / 9.0);
+function buildModelRecHtml(rec, inp) {
+  if (!rec || (!rec.recommended_eos && !rec.recommended_method)) {
+    return `
+      <div style="font-size: 11px; color: var(--color-text-secondary); padding: 8px 10px; border-radius: var(--radius-sm); background: var(--color-bg); border: 1px dashed var(--color-border);">
+        Canlı EOS &amp; sıkıştırma metodu önerisi yükleniyor...
+      </div>
+    `;
+  }
+  const recEos = String(rec.recommended_eos || "coolprop").toLowerCase();
+  const recMethodVal = resolveRecommendedMethodValue(rec.recommended_method);
+  const currentEos = String(inp.eos_model || "pr").toLowerCase();
+  const recMethodPrefix = recMethodVal.split(":")[0];
+  const isMethodMatch = String(inp.calc_method || "").includes(recMethodPrefix);
+  const isAllMatch = currentEos === recEos && isMethodMatch;
 
-  let res = c;
-  if (toU === "K") res = c + 273.15;
-  else if (toU === "°F") res = c * (9.0 / 5.0) + 32.0;
+  const eosReason = rec.eos_reason || "";
+  const methodReason = rec.method_reason || "";
+  const summaryTitle = rec.reason || "Akıllı Termodinamik Öneri";
 
-  return Math.round(res * 10) / 10;
+  return `
+    <div style="padding: 9px 10px; border-radius: var(--radius-sm); background: ${isAllMatch ? "rgba(16, 185, 129, 0.08)" : "rgba(2, 132, 199, 0.08)"}; border: 1px solid ${isAllMatch ? "rgba(16, 185, 129, 0.30)" : "rgba(2, 132, 199, 0.30)"}; font-size: 11px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 4px;">
+        <strong style="color: ${isAllMatch ? "#10b981" : "var(--color-primary)"};">
+          ⚡ ${escapeHtml(recEos.toUpperCase())} • ${escapeHtml(rec.recommended_method || recMethodPrefix)}
+        </strong>
+        ${
+          isAllMatch
+            ? `<span class="badge badge-success" style="font-size: 9px;">Aktif Model Uyumlu ✓</span>`
+            : `<button type="button" id="btn-apply-model-rec" class="btn btn-sm btn-primary" style="padding: 2px 8px; font-size: 10px;">Öneriyi Uygula</button>`
+        }
+      </div>
+      <div style="font-weight: 600; color: var(--color-text); font-size: 10px; margin-bottom: 2px;">${escapeHtml(summaryTitle)}</div>
+      ${eosReason ? `<div style="color: var(--color-text-secondary); font-size: 10px; line-height: 1.35;">• <b>EOS:</b> ${escapeHtml(eosReason)}</div>` : ""}
+      ${methodReason ? `<div style="color: var(--color-text-secondary); font-size: 10px; line-height: 1.35;">• <b>Metot:</b> ${escapeHtml(methodReason)}</div>` : ""}
+    </div>
+  `;
 }
 
-function convertFlow(val, fromU, toU) {
-  if (!val || val <= 0 || fromU === toU) return val;
-  // Natural gas standard density approx 0.772 kg/Sm³
-  let kgs = val;
-  if (fromU === "kg/h") kgs = val / 3600.0;
-  else if (fromU === "Sm³/h" || fromU === "m3/h") kgs = (val * 0.772) / 3600.0;
-  else if (fromU === "MMSCFD") kgs = val * 0.320;
-
-  let res = kgs;
-  if (toU === "kg/h") res = kgs * 3600.0;
-  else if (toU === "Sm³/h" || toU === "m3/h") res = (kgs * 3600.0) / 0.772;
-  else if (toU === "MMSCFD") res = kgs / 0.320;
-
-  return Math.round(res * 100) / 100;
+function formatEquivalentHeatRate(thermEffPct) {
+  const eff = Number(thermEffPct);
+  if (!Number.isFinite(eff) || eff <= 0) return "";
+  const hr = Math.round(360000.0 / eff);
+  return `Eşdeğer Isı Tüketimi: ${hr.toLocaleString("tr-TR")} kJ/kWh`;
 }
 
 export function renderDesignSidebar(container) {
-  let openSteps = { 1: true, 2: true, 3: false, 4: false, 5: false, 6: false };
+  let openSteps = { 1: true, 2: true, 3: true, 4: false, 5: false, 6: false };
   let isBuilt = false;
+
+  function bindModelRecApply() {
+    const applyBtn = container.querySelector("#btn-apply-model-rec");
+    if (!applyBtn) return;
+    applyBtn.addEventListener("click", () => {
+      const rec = projectStore.getState().recommendations;
+      if (!rec) return;
+      const recEos = String(rec.recommended_eos || "coolprop").toLowerCase();
+      const recMethodVal = resolveRecommendedMethodValue(rec.recommended_method);
+      updateInput("eos_model", recEos);
+      updateInput("calc_method", recMethodVal);
+      showToast(`Önerilen model uygulandı: ${recEos.toUpperCase()} / ${recMethodVal.split(":")[0]}`);
+      render(false);
+    });
+  }
 
   // UX: geçersiz girdiler için anlık görsel geri bildirim (hesaplamayı engellemez)
   function applyValidity() {
@@ -118,11 +165,37 @@ export function renderDesignSidebar(container) {
         gasTotalBadge.textContent = `%${proj.gasTotal.toFixed(1)}`;
       }
 
+      const mwBadge = container.querySelector("#sidebar-mw-badge");
+      if (mwBadge) {
+        mwBadge.textContent = `MW ${computeGasMixtureMW(inp.gas_comp).toFixed(2)} g/mol`;
+      }
+
       const eosLabel = container.querySelector("#sidebar-eos-summary");
       if (eosLabel) eosLabel.textContent = inp.eos_model?.toUpperCase() || "";
 
+      const recBox = container.querySelector("#sidebar-model-rec-box");
+      if (recBox) {
+        recBox.innerHTML = buildModelRecHtml(proj.recommendations, inp);
+        bindModelRecApply();
+      }
+
+      const stagesLabel = container.querySelector("#sidebar-stages-summary");
+      if (stagesLabel) stagesLabel.textContent = `${inp.num_stages} Kademe`;
+
       const effLabel = container.querySelector("#sidebar-eff-summary");
-      if (effLabel) effLabel.textContent = `%${inp.poly_eff}`;
+      if (effLabel) {
+        effLabel.textContent = `ηp %${inp.poly_eff} • ηth %${inp.therm_eff ?? 35}`;
+      }
+
+      const hrHint = container.querySelector("#sidebar-therm-hr-hint");
+      if (hrHint) {
+        hrHint.textContent = formatEquivalentHeatRate(inp.therm_eff ?? 35);
+      }
+
+      const siteLabel = container.querySelector("#sidebar-site-summary");
+      if (siteLabel) {
+        siteLabel.textContent = `${inp.ambient_temp ?? 19}°C • ${inp.altitude ?? 0} m`;
+      }
 
       // 3. Calculate button state
       const calcBtn = container.querySelector("#btn-run-calculation");
@@ -222,8 +295,10 @@ export function renderDesignSidebar(container) {
                       <select class="form-select input-addon-select inp-field" data-field="flow_unit">
                         <option value="kg/s" ${inp.flow_unit === 'kg/s' ? 'selected' : ''}>kg/s</option>
                         <option value="Sm³/h" ${inp.flow_unit === 'Sm³/h' ? 'selected' : ''}>Sm³/h</option>
+                        <option value="Nm³/h" ${inp.flow_unit === 'Nm³/h' ? 'selected' : ''}>Nm³/h</option>
                         <option value="kg/h" ${inp.flow_unit === 'kg/h' ? 'selected' : ''}>kg/h</option>
                         <option value="MMSCFD" ${inp.flow_unit === 'MMSCFD' ? 'selected' : ''}>MMSCFD</option>
+                        <option value="MMSCMD" ${inp.flow_unit === 'MMSCMD' ? 'selected' : ''}>MMSCMD</option>
                       </select>
                     </div>
                   </div>
@@ -261,7 +336,10 @@ export function renderDesignSidebar(container) {
               <span class="step-badge">2</span>
               <span>${t("step_gas", ui.lang)}</span>
             </div>
-            <span id="sidebar-gas-total-badge" class="badge ${Math.abs(proj.gasTotal - 100) < 0.01 ? 'badge-success' : 'badge-warning'}">%${proj.gasTotal.toFixed(1)}</span>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <span id="sidebar-mw-badge" class="badge badge-info" style="font-size: 10px;">MW ${computeGasMixtureMW(inp.gas_comp).toFixed(2)} g/mol</span>
+              <span id="sidebar-gas-total-badge" class="badge ${Math.abs(proj.gasTotal - 100) < 0.01 ? 'badge-success' : 'badge-warning'}">%${proj.gasTotal.toFixed(1)}</span>
+            </div>
           </div>
           ${
             openSteps[2]
@@ -277,21 +355,28 @@ export function renderDesignSidebar(container) {
               <span class="step-badge">3</span>
               <span>${t("step_model", ui.lang)}</span>
             </div>
-            <span id="sidebar-eos-summary" style="font-size: 11px; color: var(--color-primary); font-weight: 600;">${inp.eos_model?.toUpperCase()}</span>
+            <span id="sidebar-eos-summary" style="font-size: 11px; color: var(--color-primary); font-weight: 600;">${escapeHtml(inp.eos_model?.toUpperCase() || "")}</span>
           </div>
           ${
             openSteps[3]
               ? `
               <div class="step-content">
+                <div id="sidebar-model-rec-box" aria-live="polite" style="margin-bottom: 10px;">
+                  ${buildModelRecHtml(proj.recommendations, inp)}
+                </div>
+
                 <div class="form-group">
                   <label class="form-label">Hal Denklemi (EOS)</label>
                   <select class="form-select inp-field" data-field="eos_model">
                     <option value="coolprop" ${inp.eos_model === 'coolprop' ? 'selected' : ''}>CoolProp (HEOS Referans Model)</option>
-                    <option value="pr" ${inp.eos_model === 'pr' ? 'selected' : ''}>Peng-Robinson (Kübik EoS)</option>
-                    <option value="srk" ${inp.eos_model === 'srk' ? 'selected' : ''}>Soave-Redlich-Kwong (SRK)</option>
-                    <option value="rk" ${inp.eos_model === 'rk' ? 'selected' : ''}>Redlich-Kwong</option>
-                    <option value="bwrs" ${inp.eos_model === 'bwrs' ? 'selected' : ''}>BWRS Modeli</option>
-                    <option value="gerg2008" ${inp.eos_model === 'gerg2008' ? 'selected' : ''}>GERG-2008 Modeli</option>
+                    <option value="pr" ${(inp.eos_model === 'pr' || inp.eos_model === 'vdw') ? 'selected' : ''}>Peng-Robinson (Kübik EoS)</option>
+                    <option value="srk" ${(inp.eos_model === 'srk' || inp.eos_model === 'rk') ? 'selected' : ''}>Soave-Redlich-Kwong (SRK)</option>
+                    <option value="gerg2008" ${(inp.eos_model === 'gerg2008' || inp.eos_model === 'bwrs') ? 'selected' : ''}>GERG-2008 Doğalgaz Modeli</option>
+                    <option value="aga8" ${inp.eos_model === 'aga8' ? 'selected' : ''}>AGA8-DC92 Doğalgaz Modeli</option>
+                    <option value="thermopack" ${inp.eos_model === 'thermopack' ? 'selected' : ''}>SINTEF ThermoPack (VLE / Asit Gazı)</option>
+                    <option value="neqsim" ${inp.eos_model === 'neqsim' ? 'selected' : ''}>Equinor NeqSim (SRK-CPA Polar)</option>
+                    <option value="ccp" ${inp.eos_model === 'ccp' ? 'selected' : ''}>Petrobras CCP (Santrifüj Paketi)</option>
+                    <option value="dwsim" ${inp.eos_model === 'dwsim' ? 'selected' : ''}>DWSIM Termodinamik Motoru</option>
                   </select>
                 </div>
 
@@ -319,7 +404,7 @@ export function renderDesignSidebar(container) {
               <span class="step-badge">4</span>
               <span>${t("step_stages", ui.lang)}</span>
             </div>
-            <span style="font-size: 11px; color: var(--color-text-secondary);">${inp.num_stages} Kademe</span>
+            <span id="sidebar-stages-summary" style="font-size: 11px; color: var(--color-text-secondary);">${inp.num_stages} Kademe</span>
           </div>
           ${
             openSteps[4]
@@ -327,20 +412,20 @@ export function renderDesignSidebar(container) {
               <div class="step-content">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                   <div class="form-group">
-                    <label class="form-label">Kademe Sayısı</label>
-                    <input type="number" min="1" max="6" class="form-input inp-field" data-field="num_stages" value="${inp.num_stages}" />
+                    <label class="form-label" for="inp-num-stages">Kademe Sayısı</label>
+                    <input id="inp-num-stages" type="number" min="1" max="6" class="form-input inp-field" data-field="num_stages" value="${inp.num_stages}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Ünite Sayısı (N+1)</label>
-                    <input type="number" min="1" max="10" class="form-input inp-field" data-field="num_units" value="${inp.num_units}" />
+                    <label class="form-label" for="inp-step4-num-units">Ünite Sayısı (N+1)</label>
+                    <input id="inp-step4-num-units" type="number" min="1" max="10" class="form-input inp-field" data-field="num_units" value="${inp.num_units}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Ara Soğutucu (°C)</label>
-                    <input type="number" step="0.5" class="form-input inp-field" data-field="intercooler_t" value="${inp.intercooler_t}" />
+                    <label class="form-label" for="inp-intercooler-t">Ara Soğutucu (°C)</label>
+                    <input id="inp-intercooler-t" type="number" step="0.5" class="form-input inp-field" data-field="intercooler_t" value="${inp.intercooler_t}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Ara Soğutucu ΔP (%)</label>
-                    <input type="number" step="0.1" class="form-input inp-field" data-field="intercooler_dp_pct" value="${inp.intercooler_dp_pct}" />
+                    <label class="form-label" for="inp-intercooler-dp">Ara Soğutucu ΔP (%)</label>
+                    <input id="inp-intercooler-dp" type="number" step="0.1" class="form-input inp-field" data-field="intercooler_dp_pct" value="${inp.intercooler_dp_pct}" />
                   </div>
                 </div>
               </div>
@@ -356,7 +441,7 @@ export function renderDesignSidebar(container) {
               <span class="step-badge">5</span>
               <span>${t("step_efficiencies", ui.lang)}</span>
             </div>
-            <span id="sidebar-eff-summary" style="font-size: 11px; color: var(--color-text-secondary);">%${inp.poly_eff}</span>
+            <span id="sidebar-eff-summary" style="font-size: 11px; color: var(--color-text-secondary);">ηp %${inp.poly_eff} • ηth %${inp.therm_eff ?? 35}</span>
           </div>
           ${
             openSteps[5]
@@ -364,12 +449,93 @@ export function renderDesignSidebar(container) {
               <div class="step-content">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                   <div class="form-group">
-                    <label class="form-label">Hedef Politropik Verim (%)</label>
-                    <input type="number" step="0.5" min="40" max="98" class="form-input inp-field" data-field="poly_eff" value="${inp.poly_eff}" />
+                    <label class="form-label" for="inp-poly-eff">Hedef Politropik Verim (%)</label>
+                    <input id="inp-poly-eff" type="number" inputmode="decimal" step="0.5" min="40" max="98" class="form-input inp-field" data-field="poly_eff" value="${inp.poly_eff}" />
                   </div>
                   <div class="form-group">
-                    <label class="form-label">Mekanik Verim (%)</label>
-                    <input type="number" step="0.1" min="80" max="100" class="form-input inp-field" data-field="mech_eff" value="${inp.mech_eff}" />
+                    <label class="form-label" for="inp-mech-eff">Mekanik Verim (%)</label>
+                    <input id="inp-mech-eff" type="number" inputmode="decimal" step="0.1" min="80" max="100" class="form-input inp-field" data-field="mech_eff" value="${inp.mech_eff}" />
+                  </div>
+                  <div class="form-group" style="grid-column: span 2;">
+                    <label class="form-label" for="inp-therm-eff">${escapeHtml(t("label_therm_eff", ui.lang))}</label>
+                    <input
+                      id="inp-therm-eff"
+                      type="number"
+                      inputmode="decimal"
+                      step="0.5"
+                      min="15"
+                      max="65"
+                      class="form-input inp-field"
+                      data-field="therm_eff"
+                      aria-describedby="sidebar-therm-hr-hint"
+                      value="${inp.therm_eff ?? 35}"
+                    />
+                    <div id="sidebar-therm-hr-hint" style="font-size: 10px; color: var(--color-text-secondary); margin-top: 4px;">
+                      ${escapeHtml(formatEquivalentHeatRate(inp.therm_eff ?? 35))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `
+              : ""
+          }
+        </div>
+
+        <!-- Step 6: Site & Ambient Conditions (ISO 2314 Derating) -->
+        <div class="step-section">
+          <div class="step-header" data-step="6">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="step-badge">6</span>
+              <span>${t("step_site", ui.lang)}</span>
+            </div>
+            <span id="sidebar-site-summary" style="font-size: 11px; color: var(--color-text-secondary);">${inp.ambient_temp ?? 19}°C • ${inp.altitude ?? 0} m</span>
+          </div>
+          ${
+            openSteps[6]
+              ? `
+              <div class="step-content">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                  <div class="form-group">
+                    <label class="form-label" for="inp-ambient-temp">${escapeHtml(t("label_ambient_temp", ui.lang))}</label>
+                    <input
+                      id="inp-ambient-temp"
+                      type="number"
+                      inputmode="decimal"
+                      step="1"
+                      min="-40"
+                      max="55"
+                      class="form-input inp-field"
+                      data-field="ambient_temp"
+                      value="${inp.ambient_temp ?? 19}"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="inp-altitude">${escapeHtml(t("label_altitude", ui.lang))}</label>
+                    <input
+                      id="inp-altitude"
+                      type="number"
+                      inputmode="numeric"
+                      step="50"
+                      min="0"
+                      max="4000"
+                      class="form-input inp-field"
+                      data-field="altitude"
+                      value="${inp.altitude ?? 0}"
+                    />
+                  </div>
+                  <div class="form-group" style="grid-column: span 2;">
+                    <label class="form-label" for="inp-humidity">${escapeHtml(t("label_humidity", ui.lang))}</label>
+                    <input
+                      id="inp-humidity"
+                      type="number"
+                      inputmode="numeric"
+                      step="5"
+                      min="0"
+                      max="100"
+                      class="form-input inp-field"
+                      data-field="humidity"
+                      value="${inp.humidity ?? 60}"
+                    />
                   </div>
                 </div>
               </div>
@@ -408,7 +574,12 @@ export function renderDesignSidebar(container) {
       }
     }
 
-    // Bind inputs with intelligent unit conversion
+    // Bind live model recommendation apply button if Step 3 is open
+    if (openSteps[3]) {
+      bindModelRecApply();
+    }
+
+    // Bind inputs with intelligent unit conversion (real MW & EOS-aware)
     container.querySelectorAll(".inp-field").forEach(inpElem => {
       inpElem.addEventListener("change", (e) => {
         const f = e.target.getAttribute("data-field");
@@ -419,9 +590,11 @@ export function renderDesignSidebar(container) {
           const oldUnit = currentInputs.flow_unit || "kg/s";
           const newUnit = v;
           const oldFlow = parseFloat(currentInputs.flow) || 12.0;
-          const nextFlow = convertFlow(oldFlow, oldUnit, newUnit);
+          const converted = convertFlowWithMW(oldFlow, oldUnit, newUnit, currentInputs.gas_comp);
+          const nextFlow = Math.round(converted * 100) / 100;
           const flowEl = container.querySelector('[data-field="flow"]');
           if (flowEl) flowEl.value = nextFlow;
+          invalidateAirCoolerCache();
           projectStore.setState(s => ({
             inputs: { ...s.inputs, flow: nextFlow, flow_unit: newUnit }
           }));
@@ -432,12 +605,15 @@ export function renderDesignSidebar(container) {
           const oldUnit = currentInputs.p_in_unit || "bar(a)";
           const newUnit = v;
           const oldP = parseFloat(currentInputs.p_in) || 20.0;
-          const nextP = convertPressure(oldP, oldUnit, newUnit);
+          const nextP = convertPressureUnit(oldP, oldUnit, newUnit);
           const pEl = container.querySelector('[data-field="p_in"]');
           if (pEl) pEl.value = nextP;
+          invalidateAirCoolerCache();
           projectStore.setState(s => ({
             inputs: { ...s.inputs, p_in: nextP, p_in_unit: newUnit }
           }));
+          recalculateLiveMetrics();
+          scheduleRecommendationsRefresh();
           return;
         }
 
@@ -445,12 +621,15 @@ export function renderDesignSidebar(container) {
           const oldUnit = currentInputs.p_out_unit || "bar(a)";
           const newUnit = v;
           const oldP = parseFloat(currentInputs.p_out) || 60.0;
-          const nextP = convertPressure(oldP, oldUnit, newUnit);
+          const nextP = convertPressureUnit(oldP, oldUnit, newUnit);
           const pEl = container.querySelector('[data-field="p_out"]');
           if (pEl) pEl.value = nextP;
+          invalidateAirCoolerCache();
           projectStore.setState(s => ({
             inputs: { ...s.inputs, p_out: nextP, p_out_unit: newUnit }
           }));
+          recalculateLiveMetrics();
+          scheduleRecommendationsRefresh();
           return;
         }
 
@@ -458,18 +637,37 @@ export function renderDesignSidebar(container) {
           const oldUnit = currentInputs.t_in_unit || "°C";
           const newUnit = v;
           const oldT = parseFloat(currentInputs.t_in) || 25.0;
-          const nextT = convertTemperature(oldT, oldUnit, newUnit);
+          const nextT = convertTemperatureUnit(oldT, oldUnit, newUnit);
           const tEl = container.querySelector('[data-field="t_in"]');
           if (tEl) tEl.value = nextT;
+          invalidateAirCoolerCache();
           projectStore.setState(s => ({
             inputs: { ...s.inputs, t_in: nextT, t_in_unit: newUnit }
           }));
           return;
         }
 
-        if (["p_in", "p_out", "t_in", "flow", "poly_eff", "num_stages", "num_units", "intercooler_t", "intercooler_dp_pct", "mech_eff"].includes(f)) {
-          v = parseFloat(v) || 0;
-          if (f === "num_units") v = Math.max(1, Math.round(v));
+        if (
+          [
+            "p_in",
+            "p_out",
+            "t_in",
+            "flow",
+            "poly_eff",
+            "num_stages",
+            "num_units",
+            "intercooler_t",
+            "intercooler_dp_pct",
+            "mech_eff",
+            "therm_eff",
+            "ambient_temp",
+            "altitude",
+            "humidity",
+          ].includes(f)
+        ) {
+          const parsed = parseFloat(v);
+          v = Number.isFinite(parsed) ? parsed : 0;
+          if (f === "num_units" || f === "num_stages") v = Math.max(1, Math.round(v));
         }
         updateInput(f, v);
       });
@@ -492,4 +690,7 @@ export function renderDesignSidebar(container) {
 
   projectStore.subscribe(() => render(false));
   render(true);
+  if (!projectStore.getState().recommendations) {
+    fetchRecommendations();
+  }
 }

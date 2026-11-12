@@ -8,6 +8,239 @@ import { createStore } from "./store.js";
 import { api } from "../api/client.js";
 import { showToast } from "./uiStore.js";
 
+const R_UNIVERSAL_J_MOL_K = 8.314462618;
+const STD_PRESS_PA = 101325.0;
+const STD_TEMP_ISO_K = 288.15; // 15°C (Sm³/h, MMSCMD)
+const STD_TEMP_NORMAL_K = 273.15; // 0°C (Nm³/h)
+const US_STD_PRESS_PA = 101559.8; // 14.73 psia (MMSCFD)
+const US_STD_TEMP_K = 288.7056; // 60°F (MMSCFD)
+const FT3_TO_M3 = 0.028316846592;
+
+export const MOLAR_MASSES = {
+  METHANE: 16.043,
+  ETHANE: 30.069,
+  PROPANE: 44.096,
+  ISOBUTANE: 58.123,
+  BUTANE: 58.123,
+  ISOPENTANE: 72.150,
+  PENTANE: 72.150,
+  HEXANE: 86.177,
+  HEPTANE: 100.204,
+  OCTANE: 114.231,
+  NONANE: 128.258,
+  DECANE: 142.285,
+  HYDROGEN: 2.016,
+  HYDROGENSULFIDE: 34.082,
+  NITROGEN: 28.014,
+  CARBONDIOXIDE: 44.010,
+  WATER: 18.015,
+  OXYGEN: 31.999,
+  ARGON: 39.948,
+  HELIUM: 4.003,
+  NEON: 20.180,
+  KRYPTON: 83.798,
+  XENON: 131.293,
+  AIR: 28.966,
+};
+
+const ALIAS_MAP = {
+  CO2: "CARBONDIOXIDE",
+  "CARBON DIOXIDE": "CARBONDIOXIDE",
+  CH4: "METHANE",
+  H2S: "HYDROGENSULFIDE",
+  "HYDROGEN SULFIDE": "HYDROGENSULFIDE",
+  H2O: "WATER",
+  IBUTANE: "ISOBUTANE",
+  IC4H10: "ISOBUTANE",
+  IPENTANE: "ISOPENTANE",
+  N2: "NITROGEN",
+  O2: "OXYGEN",
+  H2: "HYDROGEN",
+  AR: "ARGON",
+  HE: "HELIUM",
+  C2H6: "ETHANE",
+  C3H8: "PROPANE",
+  NC4H10: "BUTANE",
+  C4H10: "BUTANE",
+};
+
+export function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function computeGasMixtureMW(gasComp) {
+  if (!gasComp || typeof gasComp !== "object") return 18.2;
+  let totalPct = 0;
+  let weightedMw = 0;
+  for (const [rawKey, rawVal] of Object.entries(gasComp)) {
+    const val = parseFloat(rawVal);
+    if (!Number.isFinite(val) || val <= 0) continue;
+    const upper = String(rawKey || "").trim().toUpperCase();
+    const canonical = ALIAS_MAP[upper] || upper;
+    const compMw = MOLAR_MASSES[canonical];
+    if (compMw !== undefined) {
+      totalPct += val;
+      weightedMw += val * compMw;
+    }
+  }
+  if (totalPct <= 0) return 18.2;
+  return weightedMw / totalPct;
+}
+
+export function computeStandardGasDensityKgm3(gasComp, condition = "iso") {
+  const mwKgMol = computeGasMixtureMW(gasComp) / 1000.0;
+  if (condition === "normal") {
+    return (STD_PRESS_PA * mwKgMol) / (R_UNIVERSAL_J_MOL_K * STD_TEMP_NORMAL_K);
+  }
+  if (condition === "us_field") {
+    return (US_STD_PRESS_PA * mwKgMol) / (R_UNIVERSAL_J_MOL_K * US_STD_TEMP_K);
+  }
+  return (STD_PRESS_PA * mwKgMol) / (R_UNIVERSAL_J_MOL_K * STD_TEMP_ISO_K);
+}
+
+export function convertPressureToBarA(val, unit = "bar(a)") {
+  const num = parseFloat(val);
+  if (!Number.isFinite(num)) return 0;
+  const u = String(unit || "bar(a)").trim();
+  if (u === "bar(g)") return num + 1.01325;
+  if (u === "kPa") return num / 100.0;
+  if (u === "MPa") return num * 10.0;
+  if (u === "Pa") return num / 100000.0;
+  if (u === "psi" || u === "psia") return num / 14.5037738;
+  if (u === "psig") return (num + 14.6959488) / 14.5037738;
+  if (u === "atm") return num * 1.01325;
+  return num;
+}
+
+export function convertPressureUnit(val, fromU, toU) {
+  const num = parseFloat(val);
+  if (!Number.isFinite(num) || fromU === toU) return val;
+  const barA = convertPressureToBarA(num, fromU);
+  let res = barA;
+  const u = String(toU || "bar(a)").trim();
+  if (u === "bar(g)") res = Math.max(-1.0, barA - 1.01325);
+  else if (u === "kPa") res = barA * 100.0;
+  else if (u === "MPa") res = barA / 10.0;
+  else if (u === "psi" || u === "psia") res = barA * 14.5037738;
+  else if (u === "psig") res = Math.max(-14.5, barA * 14.5037738 - 14.6959488);
+  return Math.round(res * 100) / 100;
+}
+
+export function convertTempToC(val, unit = "°C") {
+  const num = parseFloat(val);
+  if (!Number.isFinite(num)) return 25.0;
+  const u = String(unit || "°C").trim();
+  if (u === "K") return num - 273.15;
+  if (u === "°F" || u === "F") return (num - 32.0) * (5.0 / 9.0);
+  return num;
+}
+
+export function convertTemperatureUnit(val, fromU, toU) {
+  const num = parseFloat(val);
+  if (!Number.isFinite(num) || fromU === toU) return val;
+  const c = convertTempToC(num, fromU);
+  let res = c;
+  const u = String(toU || "°C").trim();
+  if (u === "K") res = c + 273.15;
+  else if (u === "°F" || u === "F") res = c * (9.0 / 5.0) + 32.0;
+  return Math.round(res * 10) / 10;
+}
+
+export function convertFlowWithMW(val, fromU, toU, gasComp) {
+  const num = parseFloat(val);
+  if (!Number.isFinite(num) || num <= 0 || fromU === toU) return Number.isFinite(num) ? num : 0;
+
+  const mwGmol = computeGasMixtureMW(gasComp);
+  const rhoIso = computeStandardGasDensityKgm3(gasComp, "iso");
+  const rhoNormal = computeStandardGasDensityKgm3(gasComp, "normal");
+  const rhoUs = computeStandardGasDensityKgm3(gasComp, "us_field");
+
+  const fU = String(fromU || "kg/s").trim();
+  let kgs = num;
+  if (fU === "kg/h") kgs = num / 3600.0;
+  else if (fU === "t/h" || fU === "ton/h") kgs = (num * 1000.0) / 3600.0;
+  else if (fU === "Sm³/h" || fU === "Sm3/h" || fU === "m3/h" || fU === "m³/h") {
+    kgs = (num * rhoIso) / 3600.0;
+  } else if (fU === "Nm³/h" || fU === "Nm3/h") {
+    kgs = (num * rhoNormal) / 3600.0;
+  } else if (fU === "MMSCMD") {
+    kgs = (num * 1e6 * rhoIso) / 86400.0;
+  } else if (fU === "MMSCFD") {
+    kgs = (num * 1e6 * FT3_TO_M3 * rhoUs) / 86400.0;
+  } else if (fU === "kmol/h" || fU === "kgmol/h") {
+    kgs = (num * mwGmol) / 3600.0;
+  }
+
+  const tU = String(toU || "kg/s").trim();
+  let res = kgs;
+  if (tU === "kg/h") res = kgs * 3600.0;
+  else if (tU === "t/h" || tU === "ton/h") res = (kgs * 3600.0) / 1000.0;
+  else if (tU === "Sm³/h" || tU === "Sm3/h" || tU === "m3/h" || tU === "m³/h") {
+    res = rhoIso > 0 ? (kgs * 3600.0) / rhoIso : 0;
+  } else if (tU === "Nm³/h" || tU === "Nm3/h") {
+    res = rhoNormal > 0 ? (kgs * 3600.0) / rhoNormal : 0;
+  } else if (tU === "MMSCMD") {
+    res = rhoIso > 0 ? (kgs * 86400.0) / (1e6 * rhoIso) : 0;
+  } else if (tU === "MMSCFD") {
+    res = rhoUs > 0 ? (kgs * 86400.0) / (1e6 * FT3_TO_M3 * rhoUs) : 0;
+  } else if (tU === "kmol/h" || tU === "kgmol/h") {
+    res = mwGmol > 0 ? (kgs * 3600.0) / mwGmol : 0;
+  }
+  return res;
+}
+
+function withoutAirCoolerModule(modules) {
+  if (!modules || !modules.air_cooler) return modules || {};
+  const next = { ...modules };
+  delete next.air_cooler;
+  return next;
+}
+
+const PROCESS_CACHE_INVALIDATION_FIELDS = new Set([
+  "p_in",
+  "p_in_unit",
+  "p_out",
+  "p_out_unit",
+  "t_in",
+  "t_in_unit",
+  "flow",
+  "flow_unit",
+  "eos_model",
+  "calc_method",
+  "poly_eff",
+  "mech_eff",
+  "therm_eff",
+  "num_units",
+  "num_stages",
+  "intercooler_t",
+  "intercooler_dp_pct",
+  "ambient_temp",
+  "altitude",
+  "humidity",
+]);
+
+const RECOMMENDATION_TRIGGER_FIELDS = new Set([
+  "p_in",
+  "p_in_unit",
+  "p_out",
+  "p_out_unit",
+  "eos_model",
+  "calc_method",
+]);
+
+let recDebounceTimer = null;
+export function scheduleRecommendationsRefresh(delayMs = 250) {
+  clearTimeout(recDebounceTimer);
+  recDebounceTimer = setTimeout(() => {
+    fetchRecommendations();
+  }, delayMs);
+}
+
 export const DEFAULT_DESIGN_INPUTS = {
   project_name: "Yeni Kompresör Projesi",
   p_in: 20.0,
@@ -34,12 +267,107 @@ export const DEFAULT_DESIGN_INPUTS = {
   num_stages: 2,
   intercooler_t: 35.0,
   intercooler_dp_pct: 2.0,
+  ambient_temp: 19.0,
+  altitude: 0,
+  humidity: 60,
   custom_kij: {},
 };
+
+const LEGACY_EOS_MAP = {
+  rk: "srk",
+  "redlich-kwong": "srk",
+  vdw: "pr",
+  van_der_waals: "pr",
+  bwrs: "gerg2008",
+  "peng-robinson": "pr",
+  "gerg-2008": "gerg2008",
+  "aga8-dc92": "aga8",
+  heos: "coolprop",
+};
+
+export function normalizeGasKey(rawKey) {
+  const upper = String(rawKey || "").trim().toUpperCase();
+  return ALIAS_MAP[upper] || upper;
+}
+
+export function sanitizeActiveGasComp(rawComp, fallbackComp = DEFAULT_DESIGN_INPUTS.gas_comp) {
+  if (!rawComp || typeof rawComp !== "object") {
+    return { ...fallbackComp };
+  }
+  const cleaned = {};
+  for (const [rawKey, rawVal] of Object.entries(rawComp)) {
+    const val = parseFloat(rawVal);
+    if (!Number.isFinite(val) || val <= 0) continue;
+    const key = normalizeGasKey(rawKey);
+    if (!key) continue;
+    cleaned[key] = Math.round(((cleaned[key] || 0) + val) * 10000) / 10000;
+  }
+  return Object.keys(cleaned).length > 0 ? cleaned : { ...fallbackComp };
+}
+
+export function hydrateProjectSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return;
+  const rawInputs = snapshot.inputs && typeof snapshot.inputs === "object" ? snapshot.inputs : {};
+  const rawEos = String(rawInputs.eos_model || rawInputs.eos_method || DEFAULT_DESIGN_INPUTS.eos_model)
+    .trim()
+    .toLowerCase();
+  const normalizedEos = LEGACY_EOS_MAP[rawEos] || rawEos || DEFAULT_DESIGN_INPUTS.eos_model;
+  const normalizedMethod =
+    rawInputs.calc_method || rawInputs.method || DEFAULT_DESIGN_INPUTS.calc_method;
+  const normalizedAmbient =
+    rawInputs.ambient_temp !== undefined && rawInputs.ambient_temp !== null
+      ? Number(rawInputs.ambient_temp)
+      : rawInputs.t_amb !== undefined && rawInputs.t_amb !== null
+        ? Number(rawInputs.t_amb)
+        : DEFAULT_DESIGN_INPUTS.ambient_temp;
+
+  const mergedInputs = {
+    ...DEFAULT_DESIGN_INPUTS,
+    ...rawInputs,
+    eos_model: normalizedEos,
+    calc_method: normalizedMethod,
+    ambient_temp: Number.isFinite(normalizedAmbient) ? normalizedAmbient : DEFAULT_DESIGN_INPUTS.ambient_temp,
+    gas_comp: sanitizeActiveGasComp(rawInputs.gas_comp, DEFAULT_DESIGN_INPUTS.gas_comp),
+    custom_kij:
+      rawInputs.custom_kij && typeof rawInputs.custom_kij === "object"
+        ? { ...rawInputs.custom_kij }
+        : {},
+  };
+
+  const resObj = snapshot.results && typeof snapshot.results === "object" ? snapshot.results : null;
+  const loadedModules = snapshot.modules || resObj?.module_results || {};
+  const loadedStation = snapshot.station_data || resObj?.station_data || null;
+  const loadedUnits = Array.isArray(snapshot.selected_units)
+    ? snapshot.selected_units
+    : Array.isArray(resObj?.selected_units)
+      ? resObj.selected_units
+      : [];
+  const loadedCharts = snapshot.charts || resObj?.charts || null;
+  const loadedWarnings = Array.isArray(snapshot.warnings)
+    ? snapshot.warnings
+    : Array.isArray(resObj?.warnings)
+      ? resObj.warnings
+      : [];
+
+  projectStore.setState({
+    inputs: mergedInputs,
+    results: resObj,
+    selectedUnits: loadedUnits,
+    charts: loadedCharts,
+    warnings: loadedWarnings,
+    modules: loadedModules,
+    stationData: loadedStation,
+    error: null,
+  });
+  recalculateGasTotal();
+  recalculateLiveMetrics();
+  scheduleRecommendationsRefresh(50);
+}
 
 export const projectStore = createStore({
   inputs: { ...DEFAULT_DESIGN_INPUTS },
   results: null,
+  warnings: [],
   selectedUnits: [],
   charts: null,
   isCalculating: false,
@@ -53,22 +381,102 @@ export const projectStore = createStore({
   stationData: null,
 });
 
+export function invalidateAirCoolerCache() {
+  projectStore.setState((s) => ({
+    modules: withoutAirCoolerModule(s.modules),
+  }));
+}
+
 export function updateInput(field, value) {
+  const shouldClearCooler = PROCESS_CACHE_INVALIDATION_FIELDS.has(field);
   projectStore.setState((s) => {
     const nextInputs = { ...s.inputs, [field]: value };
-    return { inputs: nextInputs };
+    return {
+      inputs: nextInputs,
+      modules: shouldClearCooler ? withoutAirCoolerModule(s.modules) : s.modules,
+    };
   });
   recalculateLiveMetrics();
+  if (RECOMMENDATION_TRIGGER_FIELDS.has(field)) {
+    scheduleRecommendationsRefresh();
+  }
 }
 
 export function updateGasComponent(component, percentage) {
+  const key = normalizeGasKey(component);
+  if (!key) return;
+  const parsed = parseFloat(percentage);
+  const safeVal = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
   projectStore.setState((s) => {
-    const nextComp = { ...s.inputs.gas_comp, [component]: parseFloat(percentage) || 0 };
+    const nextComp = { ...s.inputs.gas_comp, [key]: safeVal };
     return {
       inputs: { ...s.inputs, gas_comp: nextComp },
+      modules: withoutAirCoolerModule(s.modules),
     };
   });
   recalculateGasTotal();
+  scheduleRecommendationsRefresh();
+}
+
+export function addGasComponent(component, initialPct = null) {
+  const key = normalizeGasKey(component);
+  if (!key) return;
+  projectStore.setState((s) => {
+    const currentComp = s.inputs.gas_comp || {};
+    if (Object.prototype.hasOwnProperty.call(currentComp, key)) {
+      return {};
+    }
+    const currentTotal = Object.values(currentComp).reduce((a, b) => a + (parseFloat(b) || 0), 0);
+    const suggested =
+      initialPct !== null && Number.isFinite(parseFloat(initialPct))
+        ? Math.max(0, parseFloat(initialPct))
+        : currentTotal < 99.99
+          ? Math.max(0, Math.round((100.0 - currentTotal) * 100) / 100)
+          : 0;
+    const nextComp = { ...currentComp, [key]: suggested };
+    return {
+      inputs: { ...s.inputs, gas_comp: nextComp },
+      modules: withoutAirCoolerModule(s.modules),
+    };
+  });
+  recalculateGasTotal();
+  scheduleRecommendationsRefresh();
+}
+
+export function removeGasComponent(component) {
+  const key = normalizeGasKey(component);
+  if (!key) return;
+  projectStore.setState((s) => {
+    const nextComp = { ...(s.inputs.gas_comp || {}) };
+    delete nextComp[key];
+    return {
+      inputs: { ...s.inputs, gas_comp: nextComp },
+      modules: withoutAirCoolerModule(s.modules),
+    };
+  });
+  recalculateGasTotal();
+  scheduleRecommendationsRefresh();
+}
+
+export function balanceGasComponent(component) {
+  const key = normalizeGasKey(component);
+  if (!key) return;
+  projectStore.setState((s) => {
+    const currentComp = s.inputs.gas_comp || {};
+    let othersSum = 0;
+    for (const [k, v] of Object.entries(currentComp)) {
+      if (k === key) continue;
+      othersSum += parseFloat(v) || 0;
+    }
+    const remaining = Math.max(0, Math.round((100.0 - othersSum) * 100) / 100);
+    const nextComp = { ...currentComp, [key]: remaining };
+    return {
+      inputs: { ...s.inputs, gas_comp: nextComp },
+      modules: withoutAirCoolerModule(s.modules),
+    };
+  });
+  recalculateGasTotal();
+  fetchRecommendations();
 }
 
 export function setCustomKijOverride(pair, value) {
@@ -76,6 +484,7 @@ export function setCustomKijOverride(pair, value) {
     const nextKij = { ...s.inputs.custom_kij, [pair]: parseFloat(value) };
     return {
       inputs: { ...s.inputs, custom_kij: nextKij },
+      modules: withoutAirCoolerModule(s.modules),
     };
   });
 }
@@ -83,6 +492,7 @@ export function setCustomKijOverride(pair, value) {
 export function clearCustomKijOverrides() {
   projectStore.setState((s) => ({
     inputs: { ...s.inputs, custom_kij: {} },
+    modules: withoutAirCoolerModule(s.modules),
   }));
 }
 
@@ -94,15 +504,8 @@ export function recalculateGasTotal() {
 
 export function recalculateLiveMetrics() {
   const { p_in, p_in_unit, p_out, p_out_unit } = projectStore.getState().inputs;
-  // Convert approximately or via server
-  let pInBar = parseFloat(p_in) || 0;
-  let pOutBar = parseFloat(p_out) || 0;
-  if (p_in_unit === "bar(g)") pInBar += 1.01325;
-  if (p_out_unit === "bar(g)") pOutBar += 1.01325;
-  if (p_in_unit === "kPa") pInBar /= 100;
-  if (p_out_unit === "kPa") pOutBar /= 100;
-  if (p_in_unit === "psi") pInBar /= 14.5038;
-  if (p_out_unit === "psi") pOutBar /= 14.5038;
+  const pInBar = convertPressureToBarA(p_in, p_in_unit);
+  const pOutBar = convertPressureToBarA(p_out, p_out_unit);
 
   if (pInBar > 0 && pOutBar > 0) {
     const pr = Math.round((pOutBar / pInBar) * 1000) / 1000;
@@ -128,11 +531,16 @@ export async function fetchPresets() {
 export function applyPreset(presetId) {
   const preset = projectStore.getState().presets.find((p) => p.id === presetId);
   if (preset && preset.inputs) {
+    const cleanGasComp = preset.inputs.gas_comp
+      ? sanitizeActiveGasComp(preset.inputs.gas_comp, DEFAULT_DESIGN_INPUTS.gas_comp)
+      : undefined;
     projectStore.setState((s) => ({
       inputs: {
         ...s.inputs,
         ...preset.inputs,
+        ...(cleanGasComp ? { gas_comp: cleanGasComp } : {}),
       },
+      modules: withoutAirCoolerModule(s.modules),
     }));
     recalculateGasTotal();
     recalculateLiveMetrics();
@@ -186,17 +594,19 @@ export function loadModulePayload(modules, stationData) {
 }
 
 export async function runDesignCalculation() {
-  projectStore.setState({ isCalculating: true, error: null });
+  projectStore.setState({ isCalculating: true, error: null, warnings: [] });
   const { inputs } = projectStore.getState();
 
   try {
     const res = await api.post("/api/v1/calculations/design", inputs);
-    projectStore.setState({
+    projectStore.setState((s) => ({
       results: res.results,
+      warnings: Array.isArray(res.warnings) ? res.warnings : [],
       selectedUnits: res.selected_units || [],
       charts: res.charts,
+      modules: withoutAirCoolerModule(s.modules),
       isCalculating: false,
-    });
+    }));
     showToast("Tasarım hesaplaması başarıyla tamamlandı!");
     return res;
   } catch (err) {

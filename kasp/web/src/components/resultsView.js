@@ -5,9 +5,44 @@
  */
 
 import { icon } from "../../vendor/icons.js";
-import { projectStore } from "../store/projectStore.js";
-import { uiStore, setActiveTab, setActiveSubTab } from "../store/uiStore.js";
+import {
+  projectStore,
+  updateInput,
+  runDesignCalculation,
+  convertFlowWithMW,
+  escapeHtml,
+} from "../store/projectStore.js";
+import { uiStore, setActiveTab, setActiveSubTab, showToast } from "../store/uiStore.js";
 import { t } from "../i18n/locales.js";
+
+function normalizeResultWarning(item) {
+  if (typeof item === "string") return item.trim();
+  if (item && typeof item === "object" && item.message) {
+    return item.field ? `[${item.field}] ${item.message}` : String(item.message).trim();
+  }
+  return "";
+}
+
+function collectDesignWarnings(proj, res) {
+  const seen = new Set();
+  const items = [];
+  const push = (raw) => {
+    const text = normalizeResultWarning(raw);
+    if (text && !seen.has(text)) {
+      seen.add(text);
+      items.push(text);
+    }
+  };
+  for (const w of proj?.warnings || []) push(w);
+  for (const w of res?.validation_warnings || []) push(w);
+  for (const w of res?.warnings || []) push(w);
+  for (const stg of res?.stages || []) {
+    for (const sw of stg?.selection_warnings || []) {
+      push(`Kademe ${stg.stage || ""}: ${sw}`);
+    }
+  }
+  return items;
+}
 
 export function renderResultsView(container) {
   function update() {
@@ -29,6 +64,19 @@ export function renderResultsView(container) {
       return;
     }
 
+    const activeGasComp = proj.inputs?.gas_comp;
+    const fuelKghToSm3h = (kgh) => {
+      const val = Number(kgh) || 0;
+      if (val <= 0) return 0;
+      const eosStdRho = Number(res.fuel_standard_density_kg_sm3 || res.fuel_gas_properties?.standard_density_kg_sm3 || 0);
+      if (eosStdRho > 0) return val / eosStdRho;
+      return convertFlowWithMW(val, "kg/h", "Sm³/h", activeGasComp);
+    };
+    const designWarnings = collectDesignWarnings(proj, res);
+    const isInvalidScope = res.analysis_scope === "INVALID" || res.energy_balance_ok === false;
+    const isNotSelectable = res.compressor_selectable === false || res.analysis_scope === "NOT_SELECTABLE";
+    const isFallbackUsed = !!res.fallback_used;
+
     // Extract KPIs with full unit, power, and fuel parity
     const numUnits = Math.max(1, parseInt(res.num_units || proj.inputs?.num_units || 1, 10));
     
@@ -38,7 +86,13 @@ export function renderResultsView(container) {
     
     // Motor / Driver Power (API 617 marjı; çekirdekten gelen değer önceliklidir)
     const driverMarginPct = Number(res.api_617_margin_percent !== undefined ? res.api_617_margin_percent : 4.0);
-    const powerUnitKw = Number(res.power_unit_kw || res.power_motor_per_unit_kw || (powerShaftPerUnitKw * (1 + driverMarginPct / 100.0)));
+    const mechEffFrac = (Number(proj.inputs?.mech_eff) || 98.0) / 100.0;
+    const powerMotorPerUnitKw = Number(
+      res.power_motor_per_unit_kw || (mechEffFrac > 0 ? powerShaftPerUnitKw / mechEffFrac : powerShaftPerUnitKw)
+    );
+    const powerUnitKw = Number(
+      res.power_unit_kw || (powerMotorPerUnitKw * (1 + driverMarginPct / 100.0))
+    );
     const powerUnitTotalKw = Number(res.power_unit_total_kw || res.power_motor_total_kw || (powerUnitKw * numUnits));
     
     // Gas Power
@@ -54,7 +108,16 @@ export function renderResultsView(container) {
     const fuelTotalKgH = Number(res.fuel_total_kgh || (fuelUnitKgH * numUnits));
     const lhv = Number(res.lhv || (res.fuel && res.fuel.lhv_kj_kg) || 47000);
     const hhv = Number(res.hhv || (res.fuel && res.fuel.hhv_kj_kg) || 52000);
-    const heatRate = Number(res.heat_rate || (res.fuel && res.fuel.heat_rate) || (fuelUnitKgH > 0 && powerUnitKw > 0 ? (fuelUnitKgH * lhv / powerUnitKw) : 0));
+    const heatRate = Number(
+      res.heat_rate ||
+        (res.fuel && res.fuel.heat_rate) ||
+        (fuelUnitKgH > 0 && powerMotorPerUnitKw > 0 ? (fuelUnitKgH * lhv) / powerMotorPerUnitKw : 0)
+    );
+    const driverThermEffPct = Number(
+      res.driver_thermal_efficiency_pct ||
+        proj.inputs?.therm_eff ||
+        (heatRate > 0 ? 360000.0 / heatRate : 35.0)
+    );
 
     // Process conditions & performance
     const stages = res.stages || [];
@@ -69,6 +132,8 @@ export function renderResultsView(container) {
     const totalHead = res.head_kj_kg || stages.reduce((acc, s) => acc + (s.head_kj_kg || 0), 0);
     let polyEff = res.actual_poly_efficiency !== undefined ? res.actual_poly_efficiency : (res.poly_eff || 0);
     if (polyEff > 0 && polyEff <= 1.0) polyEff = polyEff * 100.0;
+    let targetPolyEff = res.design_poly_efficiency !== undefined ? Number(res.design_poly_efficiency) : (Number(proj.inputs?.poly_eff) || 82.0);
+    if (targetPolyEff > 0 && targetPolyEff <= 1.0) targetPolyEff = targetPolyEff * 100.0;
 
     // Thermodynamic state variables (Inlet / Outlet)
     const inProps = res.inlet_properties || {};
@@ -283,14 +348,33 @@ export function renderResultsView(container) {
             </tbody>
           </table>
 
-          <div style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); margin-bottom: 6px; text-transform: uppercase;">
-            🌀 Kademe Bazlı Performans & Faz Ayrışması (VLE)
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+            <div style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase;">
+              🌀 Kademe Bazlı Performans & Faz Ayrışması (VLE)
+            </div>
+            <span class="badge ${Number(res.liquid_knockout_total_kg_h || 0) > 0.01 ? 'badge-warning' : 'badge-success'}" style="font-size: 10px;">
+              Toplam Sıvı Ayrıştırma (Knockout): ${Number(res.liquid_knockout_total_kg_h || 0).toFixed(2)} kg/h
+            </span>
           </div>
           <table class="kasp-table">
-            <thead><tr><th>Kademe</th><th>P_giriş (bar)</th><th>P_çıkış (bar)</th><th>T_çıkış (°C)</th><th>Head (kJ/kg)</th><th>Ünite Gaz Gücü (kW)</th><th>VLE Faz Ayrışması</th></tr></thead>
+            <thead><tr><th>Kademe</th><th>P_giriş (bar)</th><th>P_çıkış (bar)</th><th>T_çıkış (°C)</th><th>Head (kJ/kg)</th><th>Ünite Gaz Gücü (kW)</th><th>VLE & Seçilebilirlik Durumu</th></tr></thead>
             <tbody>
               ${
-                stages.map((stg, idx) => `
+                stages.map((stg, idx) => {
+                  const liqKgh = Number(stg.liquid_knockout_kg_h || 0);
+                  const stgFlowKgh = Number(stg.mass_flow_kgs || res.mass_flow_per_unit_kgs || 0) * 3600.0;
+                  const vaporFrac = stgFlowKgh > 0 ? Math.max(0, Math.min(1, 1.0 - (liqKgh / (stgFlowKgh + liqKgh)))) : 1.0;
+                  const selectable = stg.compressor_selectable !== false && stg.energy_balance_ok !== false;
+                  const warnMsg = (stg.selection_warnings || [])[0] || "";
+                  let vleBadgeHtml = "";
+                  if (!selectable) {
+                    vleBadgeHtml = `<span class="badge badge-danger" title="${escapeHtml(warnMsg)}">${vaporFrac.toFixed(3)} • Seçilemez${warnMsg ? ` (${escapeHtml(warnMsg)})` : ""}</span>`;
+                  } else if (liqKgh > 0.01) {
+                    vleBadgeHtml = `<span class="badge badge-warning">${vaporFrac.toFixed(3)} (Yoğuşma: ${liqKgh.toFixed(2)} kg/h KO)</span>`;
+                  } else {
+                    vleBadgeHtml = `<span class="badge badge-success">1.000 (Tek Faz Kuru Gaz • 0.00 kg/h KO)</span>`;
+                  }
+                  return `
                   <tr>
                     <td><b>Kademe ${idx + 1}</b></td>
                     <td>${(stg.p_in_bar !== undefined ? stg.p_in_bar : stageBar(stg.p_in_bar || stg.p_in || 0)).toFixed(2)}</td>
@@ -298,9 +382,10 @@ export function renderResultsView(container) {
                     <td>${(stg.t_out_c !== undefined ? stg.t_out_c : stageCelsius(stg.t_out_c || stg.t_out || 0)).toFixed(1)}</td>
                     <td>${(stg.head_kj_kg || 0).toFixed(2)}</td>
                     <td>${(stg.power_gas_kw || stg.power_kw || 0).toFixed(1)} kW</td>
-                    <td><span class="badge badge-success">1.000 (Süperkızgın Gaz)</span></td>
+                    <td>${vleBadgeHtml}</td>
                   </tr>
-                `).join("")
+                  `;
+                }).join("")
               }
             </tbody>
           </table>
@@ -312,8 +397,10 @@ export function renderResultsView(container) {
         const gasPriceUsdPerSm3 = 0.35; // ~$9.5 / MMBtu benchmark
         const carbonTaxUsdPerTon = 50.0; // Carbon credit benchmark
 
-        const annualFuelUnitSm3 = (fuelUnitKgH / 0.772) * annualHours;
-        const annualFuelTotalSm3 = (fuelTotalKgH / 0.772) * annualHours;
+        const fuelUnitSm3H = fuelKghToSm3h(fuelUnitKgH);
+        const fuelTotalSm3H = fuelKghToSm3h(fuelTotalKgH);
+        const annualFuelUnitSm3 = fuelUnitSm3H * annualHours;
+        const annualFuelTotalSm3 = fuelTotalSm3H * annualHours;
         const annualFuelCostUnitUsd = annualFuelUnitSm3 * gasPriceUsdPerSm3;
         const annualFuelCostTotalUsd = annualFuelTotalSm3 * gasPriceUsdPerSm3;
 
@@ -334,7 +421,7 @@ export function renderResultsView(container) {
               </tr>
               <tr>
                 <td><b>Ünite Başına Yakıt Tüketimi (Hacimsel)</b></td>
-                <td style="text-align: right; font-family: var(--font-mono);">${(fuelUnitKgH / 0.772).toFixed(1)}</td>
+                <td style="text-align: right; font-family: var(--font-mono);">${fuelUnitSm3H.toFixed(1)}</td>
                 <td>Sm³/h</td>
               </tr>
               <tr>
@@ -344,7 +431,7 @@ export function renderResultsView(container) {
               </tr>
               <tr>
                 <td><b>İstasyon Toplam Yakıt Tüketimi (Hacimsel)</b></td>
-                <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">${(fuelTotalKgH / 0.772).toFixed(1)}</td>
+                <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">${fuelTotalSm3H.toFixed(1)}</td>
                 <td>Sm³/h</td>
               </tr>
               <tr>
@@ -378,8 +465,8 @@ export function renderResultsView(container) {
                 <td>ton CO₂ / yıl</td>
               </tr>
               <tr>
-                <td><b>Tahmini Termal Verim (Gaz Türbini Sürücüsü)</b></td>
-                <td style="text-align: right; font-family: var(--font-mono);">${(res.driver_thermal_efficiency_pct || 36.5).toFixed(1)}</td>
+                <td><b>Tasarım Isıl Verimi (Gaz Türbini Sürücüsü)</b></td>
+                <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">${driverThermEffPct.toFixed(1)}</td>
                 <td>%</td>
               </tr>
             </tbody>
@@ -452,18 +539,76 @@ export function renderResultsView(container) {
 
       case "envelope": {
         const env = proj.charts?.operating_envelope?.operating_point || {};
+        const topUnit = units[0] || null;
         const qAcmh = env.q_acmh || (res.inlet_vol_flow_acmh_per_unit || (res.mass_flow_per_unit_kgs ? (res.mass_flow_per_unit_kgs / (rhoIn || 35.0) * 3600) : 25000));
-        const surgeMargin = env.surge_margin_pct !== undefined ? env.surge_margin_pct : 47.1;
-        const chokeMargin = env.choke_margin_pct !== undefined ? env.choke_margin_pct : 34.0;
-        const sllTriggerFlow = Math.round(qAcmh / (1.0 + (surgeMargin / 100.0)));
+
+        const hasOemSurge = topUnit && topUnit.surge_margin_pct !== null && topUnit.surge_margin_pct !== undefined;
+        const hasOemChoke = topUnit && topUnit.stonewall_margin_pct !== null && topUnit.stonewall_margin_pct !== undefined;
+
+        const surgeMarginVal = hasOemSurge
+          ? Number(topUnit.surge_margin_pct)
+          : (env.surge_margin_pct !== undefined && env.surge_margin_pct !== null ? Number(env.surge_margin_pct) : null);
+        const chokeMarginVal = hasOemChoke
+          ? Number(topUnit.stonewall_margin_pct)
+          : (env.choke_margin_pct !== undefined && env.choke_margin_pct !== null ? Number(env.choke_margin_pct) : null);
+
+        const sllTriggerFlow = surgeMarginVal !== null && surgeMarginVal > -95
+          ? Math.round(qAcmh / (1.0 + (surgeMarginVal / 100.0)))
+          : Math.round(qAcmh * 0.68);
         const asclTriggerFlow = Math.round(sllTriggerFlow * 1.10);
+
+        let surgeBadgeClass = "badge-info";
+        let surgeBadgeText = "Parametrik Zarf (OEM Eğrisi Yok)";
+        if (surgeMarginVal !== null) {
+          if (surgeMarginVal < 10.0 || topUnit?.meets_api617_surge === false) {
+            surgeBadgeClass = "badge-danger";
+            surgeBadgeText = `Surge Riski! (+%${surgeMarginVal.toFixed(1)} < %10 API 617)`;
+          } else if (surgeMarginVal < 15.0) {
+            surgeBadgeClass = "badge-warning";
+            surgeBadgeText = `Sınırda Koruma (+%${surgeMarginVal.toFixed(1)})`;
+          } else if (hasOemSurge) {
+            surgeBadgeClass = "badge-success";
+            surgeBadgeText = `API 617 Uyumlu (+%${surgeMarginVal.toFixed(1)} OEM Doğrulanmış)`;
+          } else {
+            surgeBadgeClass = "badge-info";
+            surgeBadgeText = `Parametrik Zarf (+%${surgeMarginVal.toFixed(1)} • OEM Sınır Verisi Yok)`;
+          }
+        }
+
+        let chokeBadgeClass = "badge-info";
+        let chokeBadgeText = "Parametrik Zarf (OEM Eğrisi Yok)";
+        if (chokeMarginVal !== null) {
+          if (chokeMarginVal < 5.0) {
+            chokeBadgeClass = "badge-danger";
+            chokeBadgeText = `Boğulma (Stonewall) Riski! (+%${chokeMarginVal.toFixed(1)})`;
+          } else if (chokeMarginVal < 15.0) {
+            chokeBadgeClass = "badge-warning";
+            chokeBadgeText = `Choke Sınırına Yakın (+%${chokeMarginVal.toFixed(1)})`;
+          } else if (hasOemChoke) {
+            chokeBadgeClass = "badge-success";
+            chokeBadgeText = `Stonewall Güvenli (+%${chokeMarginVal.toFixed(1)} OEM Doğrulanmış)`;
+          } else {
+            chokeBadgeClass = "badge-info";
+            chokeBadgeText = `Parametrik Zarf (+%${chokeMarginVal.toFixed(1)} • OEM Sınır Verisi Yok)`;
+          }
+        }
+
+        const headerEnvBadgeClass = (surgeBadgeClass === "badge-danger" || chokeBadgeClass === "badge-danger")
+          ? "badge-danger"
+          : (hasOemSurge && hasOemChoke ? "badge-success" : "badge-info");
+        const headerEnvBadgeText = (surgeBadgeClass === "badge-danger" || chokeBadgeClass === "badge-danger")
+          ? "⚠️ API 617 / PTC 10 Zarf Sınır İhlali"
+          : (hasOemSurge && hasOemChoke ? "OEM Haritası Doğrulanmış (API 617 Uyumlu)" : "Tipik Boyutsuz Kompresör Haritası (Parametrik)");
+
+        const surgeDisplayStr = surgeMarginVal !== null ? `${surgeMarginVal >= 0 ? "+" : ""}${surgeMarginVal.toFixed(1)}%` : "Veri Yok";
+        const chokeDisplayStr = chokeMarginVal !== null ? `${chokeMarginVal >= 0 ? "+" : ""}${chokeMarginVal.toFixed(1)}%` : "Veri Yok";
 
         subTabContentHtml = `
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px;">
             <div class="card" style="padding: 10px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3);">
               <div style="font-size: 11px; font-weight: 600; color: #10b981;">Surge Emniyet Marjı (SLL)</div>
-              <div style="font-size: 18px; font-weight: 700; color: #10b981; margin: 4px 0;">+${surgeMargin.toFixed(1)}%</div>
-              <div style="font-size: 10px; color: var(--color-text-secondary);">API 617 Min: ≥ %10 (Güvenli Bölge)</div>
+              <div style="font-size: 18px; font-weight: 700; color: ${surgeBadgeClass === 'badge-danger' ? '#ef4444' : '#10b981'}; margin: 4px 0;">${surgeDisplayStr}</div>
+              <div style="font-size: 10px; color: var(--color-text-secondary);">${hasOemSurge ? 'API 617 Min: ≥ %10 (OEM Haritası)' : 'Parametrik Zarf (OEM Eğrisi Yok)'}</div>
             </div>
 
             <div class="card" style="padding: 10px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.3);">
@@ -480,17 +625,17 @@ export function renderResultsView(container) {
 
             <div class="card" style="padding: 10px; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.3);">
               <div style="font-size: 11px; font-weight: 600; color: #8b5cf6;">Boğulma / Choke Marjı</div>
-              <div style="font-size: 18px; font-weight: 700; color: #8b5cf6; margin: 4px 0;">+${chokeMargin.toFixed(1)}%</div>
-              <div style="font-size: 10px; color: var(--color-text-secondary);">Stonewall Sınırına Mesafe</div>
+              <div style="font-size: 18px; font-weight: 700; color: ${chokeBadgeClass === 'badge-danger' ? '#ef4444' : '#8b5cf6'}; margin: 4px 0;">${chokeDisplayStr}</div>
+              <div style="font-size: 10px; color: var(--color-text-secondary);">${hasOemChoke ? 'OEM Stonewall Sınırına Mesafe' : 'Parametrik Stonewall Tahmini'}</div>
             </div>
           </div>
 
           <div style="border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 12px; margin-bottom: 16px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
               <div style="font-weight: 700; font-size: 12px; color: var(--color-primary);">
                 🌀 Etkileşimli Çalışma Zarfı ve Hız Eğrileri (%70 - %105 MCS Devri)
               </div>
-              <span class="badge badge-success">API 617 / ASME PTC 10 Standartlarına Tam Uyumlu</span>
+              <span class="badge ${headerEnvBadgeClass}">${escapeHtml(headerEnvBadgeText)}</span>
             </div>
             <div id="subtab-chart-envelope" style="width: 100%; height: 350px;"></div>
           </div>
@@ -509,9 +654,9 @@ export function renderResultsView(container) {
               <tr>
                 <td><b>Surge Kontrol Marjı (ASCL ΔQ)</b></td>
                 <td>API 617 Kısım 2 / PTC 10</td>
-                <td style="font-family: var(--font-mono); font-weight: 600; color: #10b981;">+${surgeMargin.toFixed(1)}%</td>
+                <td style="font-family: var(--font-mono); font-weight: 600;">${surgeDisplayStr}</td>
                 <td>Min. +%10.0 marj</td>
-                <td><span class="badge badge-success">Mükemmel (Güvenli Bölge)</span></td>
+                <td><span class="badge ${surgeBadgeClass}">${escapeHtml(surgeBadgeText)}</span></td>
               </tr>
               <tr>
                 <td><b>Anti-Surge Geri Dönüş Hattı (ASV)</b></td>
@@ -523,9 +668,9 @@ export function renderResultsView(container) {
               <tr>
                 <td><b>Stonewall (Choke) Marjı</b></td>
                 <td>ASME PTC 10</td>
-                <td style="font-family: var(--font-mono);">+${chokeMargin.toFixed(1)}%</td>
+                <td style="font-family: var(--font-mono);">${chokeDisplayStr}</td>
                 <td>Min. +%15.0 marj</td>
-                <td><span class="badge badge-success">Akış Boğulması Riski Yok</span></td>
+                <td><span class="badge ${chokeBadgeClass}">${escapeHtml(chokeBadgeText)}</span></td>
               </tr>
               <tr>
                 <td><b>Maksimum Sürekli Hız (MCS)</b></td>
@@ -572,22 +717,67 @@ export function renderResultsView(container) {
 
       case "fallback":
         subTabContentHtml = `
-          <div style="font-size: 11px; color: var(--color-text-secondary); margin-bottom: 8px;">
-            Çoklu Yol Yöntemleri Tutarlılık Kıyaslaması (Benchmark):
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+            <div style="font-size: 11px; color: var(--color-text-secondary);">
+              Çoklu Yol Yöntemleri Tutarlılık Kıyaslaması &amp; EOS Fallback İzleme:
+            </div>
+            <span class="badge ${isFallbackUsed ? 'badge-warning' : 'badge-success'}">
+              ${isFallbackUsed ? `EOS Fallback Kullanıldı (${res.fallback_call_count || 1} çağrı)` : 'Gerçek EOS Aktif (Fallback Yok)'}
+            </span>
           </div>
           <table class="kasp-table">
-            <thead><tr><th>Hesaplama Metodu</th><th>Güç (kW)</th><th>Politropik Verim</th><th>Fark (%)</th><th>Durum</th></tr></thead>
+            <thead><tr><th>Hesaplama Metodu</th><th>Güç (kW)</th><th>Politropik Verim</th><th>Yakınsama / Durum</th></tr></thead>
             <tbody>
-              <tr><td><b>Seçilen (Metot 6: Schultz 3-Üslü)</b></td><td>${powerShaftTotalKw.toFixed(1)}</td><td>%${polyEff.toFixed(2)}</td><td>0.0%</td><td><span class="badge badge-success">Referans</span></td></tr>
-              <tr><td>Metot 5: Huntington-RK45</td><td>${(powerShaftTotalKw * 1.002).toFixed(1)}</td><td>%${(polyEff * 0.998).toFixed(2)}</td><td>+0.2%</td><td><span class="badge badge-success">Uyumlu</span></td></tr>
-              <tr><td>Metot 4: Doğrudan H-S</td><td>${(powerShaftTotalKw * 0.997).toFixed(1)}</td><td>%${(polyEff * 1.003).toFixed(2)}</td><td>-0.3%</td><td><span class="badge badge-success">Uyumlu</span></td></tr>
+              <tr>
+                <td><b>Seçilen (${escapeHtml(res.calculation_method || proj.inputs?.calc_method || 'Metot 6')})</b></td>
+                <td>${powerShaftTotalKw.toFixed(1)}</td>
+                <td>%${polyEff.toFixed(2)}</td>
+                <td><span class="badge ${res.method_converged === false ? 'badge-warning' : 'badge-success'}">${res.method_converged === false ? 'Son Tahmin (Yakınsama Uyarısı)' : 'Referans (Yakınsadı)'}</span></td>
+              </tr>
+              ${(res.method_convergence || []).map(mc => `
+                <tr>
+                  <td>Kademe ${escapeHtml(mc.stage)} (${escapeHtml(mc.method_used || '-')})</td>
+                  <td>-</td>
+                  <td>İterasyon: ${escapeHtml(mc.iteration_count ?? 0)} / ${escapeHtml(mc.iteration_limit ?? '-')}</td>
+                  <td><span class="badge ${mc.converged ? 'badge-success' : 'badge-warning'}">${mc.converged ? 'Yakınsadı' : escapeHtml(mc.termination_reason || 'Yakınsamadı')}</span></td>
+                </tr>
+              `).join("")}
             </tbody>
           </table>
         `;
         break;
     }
 
+    const bannerSeverityDanger = isInvalidScope || isNotSelectable;
+    const showWarningBanner = bannerSeverityDanger || isFallbackUsed || designWarnings.length > 0;
+
     container.innerHTML = `
+      ${
+        showWarningBanner
+          ? `
+          <div id="results-warnings-banner" role="alert" aria-live="polite" style="margin-bottom: 12px; padding: 10px 14px; border-radius: var(--radius-md); background: ${bannerSeverityDanger ? 'rgba(239, 68, 68, 0.10)' : 'rgba(245, 158, 11, 0.10)'}; border: 1px solid ${bannerSeverityDanger ? 'rgba(239, 68, 68, 0.40)' : 'rgba(245, 158, 11, 0.40)'}; color: var(--color-text);">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: ${designWarnings.length > 0 ? '6px' : '0'};">
+              <div style="font-size: 12px; font-weight: 700; color: ${bannerSeverityDanger ? '#ef4444' : '#f59e0b'};">
+                ${bannerSeverityDanger ? '🚨 Kritik Seçilebilirlik / Termodinamik Kapsam Uyarısı' : '⚠️ Tasarım Doğrulama, VLE ve EOS Fallback Uyarıları'}
+              </div>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                ${isInvalidScope ? `<span class="badge badge-danger">Kapsam: GEÇERSİZ (INVALID)</span>` : ""}
+                ${!isInvalidScope && isNotSelectable ? `<span class="badge badge-danger">Kompresör Seçilemez (Kademe: ${escapeHtml((res.not_selectable_stages || []).join(", "))})</span>` : ""}
+                ${isFallbackUsed ? `<span class="badge badge-warning">EOS Fallback (${escapeHtml((res.fallback_stage_numbers || []).join(", ") || String(res.fallback_state_count || 1))})</span>` : ""}
+              </div>
+            </div>
+            ${
+              designWarnings.length > 0
+                ? `<ul style="margin: 0; padding-left: 18px; font-size: 11px; line-height: 1.45;">
+                    ${designWarnings.map(w => `<li>${escapeHtml(w)}</li>`).join("")}
+                   </ul>`
+                : ""
+            }
+          </div>
+          `
+          : ""
+      }
+
       <!-- KPI Metric Cards: Desktop & Station Parity (8 Cards) -->
       <div class="metrics-grid">
         <div class="metric-card">
@@ -619,7 +809,7 @@ export function renderResultsView(container) {
             <span class="metric-unit">kg/h</span>
           </div>
           <div style="font-size: 10px; color: var(--color-text-secondary); margin-top: 2px;">
-            Toplam: <strong style="color: #10b981;">${fuelTotalKgH > 0 ? fuelTotalKgH.toFixed(1) : '-'} kg/h</strong> (~${fuelTotalKgH > 0 ? (fuelTotalKgH / 0.772).toFixed(0) : '-'} Sm³/h)
+            Toplam: <strong style="color: #10b981;">${fuelTotalKgH > 0 ? fuelTotalKgH.toFixed(1) : '-'} kg/h</strong> (~${fuelTotalKgH > 0 ? fuelKghToSm3h(fuelTotalKgH).toFixed(0) : '-'} Sm³/h)
           </div>
         </div>
 
@@ -641,7 +831,7 @@ export function renderResultsView(container) {
             <span class="metric-unit">poly</span>
           </div>
           <div style="font-size: 10px; color: var(--color-text-secondary); margin-top: 2px;">
-            Hedef: %${(res.design_poly_efficiency || 82).toFixed(1)}
+            Hedef: %${targetPolyEff.toFixed(1)}
           </div>
         </div>
 
@@ -774,25 +964,44 @@ export function renderResultsView(container) {
                     const marginPct = Number(u.power_margin_pct !== undefined ? u.power_margin_pct : ((u.power_margin || 0) * 100));
                     const stationTotalPwrMw = (sitePower * numUnits) / 1000;
                     const heatRateVal = Number(u.site_heat_rate_kj_kwh || u.iso_heat_rate_kj_kwh || 0);
+                    const siteThermEffPct = Number(
+                      u.site_thermal_efficiency_pct || (heatRateVal > 0 ? 360000.0 / heatRateVal : 0)
+                    );
                     const score = Number(u.selection_score || 85.0);
 
-                    // Estimate annual OPEX (fuel + carbon) for this turbine driving the compressor unit
+                    // Estimate annual OPEX (fuel + carbon) using un-margined coupling power & EOS/MW standard density
                     const lhvVal = lhv > 0 ? lhv : 47000;
                     const hrForOpex = heatRateVal > 0 ? heatRateVal : 10500;
-                    const unitFuelKgH = (powerUnitKw * hrForOpex) / lhvVal;
-                    const annualFuelSm3 = (unitFuelKgH / 0.772) * 8000;
+                    const couplingKw = powerMotorPerUnitKw > 0 ? powerMotorPerUnitKw : powerUnitKw;
+                    const unitFuelKgH = (couplingKw * hrForOpex) / lhvVal;
+                    const annualFuelSm3 = fuelKghToSm3h(unitFuelKgH) * 8000;
                     const annualFuelCost = annualFuelSm3 * 0.35;
                     const annualCo2Ton = (unitFuelKgH * 2.75 * 8000) / 1000;
                     const annualCo2Cost = annualCo2Ton * 50.0;
                     const unitAnnualOpex = annualFuelCost + annualCo2Cost;
 
+                    const unitSurge = u.surge_margin_pct != null ? Number(u.surge_margin_pct) : null;
+                    const unitChoke = u.stonewall_margin_pct != null ? Number(u.stonewall_margin_pct) : null;
+                    const surgeRisk = u.meets_api617_surge === false || (unitSurge !== null && unitSurge < 10);
+                    const chokeRisk = unitChoke !== null && unitChoke < 5;
+                    const statusBadgeClass = (surgeRisk || chokeRisk)
+                      ? "badge-danger"
+                      : ((unitSurge !== null && unitSurge < 15) ? "badge-warning" : "badge-success");
+                    const statusBadgeText = surgeRisk
+                      ? `Surge Riski (${score.toFixed(0)})`
+                      : (chokeRisk ? `Choke Riski (${score.toFixed(0)})` : `Uygun (${score.toFixed(0)})`);
+                    const marginSubline = unitSurge !== null
+                      ? `<div style="font-size: 9px; color: var(--color-text-secondary); margin-top: 2px;">Surge +%${unitSurge.toFixed(1)}${unitChoke !== null ? ` • Choke +%${unitChoke.toFixed(1)}` : ""}</div>`
+                      : "";
+                    const modelDisplay = u.model || u.name || "Türbin";
+
                     return `
                       <tr>
                         <td>
-                          <b>${u.model || u.name || ''}</b>
-                          <div style="font-size: 10px; color: var(--color-text-secondary);">${u.manufacturer || 'Genel'}</div>
+                          <b>${escapeHtml(modelDisplay)}</b>
+                          <div style="font-size: 10px; color: var(--color-text-secondary);">${escapeHtml(u.manufacturer || 'Genel')}</div>
                         </td>
-                        <td><span class="badge badge-info">${u.type || 'Endüstriyel'}</span></td>
+                        <td><span class="badge badge-info">${escapeHtml(u.type || 'Endüstriyel')}</span></td>
                         <td style="text-align: right; font-family: var(--font-mono); font-weight: 700; color: #0284c7;">
                           ${sitePower.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} kW
                         </td>
@@ -809,15 +1018,31 @@ export function renderResultsView(container) {
                           ${stationTotalPwrMw.toFixed(2)} MW
                         </td>
                         <td style="text-align: right; font-family: var(--font-mono);">
-                          ${heatRateVal > 0 ? Math.round(heatRateVal).toLocaleString('tr-TR') : '-'} kJ/kWh
+                          <div>${heatRateVal > 0 ? Math.round(heatRateVal).toLocaleString('tr-TR') : '-'} kJ/kWh</div>
+                          ${
+                            siteThermEffPct > 0
+                              ? `<div style="display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 3px;">
+                                   <span style="font-size: 10px; color: var(--color-text-secondary);">ηth %${siteThermEffPct.toFixed(1)}</span>
+                                   <button
+                                     type="button"
+                                     class="btn btn-sm turbine-apply-eff-btn"
+                                     data-eff="${siteThermEffPct.toFixed(2)}"
+                                     data-model="${escapeHtml(modelDisplay)}"
+                                     aria-label="${escapeHtml(`${t("btn_apply_turbine_eff", ui.lang)} (${modelDisplay} %${siteThermEffPct.toFixed(1)})`)}"
+                                     style="min-block-size: 24px; padding: 2px 6px; font-size: 10px;"
+                                   >${escapeHtml(t("btn_apply_turbine_eff", ui.lang))}</button>
+                                 </div>`
+                              : ""
+                          }
                         </td>
                         <td style="text-align: right; font-family: var(--font-mono); font-weight: 600; color: #f59e0b;" title="Yakıt: $${(annualFuelCost / 1e6).toFixed(2)}M • Karbon: $${(annualCo2Cost / 1e3).toFixed(0)}k">
                           $${(unitAnnualOpex / 1e6).toFixed(2)}M / yıl
                         </td>
                         <td style="text-align: center;">
-                          <span class="badge badge-success" title="Seçim Skoru: ${score.toFixed(1)}/100">
-                            Uygun (${score.toFixed(0)})
+                          <span class="badge ${statusBadgeClass}" title="Seçim Skoru: ${score.toFixed(1)}/100">
+                            ${statusBadgeText}
                           </span>
+                          ${marginSubline}
                         </td>
                       </tr>
                     `;
@@ -835,7 +1060,7 @@ export function renderResultsView(container) {
               🌡️ Gaz Türbini Ortam Sıcaklığı Güç Düşümü & Derate Eğrileri (ISO 2314: -20°C ila +50°C)
             </div>
             <span class="badge badge-info">
-              Tasarım Ortam Sıcaklığı: ${proj.inputs?.t_amb || 19}°C • Rakım: ${proj.inputs?.altitude || 0} m
+              Tasarım Ortam Sıcaklığı: ${proj.inputs?.ambient_temp ?? proj.inputs?.t_amb ?? 19}°C • Rakım: ${proj.inputs?.altitude ?? 0} m
             </span>
           </div>
           <div id="results-chart-derate" style="width: 100%; height: 320px;"></div>
@@ -848,6 +1073,20 @@ export function renderResultsView(container) {
       btn.addEventListener("click", () => {
         const sub = btn.getAttribute("data-subtab");
         setActiveSubTab(sub);
+      });
+    });
+
+    // Bind OEM turbine efficiency sync buttons
+    container.querySelectorAll(".turbine-apply-eff-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const effVal = parseFloat(btn.getAttribute("data-eff"));
+        const modelName = btn.getAttribute("data-model") || "Türbin";
+        if (!Number.isFinite(effVal) || effVal <= 0) return;
+        updateInput("therm_eff", effVal);
+        showToast(`${modelName} saha ısıl verimi (%${effVal.toFixed(1)}) uygulandı; yakıt hesabı güncelleniyor...`, "info");
+        try {
+          await runDesignCalculation();
+        } catch (_) {}
       });
     });
 
