@@ -264,7 +264,6 @@ alanını okur:
   `modules` ve `results.module_results` otomatik migrate edilir.
 
 ### 9.4 Gaz soğutucu ve kompresör boru hattı çap/geometri denetimi
-
 - `PipeSizingService.size_station_network` suction ve discharge header'ları aynı
   ticari NPS'te eşitler (büyük olan çap seçilir, diğeri yeniden boyutlandırılır).
 - 3D boru yarıçapları sabit değerler yerine `station_piping.lines[*].od_mm`
@@ -297,9 +296,25 @@ alanını okur:
 - Programatik segment denetimi: bağlantı noktaları hariç 0 boru-boru çakışması.
 - Ayrıntılar: `KASP_3D_PIPE_AUDIT.md`.
 
+### 9.5 Ekipman modelleri ve teardown popup
+
+- Gas cooler fin-fan geometrisi; tüp tabloları, header'lar, louver slatları,
+  fan halkaları, motor/kayış muhafazası ile detaylandırıldı.
+- Siklon seperatörlere inlet/outlet nozulları, drenaj, merdiven, bakım halkası
+  ve destekler eklendi.
+- CFS kartuş filtre gövdelerine dished kapaklar, saddle destekler, üst inlet
+  nozulu, uç outlet nozulu ve drenaj eklendi.
+- Siklon ve CFS inlet/outlet hatlarına, bağlı borunun ASME OD'sinden türetilen
+  aynı çapta ve flanşlı (raised-face + 6 cıvata) küresel vanalar yerleştirildi.
+- `equipmentTeardown.js`: gas cooler, siklon ve kartuş filtre için patlatılmış
+  3D popup; proses bilgileri, parça listesi, söküm slider'ı ve otomatik döndürme.
+- Ekipmana tıklandığında teardown popup otomatik açılır; HUD'da `🔧 Teardown Aç`
+  butonu da vardır.
+- Yeni yerel skill: `.agents/skills/equipment-teardown/SKILL.md`.
+
 ## 10. Son test durumu
 
-- **Tam test seti:** `466 passed, 12 skipped, 0 failed`.
+- **Tam test seti:** `543 passed, 12 skipped, 0 failed`.
 - JS syntax kontrolleri geçti.
 
 ## 11. Kalan tek kapsam

@@ -14,10 +14,92 @@
  */
 
 import { icon } from "../../vendor/icons.js";
-import { projectStore, setModuleResult, setStationData } from "../store/projectStore.js";
-import { showToast } from "../store/uiStore.js";
+import {
+  projectStore,
+  setModuleResult,
+  setStationData,
+  convertFlowWithMW,
+  convertPressureToBarA,
+  convertTempToC,
+  escapeHtml,
+} from "../store/projectStore.js";
+import { showToast, uiStore } from "../store/uiStore.js";
+import { t } from "../i18n/locales.js";
 import { api } from "../api/client.js";
 import { createStation3dView } from "./station3dView.js";
+
+function normalizeWarningItem(w, prefix = "") {
+  let msg = "";
+  if (typeof w === "string") msg = w.trim();
+  else if (w && typeof w === "object" && w.message) {
+    msg = w.field ? `[${w.field}] ${w.message}` : String(w.message).trim();
+  }
+  if (!msg) return "";
+  if (prefix && !msg.startsWith("[") && !msg.toUpperCase().startsWith(prefix.replace(/[\[\]]/g, "").toUpperCase())) {
+    return `${prefix} ${msg}`;
+  }
+  return msg;
+}
+
+function collectStationWarnings(stationData) {
+  if (!stationData) return [];
+  const seen = new Set();
+  const warnedErosionTags = new Set();
+  const list = [];
+  const canonicalKey = (str) =>
+    String(str || "")
+      .replace(/^(\[[^\]]+\]\s*|ASV:\s*|PCV:\s*|TCV:\s*|PSV:\s*|Hava Soğutucu:\s*|Boru Ağı:\s*)/i, "")
+      .trim()
+      .toLowerCase();
+
+  const pushAll = (arr, prefix = "") => {
+    if (!Array.isArray(arr)) return;
+    for (const item of arr) {
+      const text = normalizeWarningItem(item, prefix);
+      const key = canonicalKey(text);
+      if (text && key && !seen.has(key)) {
+        seen.add(key);
+        list.push(text);
+        const tagMatch = text.match(/\b(L-\d{3})\b/);
+        if (tagMatch && /erozyon|hız/i.test(text)) {
+          warnedErosionTags.add(tagMatch[1]);
+        }
+      }
+    }
+  };
+
+  pushAll(stationData.warnings);
+  const eq = stationData.equipment_sizing || {};
+  pushAll(eq.turbo_compressors?.anti_surge_valve_sizing_warnings, "[ASV]");
+  pushAll(eq.turbo_compressors?.anti_surge_valve_sizing?.warnings, "[ASV]");
+  pushAll(eq.station_recycle?.pcv_sizing_warnings, "[PCV]");
+  pushAll(eq.station_recycle?.pcv_sizing?.warnings, "[PCV]");
+  pushAll(eq.air_coolers?.cooler_bypass_valve_sizing_warnings, "[TCV]");
+  pushAll(eq.air_coolers?.cooler_bypass_valve_sizing?.warnings, "[TCV]");
+  pushAll(eq.air_coolers?.detailed_design_warnings, "[Hava Soğutucu]");
+  pushAll(eq.safety_relief_and_blowdown?.psv_sizing_warnings, "[PSV]");
+  pushAll(eq.safety_relief_and_blowdown?.psv_sizing?.warnings, "[PSV]");
+  pushAll(stationData.station_piping?.warnings, "[Borulama]");
+
+  const linesMap = stationData.station_piping?.lines || {};
+  for (const line of Object.values(linesMap)) {
+    if (!line || typeof line !== "object") continue;
+    const tag = line.tag || line.line_id || "Hat";
+    const evr = Number(line.erosion_ratio_pct || 0);
+    const vel = Number(line.actual_velocity_ms || 0);
+    if (!warnedErosionTags.has(tag)) {
+      if (evr >= 100.0) {
+        pushAll([`${tag} (${line.name || ""}): API RP 14E erozyon hızı aşıldı (EVR=%${evr.toFixed(1)}, v=${vel.toFixed(2)} m/s).`], "[Erozyon]");
+      } else if (evr >= 80.0 || vel > 18.0) {
+        pushAll([`${tag} (${line.name || ""}): Yüksek gaz hızı / erozyon sınırı yakın (EVR=%${evr.toFixed(1)}, v=${vel.toFixed(2)} m/s).`], "[Erozyon]");
+      }
+    }
+    if (line.standard_recommendation && line.standard_recommendation.is_sufficient === false) {
+      pushAll([`${tag}: Seçilen et kalınlığı standart minimum değerin altında.`], "[Borulama]");
+    }
+  }
+  return list;
+}
 
 export function renderStationTab(container) {
   let stationData = null;
@@ -31,27 +113,26 @@ export function renderStationTab(container) {
 
   const projState = projectStore.getState();
 
-  function toKgs(value, unit) {
+  function toKgs(value, unit, gasComp) {
     const raw = Number(value) || 0;
-    const u = unit || "kg/s";
-    if (u === "kg/h") return raw / 3600.0;
-    if (u === "Sm³/h" || u === "m3/h" || u === "Sm3/h" || u === "Nm³/h" || u === "Nm3/h") return (raw * 0.772) / 3600.0;
-    if (u === "MMSCFD") return raw * 0.320;
-    if (u === "MMSCMD") return (raw * 1e6 * 0.772) / 86400.0;
-    return raw;
+    if (raw <= 0) return 0;
+    return convertFlowWithMW(raw, unit || "kg/s", "kg/s", gasComp || projectStore.getState().inputs?.gas_comp);
   }
 
   const initFlow = toKgs(
     projState?.inputs?.flow ?? projState?.inputs?.mass_flow ?? 120.0,
-    projState?.inputs?.flow_unit || "kg/s"
+    projState?.inputs?.flow_unit || "kg/s",
+    projState?.inputs?.gas_comp
   );
-  const initPin = projState?.inputs?.p_in || 45.0;
-  const initPout = projState?.inputs?.p_out || 75.0;
+  const initPin = convertPressureToBarA(projState?.inputs?.p_in ?? 45.0, projState?.inputs?.p_in_unit || "bar(a)") || 45.0;
+  const initPout = convertPressureToBarA(projState?.inputs?.p_out ?? 75.0, projState?.inputs?.p_out_unit || "bar(a)") || 75.0;
+  const initTin = convertTempToC(projState?.inputs?.t_in ?? 25.0, projState?.inputs?.t_in_unit || "°C");
 
   let stationInputs = {
-    mass_flow: Number(initFlow),
-    p_in: Number(initPin),
-    p_out: Number(initPout),
+    mass_flow: Math.round(Number(initFlow) * 100) / 100,
+    p_in: Math.round(Number(initPin) * 100) / 100,
+    p_out: Math.round(Number(initPout) * 100) / 100,
+    t_in: Math.round(Number(initTin) * 10) / 10,
     comp_op_count: Number(projState?.inputs?.num_units || 0),
     cyclone_op_count: 0,
     filter_op_count: 0,
@@ -81,8 +162,14 @@ export function renderStationTab(container) {
       const mergedInputs = {
         ...proj.inputs,
         mass_flow: stationInputs.mass_flow,
+        flow: stationInputs.mass_flow,
+        flow_unit: "kg/s",
         p_in: stationInputs.p_in,
+        p_in_unit: "bar(a)",
         p_out: stationInputs.p_out,
+        p_out_unit: "bar(a)",
+        t_in: stationInputs.t_in,
+        t_in_unit: "°C",
         pipe_material: stationInputs.pipe_material,
         design_factor_F: stationInputs.design_factor_F,
         pipe_standard: stationInputs.pipe_standard,
@@ -126,30 +213,52 @@ export function renderStationTab(container) {
   }
 
   let lastResultsRef = projectStore.getState().results;
+  let lastThermoSig = JSON.stringify({
+    gas_comp: projState?.inputs?.gas_comp,
+    eos_model: projState?.inputs?.eos_model,
+    calc_method: projState?.inputs?.calc_method,
+    poly_eff: projState?.inputs?.poly_eff,
+  });
   const unsubscribeStore = projectStore.subscribe(() => {
     const s = projectStore.getState();
     if (s?.inputs && !isLoading) {
       const rawF = Number(s.inputs.flow || s.inputs.mass_flow || 0);
-      const fKgs = toKgs(rawF, s.inputs.flow_unit || "kg/s");
+      const fKgs = Math.round(toKgs(rawF, s.inputs.flow_unit || "kg/s", s.inputs.gas_comp) * 100) / 100;
 
-      const pin = Number(s.inputs.p_in || 0);
-      const pout = Number(s.inputs.p_out || 0);
+      const pin = Math.round(convertPressureToBarA(s.inputs.p_in || 0, s.inputs.p_in_unit || "bar(a)") * 100) / 100;
+      const pout = Math.round(convertPressureToBarA(s.inputs.p_out || 0, s.inputs.p_out_unit || "bar(a)") * 100) / 100;
+      const tin = Math.round(convertTempToC(s.inputs.t_in ?? 25.0, s.inputs.t_in_unit || "°C") * 10) / 10;
+      const nextSig = JSON.stringify({
+        gas_comp: s.inputs.gas_comp,
+        eos_model: s.inputs.eos_model,
+        calc_method: s.inputs.calc_method,
+        poly_eff: s.inputs.poly_eff,
+      });
+
       let changed = false;
-      if (fKgs > 0 && Math.abs(fKgs - stationInputs.mass_flow) > 0.5) {
+      if (fKgs > 0 && Math.abs(fKgs - stationInputs.mass_flow) > 0.05) {
         stationInputs.mass_flow = fKgs;
         changed = true;
       }
-      if (pin > 0 && Math.abs(pin - stationInputs.p_in) > 0.5) {
+      if (pin > 0 && Math.abs(pin - stationInputs.p_in) > 0.05) {
         stationInputs.p_in = pin;
         changed = true;
       }
-      if (pout > 0 && Math.abs(pout - stationInputs.p_out) > 0.5) {
+      if (pout > 0 && Math.abs(pout - stationInputs.p_out) > 0.05) {
         stationInputs.p_out = pout;
+        changed = true;
+      }
+      if (Number.isFinite(tin) && Math.abs(tin - stationInputs.t_in) > 0.1) {
+        stationInputs.t_in = tin;
         changed = true;
       }
       const nUnits = Number(s.inputs.num_units || 0);
       if (nUnits > 0 && nUnits !== stationInputs.comp_op_count) {
         stationInputs.comp_op_count = nUnits;
+        changed = true;
+      }
+      if (nextSig !== lastThermoSig) {
+        lastThermoSig = nextSig;
         changed = true;
       }
       if (s.results !== lastResultsRef) {
@@ -168,7 +277,8 @@ export function renderStationTab(container) {
       return;
     }
     const { equipment_sizing: eq, station_summary: sm } = stationData;
-    inspMount.innerHTML = renderInspectorDrawer(selectedEquip, eq, sm);
+    const gasComp = projectStore.getState().inputs?.gas_comp;
+    inspMount.innerHTML = renderInspectorDrawer(selectedEquip, eq, sm, gasComp);
     inspMount.querySelector("#btn-close-inspector")?.addEventListener("click", () => {
       selectedEquip = null;
       updateInspectorDrawer();
@@ -183,8 +293,11 @@ export function renderStationTab(container) {
       try {
         const inputs = projectStore.getState().inputs;
         const dischargeNode = (stationData.nodes || []).find(n => n.id === "N05_COMPRESSOR_DISCHARGE") || stationData.nodes?.[4] || {};
+        const eosLower = String(inputs.eos_model || "pr").toLowerCase();
+        const acEos = eosLower === "srk" ? "SRK" : (eosLower === "coolprop" || eosLower === "gerg2008" ? "HEOS" : "PR");
         const payload = {
           composition: inputs.gas_comp,
+          eos: acEos,
           mass_flow_kgs: stationInputs.mass_flow,
           p_in_bar: stationInputs.p_out,
           p_out_bar: Math.max(1.0, stationInputs.p_out - 0.4),
@@ -211,13 +324,13 @@ export function renderStationTab(container) {
               <tr><td>Gaz ΔP</td><td>${Number(r.gas_pressure_drop_bar || 0).toFixed(3)} bar</td></tr>
               <tr><td>Fan Gücü</td><td>${Number(r.fan_power_kw || 0).toFixed(1)} kW</td></tr>
               <tr><td>Fan Uç Hızı</td><td>${Number(r.fan_tip_speed_ms || 0).toFixed(1)} m/s</td></tr>
-              <tr><td>Geometri</td><td>${r.geometry?.tube_rows || '-'} sıra × ${r.geometry?.tubes_per_row || '-'} tüp</td></tr>
+              <tr><td>Geometri</td><td>${escapeHtml(r.geometry?.tube_rows || '-')} sıra × ${escapeHtml(r.geometry?.tubes_per_row || '-')} tüp</td></tr>
             </table>
-            ${(res.warnings || []).length ? `<div style="font-size:10px;color:#f59e0b;margin-top:4px;">${res.warnings.join("<br>")}</div>` : ''}
+            ${(res.warnings || []).length ? `<div role="alert" style="font-size:10px;color:#f59e0b;margin-top:4px;">${res.warnings.map(w => escapeHtml(w)).join("<br>")}</div>` : ''}
           `;
         }
       } catch (err) {
-        if (detail) detail.innerHTML = `<div style="font-size:11px;color:#ef4444;">Hata: ${err.message}</div>`;
+        if (detail) detail.innerHTML = `<div role="alert" style="font-size:11px;color:#ef4444;">Hata: ${escapeHtml(err.message)}</div>`;
       } finally {
         btn.disabled = false;
         btn.textContent = originalText;
@@ -301,6 +414,8 @@ export function renderStationTab(container) {
     }
 
     const { station_summary: sm, equipment_sizing: eq, nodes } = stationData;
+    const activeGasComp = projectStore.getState().inputs?.gas_comp;
+    const stationWarnings = collectStationWarnings(stationData);
 
     container.innerHTML = `
       <div style="flex: 1; padding: 16px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;">
@@ -327,7 +442,7 @@ export function renderStationTab(container) {
               ${sm.pressure_ratio} : 1
             </div>
             <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
-              ${sm.suction_pressure_bar} → ${sm.discharge_pressure_bar} bar(a)
+              ${sm.suction_pressure_bar} → ${sm.discharge_pressure_bar} bar(a) • T_in: ${stationInputs.t_in.toFixed(1)}°C
             </div>
           </div>
 
@@ -380,15 +495,33 @@ export function renderStationTab(container) {
           </div>
         </div>
 
+        ${
+          stationWarnings.length > 0
+            ? `
+            <div id="station-warnings-banner" role="alert" aria-live="polite" style="padding: 10px 14px; border-radius: var(--radius-md); background: rgba(245, 158, 11, 0.10); border: 1px solid rgba(245, 158, 11, 0.35); color: var(--color-text);">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
+                <div style="font-size: 12px; font-weight: 700; color: #f59e0b;">
+                  ⚠️ İstasyon Ekipman, Vana (ASV/PCV/TCV/PSV) ve Hidrolik Erozyon Uyarıları (${stationWarnings.length})
+                </div>
+                <span class="badge badge-warning" style="font-size: 10px;">IEC 60534 / API 520 / API RP 14E</span>
+              </div>
+              <ul style="margin: 0; padding-left: 18px; font-size: 11px; line-height: 1.45; color: var(--color-text);">
+                ${stationWarnings.map(w => `<li>${escapeHtml(w)}</li>`).join("")}
+              </ul>
+            </div>
+            `
+            : ""
+        }
+
         <!-- Live Station Operating Parameters & Dynamic Pipe Sizing Bar (Natural Gas Flow Calc) -->
-        ${renderLiveParamsBar(stationInputs, isParamsPanelOpen)}
+        ${renderLiveParamsBar(stationInputs, isParamsPanelOpen, activeGasComp)}
 
         <!-- View Mode Selector Bar & Quick Legend -->
         <div style="display: flex; justify-content: space-between; align-items: center; background: var(--color-surface); padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--color-border); flex-wrap: wrap; gap: 8px;">
           <div style="display: flex; gap: 6px; align-items: center;">
             <span style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); margin-right: 4px; text-transform: uppercase;">Görünüm:</span>
             <button id="btn-mode-3d" class="btn btn-sm ${viewMode === '3d' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
-              <span>🧊 3D Dijital İkiz (CAD & LNG Mimari)</span>
+              <span>🧊 3D Dijital İkiz (CAD Mimari)</span>
             </button>
             <button id="btn-mode-2d" class="btn btn-sm ${viewMode === '2d' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
               <span>📐 2D P&ID Akış Şeması</span>
@@ -426,7 +559,7 @@ export function renderStationTab(container) {
 
           <!-- Equipment Inspector Drawer Container -->
           <div id="station-inspector-mount">
-            ${selectedEquip ? renderInspectorDrawer(selectedEquip, eq, sm) : ""}
+            ${selectedEquip ? renderInspectorDrawer(selectedEquip, eq, sm, activeGasComp) : ""}
           </div>
         </div>
 
@@ -622,10 +755,12 @@ export function renderStationTab(container) {
     });
 
     container.querySelector("#btn-reset-station-params")?.addEventListener("click", () => {
+      const cur = projectStore.getState().inputs || {};
       stationInputs = {
         mass_flow: 120.0,
         p_in: 45.0,
         p_out: 75.0,
+        t_in: Math.round(convertTempToC(cur.t_in ?? 25.0, cur.t_in_unit || "°C") * 10) / 10,
         comp_op_count: 0,
         cyclone_op_count: 0,
         filter_op_count: 0,
@@ -1169,7 +1304,18 @@ function renderDynamicCoolersSvg(count, info) {
 /**
  * Renders the floating inspection drawer when an equipment item is clicked.
  */
-function renderInspectorDrawer(key, eq, sm) {
+function renderDrawerWarnings(warningsList) {
+  const cleaned = (warningsList || []).map(w => normalizeWarningItem(w)).filter(Boolean);
+  if (!cleaned.length) return "";
+  return `
+    <div role="alert" style="margin-top: 8px; padding: 6px 8px; border-radius: var(--radius-sm); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); font-size: 10px; color: #f59e0b;">
+      <div style="font-weight: 700; margin-bottom: 2px;">⚠️ Mühendislik Uyarıları:</div>
+      ${cleaned.map(w => `<div>• ${escapeHtml(w)}</div>`).join("")}
+    </div>
+  `;
+}
+
+function renderInspectorDrawer(key, eq, sm, gasComp) {
   let title = "Ekipman Teftişi";
   let content = "";
 
@@ -1213,6 +1359,12 @@ function renderInspectorDrawer(key, eq, sm) {
       </div>
     `;
   } else if (key === "turbo_compressors") {
+    const unitFuelKgh = eq.turbo_compressors.power_per_unit_kw * 0.195;
+    const unitFuelSm3h = convertFlowWithMW(unitFuelKgh, "kg/h", "Sm³/h", gasComp);
+    const asvWarn = [
+      ...(eq.turbo_compressors.anti_surge_valve_sizing_warnings || []),
+      ...(eq.turbo_compressors.anti_surge_valve_sizing?.warnings || []),
+    ];
     title = `Turbo-Kompresör Paketleri (${eq.turbo_compressors.configuration})`;
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
@@ -1220,17 +1372,22 @@ function renderInspectorDrawer(key, eq, sm) {
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
           <tr><td>Tren Başına Şaft Gücü</td><td>${eq.turbo_compressors.power_per_unit_kw.toLocaleString()} kW (${eq.turbo_compressors.power_per_unit_hp.toLocaleString()} HP)</td></tr>
           <tr><td>Tren Başına Gaz Debisi</td><td>${eq.turbo_compressors.flow_per_unit_kgs} kg/s</td></tr>
-          <tr><td>Tren Başına Yakıt Tüketimi</td><td>${(eq.turbo_compressors.power_per_unit_kw * 0.195).toFixed(1)} kg/h (~${((eq.turbo_compressors.power_per_unit_kw * 0.195)/0.772).toFixed(0)} Sm³/h)</td></tr>
+          <tr><td>Tren Başına Yakıt Tüketimi</td><td>${unitFuelKgh.toFixed(1)} kg/h (~${unitFuelSm3h.toFixed(0)} Sm³/h)</td></tr>
           <tr><td>Tahmini Isı Oranı (Heat Rate)</td><td>~10,285 kJ/kWh (%35 Termal Verim)</td></tr>
           <tr><td>Emiş Nozulu</td><td>${eq.turbo_compressors.suction_nozzle_size_in}</td></tr>
           <tr><td>Basma Nozulu</td><td>${eq.turbo_compressors.discharge_nozzle_size_in}</td></tr>
           <tr><td>Anti-Surge Valfi</td><td>ASV ${eq.turbo_compressors.anti_surge_valve_size_in}" (Stroking: &lt; ${eq.turbo_compressors.anti_surge_stroke_time_s}s)</td></tr>
-          ${eq.turbo_compressors.anti_surge_valve_sizing ? `<tr><td>ASV IEC 60534 Boyut</td><td>${eq.turbo_compressors.anti_surge_valve_sizing.valve_inch} • Cv ${Number(eq.turbo_compressors.anti_surge_valve_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.turbo_compressors.anti_surge_valve_sizing.opening_percent).toFixed(1)}</td></tr>` : ''}
+          ${eq.turbo_compressors.anti_surge_valve_sizing ? `<tr><td>ASV IEC 60534 Boyut</td><td>${escapeHtml(eq.turbo_compressors.anti_surge_valve_sizing.valve_inch)} • Cv ${Number(eq.turbo_compressors.anti_surge_valve_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.turbo_compressors.anti_surge_valve_sizing.opening_percent).toFixed(1)} • EOS: ${escapeHtml((eq.turbo_compressors.anti_surge_valve_sizing.eos_model || "pr").toUpperCase())}</td></tr>` : ''}
           <tr><td>Surge Sınır Debisi</td><td>${eq.turbo_compressors.surge_limit_flow_kgs} kg/s</td></tr>
         </table>
+        ${renderDrawerWarnings(asvWarn)}
       </div>
     `;
   } else if (key === "anti_surge") {
+    const asvWarn = [
+      ...(eq.turbo_compressors.anti_surge_valve_sizing_warnings || []),
+      ...(eq.turbo_compressors.anti_surge_valve_sizing?.warnings || []),
+    ];
     title = `Anti-Surge Geri Dönüş Döngüsü ve Hızlı ASV Valfi`;
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
@@ -1240,8 +1397,9 @@ function renderInspectorDrawer(key, eq, sm) {
           <tr><td>Stroking Süresi</td><td>&lt; ${eq.turbo_compressors.anti_surge_stroke_time_s} saniye (Tam Açılma)</td></tr>
           <tr><td>Surge Kontrol Sınırı</td><td>${eq.turbo_compressors.surge_limit_flow_kgs} kg/s</td></tr>
           <tr><td>Akustik İyileştirme</td><td>Gürültü ve titreşim önleyici kademeli difüzör trim</td></tr>
-          ${eq.turbo_compressors.anti_surge_valve_sizing ? `<tr><td>IEC 60534 Kapasite</td><td>${eq.turbo_compressors.anti_surge_valve_sizing.valve_inch} • Cv ${Number(eq.turbo_compressors.anti_surge_valve_sizing.required_cv).toFixed(1)} • Gürültü ${Number(eq.turbo_compressors.anti_surge_valve_sizing.noise_db || 0).toFixed(1)} dB</td></tr>` : ''}
+          ${eq.turbo_compressors.anti_surge_valve_sizing ? `<tr><td>IEC 60534 Kapasite</td><td>${escapeHtml(eq.turbo_compressors.anti_surge_valve_sizing.valve_inch)} • Cv ${Number(eq.turbo_compressors.anti_surge_valve_sizing.required_cv).toFixed(1)} • Gürültü ${Number(eq.turbo_compressors.anti_surge_valve_sizing.noise_db || 0).toFixed(1)} dB • EOS: ${escapeHtml((eq.turbo_compressors.anti_surge_valve_sizing.eos_model || "pr").toUpperCase())}</td></tr>` : ''}
         </table>
+        ${renderDrawerWarnings(asvWarn)}
       </div>
     `;
   } else if (key === "compressor_building") {
@@ -1260,6 +1418,10 @@ function renderInspectorDrawer(key, eq, sm) {
     `;
   } else if (key === "station_recycle") {
     const recycleSize = eq.station_recycle.pipe_size || '48"';
+    const pcvWarn = [
+      ...(eq.station_recycle.pcv_sizing_warnings || []),
+      ...(eq.station_recycle.pcv_sizing?.warnings || []),
+    ];
     title = `${recycleSize} Anti-Surge / Recycle Header (Note 13)`;
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
@@ -1268,11 +1430,16 @@ function renderInspectorDrawer(key, eq, sm) {
           <tr><td>Boru Çapı</td><td>${recycleSize} Anti-Surge / Suction Tie-in</td></tr>
           <tr><td>Maks. Sirkülasyon</td><td>${eq.station_recycle.max_recirculation_capacity_kgs} kg/s</td></tr>
           <tr><td>Kontrol Vanası</td><td>PCV Kademeli Basınç Düşürücü Düşük Gürültülü Trim</td></tr>
-          ${eq.station_recycle.pcv_sizing ? `<tr><td>PCV IEC 60534 Boyut</td><td>${eq.station_recycle.pcv_sizing.valve_inch} • Cv ${Number(eq.station_recycle.pcv_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.station_recycle.pcv_sizing.opening_percent).toFixed(1)}</td></tr>` : ''}
+          ${eq.station_recycle.pcv_sizing ? `<tr><td>PCV IEC 60534 Boyut</td><td>${escapeHtml(eq.station_recycle.pcv_sizing.valve_inch)} • Cv ${Number(eq.station_recycle.pcv_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.station_recycle.pcv_sizing.opening_percent).toFixed(1)} • EOS: ${escapeHtml((eq.station_recycle.pcv_sizing.eos_model || "pr").toUpperCase())}</td></tr>` : ''}
         </table>
+        ${renderDrawerWarnings(pcvWarn)}
       </div>
     `;
   } else if (key === "cooler_bypass") {
+    const tcvWarn = [
+      ...(eq.air_coolers.cooler_bypass_valve_sizing_warnings || []),
+      ...(eq.air_coolers.cooler_bypass_valve_sizing?.warnings || []),
+    ];
     title = "Gas Cooler By-Pass Hattı (TCV - Note 17)";
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
@@ -1282,8 +1449,9 @@ function renderInspectorDrawer(key, eq, sm) {
           <tr><td>Baypas Boru Çapı</td><td>${eq.air_coolers.bypass_line?.pipe_size || '-'} (ASME B36.10M)</td></tr>
           <tr><td>Birincil Kontrol</td><td>Hava Soğutucu Fanlarında VFD Frekans Kontrolü</td></tr>
           <tr><td>İkincil Kontrol</td><td>TCV Sıcak Gaz Karıştırma Baypası</td></tr>
-          ${eq.air_coolers.cooler_bypass_valve_sizing ? `<tr><td>TCV IEC 60534 Boyut</td><td>${eq.air_coolers.cooler_bypass_valve_sizing.valve_inch} • Cv ${Number(eq.air_coolers.cooler_bypass_valve_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.air_coolers.cooler_bypass_valve_sizing.opening_percent).toFixed(1)}</td></tr>` : ''}
+          ${eq.air_coolers.cooler_bypass_valve_sizing ? `<tr><td>TCV IEC 60534 Boyut</td><td>${escapeHtml(eq.air_coolers.cooler_bypass_valve_sizing.valve_inch)} • Cv ${Number(eq.air_coolers.cooler_bypass_valve_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.air_coolers.cooler_bypass_valve_sizing.opening_percent).toFixed(1)} • EOS: ${escapeHtml((eq.air_coolers.cooler_bypass_valve_sizing.eos_model || "pr").toUpperCase())}</td></tr>` : ''}
         </table>
+        ${renderDrawerWarnings(tcvWarn)}
       </div>
     `;
   } else if (key === "condensate_system") {
@@ -1299,6 +1467,10 @@ function renderInspectorDrawer(key, eq, sm) {
       </div>
     `;
   } else if (key === "air_coolers") {
+    const acWarn = [
+      ...(eq.air_coolers.detailed_design_warnings || []),
+      ...(eq.air_coolers.cooler_bypass_valve_sizing_warnings || []),
+    ];
     title = `Hava Soğutucuları (${eq.air_coolers.bay_count} Fin-Fan Bay)`;
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
@@ -1308,13 +1480,18 @@ function renderInspectorDrawer(key, eq, sm) {
           <tr><td>Giriş / Çıkış Sıcaklığı</td><td>${eq.air_coolers.inlet_temp_c}°C → ${eq.air_coolers.outlet_temp_c}°C</td></tr>
           <tr><td>Fan Modülü Sayısı</td><td>${eq.air_coolers.total_fans} Adet Induced-Draft VFD Fan</td></tr>
           <tr><td>Basınç Kaybı (ΔP)</td><td>${eq.air_coolers.pressure_drop_bar} bar</td></tr>
-          ${eq.air_coolers.cooler_bypass_valve_sizing ? `<tr><td>TCV Boyut</td><td>${eq.air_coolers.cooler_bypass_valve_sizing.valve_inch} • Cv ${Number(eq.air_coolers.cooler_bypass_valve_sizing.required_cv).toFixed(1)}</td></tr>` : ''}
+          ${eq.air_coolers.cooler_bypass_valve_sizing ? `<tr><td>TCV Boyut</td><td>${escapeHtml(eq.air_coolers.cooler_bypass_valve_sizing.valve_inch)} • Cv ${Number(eq.air_coolers.cooler_bypass_valve_sizing.required_cv).toFixed(1)}</td></tr>` : ''}
         </table>
+        ${renderDrawerWarnings(acWarn)}
         <button id="btn-detailed-air-cooler" class="btn btn-sm btn-primary" style="margin-top: 6px;">📐 API 661 Detaylı Tasarım</button>
         <div id="air-cooler-detail" style="margin-top: 8px;"></div>
       </div>
     `;
   } else if (key === "safety_relief") {
+    const psvWarn = [
+      ...(eq.safety_relief_and_blowdown.psv_sizing_warnings || []),
+      ...(eq.safety_relief_and_blowdown.psv_sizing?.warnings || []),
+    ];
     title = "Emniyet Tahliye ve Acil Boşaltma (PSV & BDV)";
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
@@ -1322,13 +1499,14 @@ function renderInspectorDrawer(key, eq, sm) {
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
           <tr><td>PSV Ayar Basıncı</td><td>${eq.safety_relief_and_blowdown.psv_set_pressure_bar} bar (1 Duty + 1 Standby)</td></tr>
           ${eq.safety_relief_and_blowdown.psv_sizing ? `
-          <tr><td>API 520 Ön Boyutlandırma</td><td>${Number(eq.safety_relief_and_blowdown.psv_sizing.required_area_sqin).toFixed(3)} in² • Orifis ${eq.safety_relief_and_blowdown.psv_sizing.selected_orifice || '-'} (${Number(eq.safety_relief_and_blowdown.psv_sizing.selected_orifice_area_sqin || 0).toFixed(3)} in²)</td></tr>
-          <tr><td>Orifis Yükü</td><td>%${Number(eq.safety_relief_and_blowdown.psv_sizing.orifice_loading_pct || 0).toFixed(1)} • ${eq.safety_relief_and_blowdown.psv_sizing.flow_type || 'Gas'}</td></tr>
+          <tr><td>API 520 Ön Boyutlandırma</td><td>${Number(eq.safety_relief_and_blowdown.psv_sizing.required_area_sqin).toFixed(3)} in² • Orifis ${escapeHtml(eq.safety_relief_and_blowdown.psv_sizing.selected_orifice || '-')} (${Number(eq.safety_relief_and_blowdown.psv_sizing.selected_orifice_area_sqin || 0).toFixed(3)} in²)</td></tr>
+          <tr><td>Orifis Yükü</td><td>%${Number(eq.safety_relief_and_blowdown.psv_sizing.orifice_loading_pct || 0).toFixed(1)} • ${escapeHtml(eq.safety_relief_and_blowdown.psv_sizing.flow_type || 'Gas')}</td></tr>
           ` : ''}
           <tr><td>Tahliye Kapasitesi</td><td>%${eq.safety_relief_and_blowdown.relief_capacity_pct} İstasyon Maks. Debisi</td></tr>
           <tr><td>BDV Acil Boşaltma</td><td>${eq.safety_relief_and_blowdown.depressurization_time_min} Dakika (API 521 Standart)</td></tr>
           <tr><td>Baca Tipi</td><td>Emergency Vent at Safe Height / Flame Arrester</td></tr>
         </table>
+        ${renderDrawerWarnings(psvWarn)}
       </div>
     `;
   } else if (key === "pig_launcher") {
@@ -1484,8 +1662,10 @@ function renderBotasPfdModal() {
 /**
  * Renders the live interactive parameter control bar for real-time natural gas pipe sizing.
  */
-function renderLiveParamsBar(inputs, isExpanded) {
-  const mmscmdEst = (inputs.mass_flow * 0.1147).toFixed(1);
+function renderLiveParamsBar(inputs, isExpanded, gasComp) {
+  const mmscmdEst = convertFlowWithMW(inputs.mass_flow, "kg/s", "MMSCMD", gasComp).toFixed(2);
+  const mmscmdMin = convertFlowWithMW(20, "kg/s", "MMSCMD", gasComp).toFixed(1);
+  const mmscmdMax = convertFlowWithMW(300, "kg/s", "MMSCMD", gasComp).toFixed(1);
   return `
     <div class="card" style="padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md);">
       
@@ -1530,9 +1710,9 @@ function renderLiveParamsBar(inputs, isExpanded) {
             </div>
             <input type="range" id="slider-param-flow" min="20" max="300" step="5" value="${inputs.mass_flow}" style="width: 100%; cursor: pointer;" />
             <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--color-text-secondary); margin-top: 2px;">
-              <span>20 kg/s (2.3 MMSCMD)</span>
+              <span>20 kg/s (${mmscmdMin} MMSCMD)</span>
               <span>150 kg/s</span>
-              <span>300 kg/s (34.5 MMSCMD)</span>
+              <span>300 kg/s (${mmscmdMax} MMSCMD)</span>
             </div>
           </div>
 
@@ -1661,16 +1841,59 @@ function renderPipeSizingTable(piping) {
     `;
   }
 
+  const lang = uiStore?.getState?.()?.lang || "tr";
   const linesMap = piping.lines || piping;
   const lines = Object.values(linesMap);
+  const arch = piping.piping_architecture || {};
+  const mainHeaders = arch.main_headers || {};
+  const suctArch = mainHeaders.station_suction_header || null;
+  const dischArch = mainHeaders.station_discharge_header || null;
+  const limitations = Array.isArray(arch.naming_limitations) ? arch.naming_limitations : [];
+
+  const archSummaryHtml = (suctArch || dischArch) ? `
+    <div style="margin-bottom: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(15, 23, 42, 0.45); border: 1px solid var(--color-border);">
+      <div style="font-size: 11.5px; font-weight: 700; color: var(--color-text-primary); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+        <span>🧭 ${escapeHtml(t("pipe_arch_title", lang))}</span>
+        <span class="badge badge-neutral" style="font-size: 10px;">Ana Omurga Ortak Çap: ${escapeHtml(suctArch?.nominal_size_in || linesMap.suction_header?.nominal_size_in || "-")}</span>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px;">
+        ${suctArch ? `
+          <div style="padding: 8px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.08); border-left: 3px solid #38bdf8; font-size: 11px;">
+            <div style="font-weight: 700; color: #38bdf8; margin-bottom: 3px;">${escapeHtml(suctArch.name || suctArch.display_name || "Station Suction Header")} (${escapeHtml((suctArch.tags || suctArch.line_tags || []).join(" + "))} • ${escapeHtml(suctArch.nominal_size_in || "-")})</div>
+            <div style="color: var(--color-text-secondary); line-height: 1.45;">
+              <div><b>Başlangıç:</b> ${escapeHtml(suctArch.from_boundary || suctArch.start_boundary || "-")}</div>
+              <div><b>Bitiş:</b> ${escapeHtml(suctArch.to_boundary || suctArch.end_boundary || "-")}</div>
+            </div>
+          </div>
+        ` : ""}
+        ${dischArch ? `
+          <div style="padding: 8px 10px; border-radius: 6px; background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; font-size: 11px;">
+            <div style="font-weight: 700; color: #f59e0b; margin-bottom: 3px;">${escapeHtml(dischArch.name || dischArch.display_name || "Station Discharge Header")} (${escapeHtml((dischArch.tags || dischArch.line_tags || []).join(" + "))} • ${escapeHtml(dischArch.nominal_size_in || "-")})</div>
+            <div style="color: var(--color-text-secondary); line-height: 1.45;">
+              <div><b>Başlangıç:</b> ${escapeHtml(dischArch.from_boundary || dischArch.start_boundary || "-")}</div>
+              <div><b>Bitiş:</b> ${escapeHtml(dischArch.to_boundary || dischArch.end_boundary || "-")}</div>
+            </div>
+          </div>
+        ` : ""}
+      </div>
+      ${limitations.length > 0 ? `
+        <details style="margin-top: 8px; font-size: 10.5px; color: var(--color-text-secondary);">
+          <summary style="cursor: pointer; font-weight: 600; color: #fbbf24;">⚠️ Borulama İsimlendirme ve Sınırlandırma Kapsam Kısıtları (${limitations.length} Teknik Not)</summary>
+          <ul style="margin: 6px 0 0 18px; padding: 0; line-height: 1.5;">
+            ${limitations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+          </ul>
+        </details>
+      ` : ""}
+    </div>
+  ` : "";
 
   return `
     <div class="card" style="padding: 12px;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
         <div style="display: flex; align-items: center; gap: 6px;">
           ${icon("activity", 15, "text-primary")}
-          <span style="font-size: 13px; font-weight: 700;">ASME B36.10M / API 5L Dinamik Boru Boyutlandırma & Hidrolik Doğrulama Matrisi</span>
-          <span class="badge badge-primary" style="font-size: 10px;">15 Proses Hattı</span>
+          <span style="font-size: 13px; font-weight: 700;">ASME B36.10M / API 5L Dinamik Boru Boyutlandırma &amp; Sınır Doğrulama Matrisi</span>
+          <span class="badge badge-primary" style="font-size: 10px;">${lines.length} Proses Hattı</span>
         </div>
         <div style="font-size: 11px; color: var(--color-text-secondary); display: flex; gap: 10px; align-items: center;">
           <span>Barlow: <b>t = P·D / (2·SMYS·F)</b></span>
@@ -1681,31 +1904,51 @@ function renderPipeSizingTable(piping) {
         </div>
       </div>
 
-      <div style="overflow-x: auto;">
+      ${archSummaryHtml}
+
+      <div tabindex="0" role="region" aria-labelledby="pipe-sizing-table-caption" style="overflow-x: auto;">
         <table class="kasp-table" style="font-size: 11px; width: 100%; white-space: nowrap;">
+          <caption id="pipe-sizing-table-caption" style="text-align: left; font-size: 10.5px; color: var(--color-text-secondary); padding-bottom: 6px;">
+            İstasyon Ana Header Omurgası (Station Suction Header &amp; Station Discharge Header), Ekipman Branşmanları ve Battery-Limit Sınır Matrisi
+          </caption>
           <thead>
             <tr>
-              <th style="width: 55px;">Hat No</th>
-              <th>Proses Hattı Tanımı</th>
-              <th style="text-align: right;">Debi (kg/s)</th>
-              <th style="text-align: right;">Basınç (bar a)</th>
-              <th style="text-align: center;">Anma Çapı (NPS)</th>
-              <th style="text-align: center;">Dış Çap (OD mm)</th>
-              <th style="text-align: center;">Çizelge & Kalınlık (mm)</th>
-              <th style="text-align: right;">Min. Barlow (t_req)</th>
-              <th style="text-align: right;">Standart t_min</th>
-              <th style="text-align: center;">Standart</th>
-              <th style="text-align: right;">Gaz Hızı (v m/s)</th>
-              <th style="text-align: center;">Erozyon Oranı (EVR)</th>
-              <th style="text-align: right;">ΔP (bar/100m)</th>
-              <th style="text-align: right;">Ağırlık (kg/m)</th>
-              <th style="text-align: center;">Durum</th>
+              <th scope="col" style="width: 62px; position: sticky; inset-inline-start: 0; background: var(--color-surface); z-index: 2;">Hat No</th>
+              <th scope="col">Proses Hattı Tanımı</th>
+              <th scope="col">${escapeHtml(t("pipe_col_hierarchy", lang))}</th>
+              <th scope="col">${escapeHtml(t("pipe_col_boundaries", lang))}</th>
+              <th scope="col" style="text-align: right;">Debi (kg/s)</th>
+              <th scope="col" style="text-align: right;">Basınç (bar a)</th>
+              <th scope="col" style="text-align: center;">Anma Çapı (NPS)</th>
+              <th scope="col" style="text-align: center;">Dış Çap (OD mm)</th>
+              <th scope="col" style="text-align: center;">Çizelge &amp; Kalınlık (mm)</th>
+              <th scope="col" style="text-align: right;">Min. Barlow (t_req)</th>
+              <th scope="col" style="text-align: right;">Standart t_min</th>
+              <th scope="col" style="text-align: center;">Standart</th>
+              <th scope="col" style="text-align: right;">Gaz Hızı (v m/s)</th>
+              <th scope="col" style="text-align: center;">Erozyon Oranı (EVR)</th>
+              <th scope="col" style="text-align: right;">ΔP (bar/100m)</th>
+              <th scope="col" style="text-align: right;">Ağırlık (kg/m)</th>
+              <th scope="col" style="text-align: center;">Durum</th>
             </tr>
           </thead>
           <tbody>
             ${lines.map(line => {
               const tag = line.tag || line.line_id || "-";
               const name = line.name || "-";
+              const hLevel = line.hierarchy_level || "equipment_branch";
+              const hLabel = line.hierarchy_label || "Proses Borulaması";
+              const parentHeader = line.parent_header || null;
+              const fromB = line.from_boundary || "-";
+              const toB = line.to_boundary || "-";
+              const fullBoundaryTitle = `${fromB} ➔ ${toB}`;
+              const shortBoundary = line.boundary_summary || fullBoundaryTitle;
+              const hBadgeClass = hLevel === "main_header"
+                ? "badge-primary"
+                : hLevel === "mainline_tie_in"
+                  ? "badge-neutral"
+                  : "badge-success";
+
               const flow = line.flow_kgs !== undefined ? line.flow_kgs : (line.flow_kg_s || 0);
               const pressure = line.pressure_bar !== undefined ? line.pressure_bar : (line.p_bar || 0);
               const nps = line.nominal_size_in || (line.selected_pipe ? line.selected_pipe.nps : "-");
@@ -1728,27 +1971,34 @@ function renderPipeSizingTable(piping) {
 
               return `
                 <tr>
-                  <td style="font-family: var(--font-mono); font-weight: 700; color: #38bdf8;">${tag}</td>
-                  <td style="font-weight: 600;">${name}</td>
+                  <th scope="row" style="position: sticky; inset-inline-start: 0; background: var(--color-surface); z-index: 1; font-family: var(--font-mono); font-weight: 700; color: #38bdf8; text-align: left;">${escapeHtml(tag)}</th>
+                  <td style="font-weight: 600;">${escapeHtml(name)}</td>
+                  <td>
+                    <span class="badge ${hBadgeClass}" style="font-size: 9.5px;">${escapeHtml(hLabel)}</span>
+                    ${parentHeader ? `<div style="font-size: 9.5px; color: var(--color-text-secondary); margin-top: 2px;">↳ ${escapeHtml(parentHeader)}</div>` : ""}
+                  </td>
+                  <td style="font-size: 10px; color: var(--color-text-secondary); max-width: 340px; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(fullBoundaryTitle)}">
+                    ${escapeHtml(shortBoundary)}
+                  </td>
                   <td style="text-align: right; font-family: var(--font-mono);">${flow.toFixed(1)}</td>
                   <td style="text-align: right; font-family: var(--font-mono);">${pressure.toFixed(1)}</td>
                   <td style="text-align: center; font-family: var(--font-mono); font-weight: 700; color: #facc15;">
-                    ${nps}
+                    ${escapeHtml(nps)}
                   </td>
                   <td style="text-align: center; font-family: var(--font-mono);">${od ? od.toFixed(1) : "-"}</td>
                   <td style="text-align: center; font-family: var(--font-mono);">
-                    <span class="badge badge-neutral" style="font-size: 10px;">Sch ${sch}</span>
+                    <span class="badge badge-neutral" style="font-size: 10px;">Sch ${escapeHtml(sch)}</span>
                     <strong style="margin-left: 4px;">${thick ? thick.toFixed(2) + " mm" : "-"}</strong>
                   </td>
                   <td style="text-align: right; font-family: var(--font-mono); color: var(--color-text-secondary);">
                     ${treq ? treq.toFixed(2) + " mm" : "-"}
                   </td>
-                  <td style="text-align: right; font-family: var(--font-mono); color: var(--color-text-secondary);" title="${std.tolerance_rule || ''}">
+                  <td style="text-align: right; font-family: var(--font-mono); color: var(--color-text-secondary);" title="${escapeHtml(std.tolerance_rule || "")}">
                     ${stdMin ? Number(stdMin).toFixed(2) + " mm" : "-"}
                   </td>
                   <td style="text-align: center; font-size: 10px;">
-                    <span class="badge ${stdOk ? 'badge-success' : 'badge-warning'}" title="${std.tolerance_rule || ''}">
-                      ${std.standard || "BOTAŞ"} ${std.psl_level || "PSL2"}
+                    <span class="badge ${stdOk ? 'badge-success' : 'badge-warning'}" title="${escapeHtml(std.tolerance_rule || "")}">
+                      ${escapeHtml(std.standard || "BOTAŞ")} ${escapeHtml(std.psl_level || "PSL2")}
                     </span>
                   </td>
                   <td style="text-align: right; font-family: var(--font-mono); font-weight: 700; color: ${vColor};">
@@ -1770,7 +2020,7 @@ function renderPipeSizingTable(piping) {
                   </td>
                   <td style="text-align: center;">
                     <span class="badge ${isStatusOk ? 'badge-success' : 'badge-warning'}" style="font-size: 10px;">
-                      ${isStatusOk ? "OK" : status}
+                      ${escapeHtml(isStatusOk ? "OK" : status)}
                     </span>
                   </td>
                 </tr>

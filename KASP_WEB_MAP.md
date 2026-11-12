@@ -33,8 +33,8 @@ Tarayıcı
          └─ components/
               header, designSidebar, gasTable, resultsView, chartsView,
               performanceTab, shootoutTab, stationTab, station3dView,
-              logsTab, kijModal, equipmentModal, projectModal, userModal,
-              authModal, handbookModal
+              equipmentTeardown, logsTab, kijModal, equipmentModal, projectModal,
+              userModal, authModal, handbookModal
                             │ HTTP / SSE
                             ▼
 FastAPI  (kasp/api/server.py)
@@ -265,6 +265,7 @@ Hesaplananlar:
 - `Raycaster.intersectObjects(interactiveObjects, true)` (`1927-1938`).
 - Seçim: kök grubun bounding box'ı cyan ve nabız atan çerçeveyle vurgulanır (`1843-1872`).
 - Sağ üstte **telemetri HUD** açılır (`1874-1891`); alt inspector drawer ve 2D SVG de senkronize edilir (`onSelectEquipment`).
+- `air_coolers`, `cyclones` ve `cartridge_filters` tıklamalarında ayrıca **teardown popup** açılır (`equipmentTeardown.js`). HUD içindeki `🔧 Teardown Aç` butonu popup'ı yeniden açar.
 
 ### 6.1 Tıklanabilir ekipmanlar ve gösterilen bilgiler
 
@@ -273,10 +274,10 @@ Hesaplananlar:
 | `pig_receiver` | PIG-R skid, izolasyon vanaları, bağlantı borusu | ⚠️ **Özel dal yok** → genel "PIG_RECEIVER" HUD'u | ❌ yok |
 | `pig_launcher` | PIG-L skid, soğutulmuş gaz dönüşü | Ana hat çapı, kovan 56"x48", işletme basıncı, MOV/ESDV | ✅ |
 | `safety_relief` | 22 m vent stack, kırmızı PSV vanası, yangın binası | PSV ayar basıncı, tahliye kapasitesi, BDV süresi, baca | ✅ |
-| `cyclones` | MFS platformu, siklon gövdeleri, vanalar | Proses basıncı, ΔP, giriş T, ünite debisi, ayırma verimi, branşman, N+1, drenaj | ✅ |
+| `cyclones` | MFS platformu, siklon gövdeleri, vanalar | Proses basıncı, ΔP, giriş T, ünite debisi, ayırma verimi, branşman, N+1, drenaj · 🔧 Teardown | ✅ |
 | `condensate_system` | Kondensat kutusu/drenaj | Tank hacmi, sıvı üretimi, LCV kaynağı, vent | ✅ |
-| `cartridge_filters` | CFS gövdeleri, vanalar, kolektör | Giriş/çıkış P, temiz ΔP, 0.3 µm, debi, branşman, N+1 | ✅ |
-| `air_coolers` | Fin-fan bankı, fanlar, riser'lar | Giriş/çıkış T, ısıl yük, fan sayısı, ΔP, TCV, kolektör | ✅ |
+| `cartridge_filters` | CFS gövdeleri, vanalar, kolektör | Giriş/çıkış P, temiz ΔP, 0.3 µm, debi, branşman, N+1 · 🔧 Teardown | ✅ |
+| `air_coolers` | Fin-fan bankı, fanlar, riser'lar | Giriş/çıkış T, ısıl yük, fan sayısı, ΔP, TCV, kolektör · 🔧 Teardown | ✅ |
 | `cooler_bypass` | TCV by-pass hattı ve vanası | ⚠️ **Özel dal yok** → genel HUD | ✅ |
 | `turbo_compressors` | Her COMPRESSOR binası içi, branşmanlar, vanalar | Emiş/basma P, PR, T, tren gücü, debi, yakıt, nozul, ASV, surge debisi, N+1 | ✅ |
 | `compressor_building` | Bina dış kaplaması; ayrıca kontrol, jeneratör, hava kompresörü, admin binaları | Boyut, alan, vinç, akustik, yangın/gaz, HVAC | ✅ |
@@ -477,7 +478,8 @@ Aşağıdakiler bu analiz sırasında gerçek Python çağrılarıyla doğruland
 | Performans | `components/performanceTab.js` | 192 | PTC-10 saha doğrulama |
 | Shootout | `components/shootoutTab.js` | 270 | EOS×metot, SSE |
 | İstasyon | `components/stationTab.js` | 1561 | Özet, 2D P&ID, düğümler, boru |
-| 3D | `components/station3dView.js` | 2081 | Three.js tesis, tıklama, HUD |
+| 3D | `components/station3dView.js` | 2081 | Three.js tesis, tıklama, HUD, teardown bağlantısı |
+| 3D | `components/equipmentTeardown.js` | — | Patlatılmış 3D ekipman söküm popup'ı |
 | Log | `components/logsTab.js` | 146 | REST + SSE |
 | API | `kasp/api/v1/calculations.py` | 213 | design/performance/station/pipe-sizing |
 | API | `kasp/api/v1/*.py` | — | auth, users, meta, equipment, projects, reports, jobs, logs |

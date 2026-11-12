@@ -1,6 +1,6 @@
 # KASP 3D Boru Yüzey Bütünlüğü ve Çap Denetimi
 
-Tarih: 2026-11-09  
+Tarih: 2026-11-10  
 Kapsam:
 - `kasp/web/src/components/station3dView.js` prosedürel 3D tesis modeli
 - `kasp/services/pipe_sizing_service.py` istasyon boru ağı
@@ -10,7 +10,7 @@ Kapsam:
 Yöntem:
 1. Tüm `createCadPipeRoute()` rotalarının noktaları ve çapları çıkarıldı.
 2. Tarayıcıda 3D sahne çalıştırıldı; cutaway (X-Ray) görünümde kompresör binası ve gaz soğutucu görsel olarak kontrol edildi.
-3. `window.__KASP_3D__.audit()` ile 40 boru rotası ve 1.487 mesh programatik olarak denetlendi.
+3. `window.__KASP_3D__.audit()` ile 40 boru rotası ve 1.605 mesh programatik olarak denetlendi.
 4. Boru-boru çakışması, her segment çifti için eksen mesafesi − (r1 + r2) hesabıyla denetlendi. Kesişen bağlantı noktaları (tee/elbow) ayrı tutuldu.
 5. Boruların ekipman gövdeleri, foundation, fan/louver ve instrument kutularıyla yüzey teması AABB + boru yarıçapı ile kontrol edildi.
 
@@ -193,9 +193,9 @@ Test senaryosu: 12 kg/s, 20 → 60 bar, 1 aktif kompresör.
 ## 5. Denetim sonuçları
 
 - **40** prosedürel boru rotası
-- **1.487** mesh
+- **1.605** mesh
 - Boru-boru segment denetimi: bağlantı noktaları (tee/elbow) hariç **0 çakışma**
-- 2 ünite düzeni: 40 rota / 1.487 mesh / 0 çakışma
+- 2 ünite düzeni: 40 rota / 1.605 mesh / 0 çakışma
 - 3 ünite düzeni (headerEastX = 6): 49 rota / 0 çakışma
 - 4 ünite düzeni (headerEastX = 58): 68 rota / 0 çakışma
 - Kompresör internal suction/discharge endpoint'leri barrel bounding box içinde
@@ -256,4 +256,42 @@ Kompresör discharge branch → ASV loop → anti-surge (ara) header
   - `test_station_headers_equal_nominal_size`
   - `test_compressor_and_cooler_lines_are_sized_by_flow`
 - Tarayıcı: 3D sahne hatasız yüklendi; yalnızca misafir oturumdan kaynaklı beklenen `401 /auth/me` hatası.
-- **Tam test seti:** `466 passed, 12 skipped, 0 failed`.
+- **Tam test seti:** `543 passed, 12 skipped, 0 failed`.
+
+---
+
+## 8. Ekipman modelleme ve teardown popup
+
+### 8.1 Ana 3D sahnedeki modeller
+
+- **Gas cooler:** fin-fan plenum, tüp tabloları, inlet/outlet headerları, fin-tüp
+  bankı, louver slatları, fan halkaları, 6 kanatlı fanlar, motor ve kayış
+  muhafazası eklendi.
+- **Siklon seperatör:** dikey gövde, dished üst başlık, konik alt, inlet/outlet
+  nozulları, drenaj nozulu, erişim merdiveni, üst bakım halkası ve destek
+  ayakları eklendi.
+- **Kartuş filtre seperatör:** yatay gövde, dished kapaklar, saddle destekler,
+  üst inlet nozulu, uç outlet nozulu ve drenaj nozulu eklendi.
+
+### 8.2 Vanalar
+
+- Siklon inlet ve outlet hatlarına, CFS inlet ve outlet hatlarına **bağlı boru
+  ile aynı görsel çapta** küresel vanalar yerleştirildi.
+- Çaplar sabit değil; `station_piping.lines.cyclone_branch.od_mm` ve
+  `filter_branch.od_mm` değerlerinden `visualPipeRadius()` ile türetilir.
+- Her vanada iki adet weld-neck flanş, raised-face halkası ve 6 adet flanş
+  cıvatası bulunur; bağlantı flanşlıdır.
+- CFS outlet vanası uç nozuldan sonra `rotationY = π/2` ile Z ekseninde.
+
+### 8.3 Teardown popup
+
+- `kasp/web/src/components/equipmentTeardown.js` eklendi.
+- Gas cooler, siklon ve kartuş filtre için ayrı patlatılmış 3D modeller.
+- Sol panelde proses bilgileri ve tıklanabilir parça listesi.
+- Sağ panelde OrbitControls, söküm/montaj slider'ı, otomatik döndürme ve
+  sıfırlama.
+- 3D parça etiketleri canlı olarak parçaları takip eder.
+- Ekipmana tıklandığında popup otomatik açılır; telemetri HUD'ında ayrıca
+  `🔧 Teardown Aç` butonu bulunur.
+- Yeni yerel skill: `.agents/skills/equipment-teardown/SKILL.md`
+  (OpenCode ve Antigravity/Agent-Skills uyumlu).
