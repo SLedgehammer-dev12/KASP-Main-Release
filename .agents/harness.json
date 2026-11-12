@@ -1,0 +1,40 @@
+{
+  "schema": "kasp-harness/1",
+  "project": "KASP",
+  "description": "Single source of agent instructions and skills shared by OpenCode, Antigravity and ACP-compatible clients.",
+  "skillRoot": ".agents/skills",
+  "instructions": [
+    "AGENTS.md",
+    ".opencode/AGENTS.md",
+    ".agents/rules/superpowers-and-graphify.md",
+    ".agents/rules/caveman-subagent-protocol.md"
+  ],
+  "harnesses": {
+    "opencode": {
+      "config": ".opencode/opencode.json",
+      "agents": ".opencode/agents",
+      "skills": [".opencode/skills", ".agents/skills"],
+      "native": true
+    },
+    "antigravity": {
+      "skills": ".agents/skills",
+      "instructions": "AGENTS.md",
+      "native": true
+    },
+    "openhands-acp": {
+      "transport": "acp",
+      "agentCommand": "opencode",
+      "workspace": ".",
+      "notes": "Register OpenCode as an ACP backend in Agent Canvas; skills are read from .agents/skills."
+    }
+  },
+  "entrypoints": {
+    "verify": "python3 .agents/skills/kasp-verify/scripts/kasp_verify.py",
+    "impact": "python3 .agents/skills/graphify/scripts/graphify.py",
+    "tdd": "python3 .agents/skills/superpowers/scripts/superpowers_tdd.py",
+    "web": "python3 run_web.py",
+    "desktop": "python3 main.py",
+    "tests": "python3 -m pytest -q"
+  },
+  "validation": "python3 .agents/skills/kasp-verify/scripts/kasp_verify.py doctor"
+}

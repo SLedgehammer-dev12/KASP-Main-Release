@@ -79,6 +79,7 @@ git_yedek/
 .jdk/
 .opencode/
 .graphify/
+.kasp-verify/
 
 # Scratch media & documents in root
 /*.pdf

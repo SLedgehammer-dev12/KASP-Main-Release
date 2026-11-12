@@ -16,7 +16,7 @@ The **Müdür (Dynamic Skill Orchestrator)** is the executive workflow coordinat
 ## 1. Core Principles
 
 1. **Dynamic Composition**: Do not hardcode rigid pipelines. Inspect the incoming task, discover available skills across the workspace (`.agents/skills/`), global configuration, and plugins, and dynamically synthesize the optimal workflow graph.
-2. **Single Responsibility**: Delegate domain-specific tasks to dedicated skills (e.g., repository mapping to `repo-indexer`, step-by-step fixes to `iterative-improver`, frontend to `modern-web-guidance`, literature to `pubmed-database`).
+2. **Single Responsibility**: Delegate domain-specific tasks to dedicated skills (e.g., repository mapping to `repo-indexer`, step-by-step fixes to `iterative-improver`, web UI to `kasp-frontend`, API contracts to `kasp-api-contracts`, live-app proof to `kasp-verify`).
 3. **State & Artifact Passing**: Pass structured artifacts and metrics between stages (e.g., index findings $\rightarrow$ hotspot targeting $\rightarrow$ code refactoring $\rightarrow$ test verification $\rightarrow$ documentation).
 4. **Execution Safety & Quality Gates**: Require explicit approval or test verification before advancing past critical milestones.
 
@@ -98,7 +98,8 @@ Create an explicit, trackable execution table:
 - **Stage 2**: `iterative-improver` $\rightarrow$ Select single highest-priority issue, formulate proposal, ask permission.
 - **Stage 3**: Code Implementation $\rightarrow$ Apply safe, localized patch.
 - **Stage 4**: Test Suite $\rightarrow$ Run `pytest -q`, verify zero regressions.
-- **Stage 5**: `repo-indexer` $\rightarrow$ Update index freshness score.
+- **Stage 5**: `kasp-verify` $\rightarrow$ Prove the affected `Fxx` feature in the real app and write evidence.
+- **Stage 6**: `repo-indexer` $\rightarrow$ Update index freshness score.
 
 ### Template 2: `Scientific Verification & Modeling`
 - **Stage 1**: `properties` & backend verification $\rightarrow$ Cross-check CoolProp, Thermo, NeqSim outputs.

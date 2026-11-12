@@ -1,0 +1,226 @@
+[
+  {
+    "id": "F01",
+    "area": "auth",
+    "title": "Login, session and logout",
+    "entrypoint": "Web header > Giriş / Kullanıcı menüsü",
+    "verify": [
+      "serve",
+      "api --login",
+      "browser goto /",
+      "open the auth modal and submit KASP_VERIFY_USER / KASP_VERIFY_PASSWORD",
+      "GET /api/v1/auth/me returns the same username and role",
+      "logout clears the session and /api/v1/auth/me returns 401"
+    ],
+    "expected": "Login sets the kasp_session HttpOnly cookie and returns csrf_token; authenticated pages render the user menu.",
+    "gotchas": "The admin account may carry must_change_password=1; use a dedicated test account. Never print passwords or tokens into evidence."
+  },
+  {
+    "id": "F02",
+    "area": "design",
+    "title": "Compressor design calculation",
+    "entrypoint": "Tasarım (Design) tab > Hesapla",
+    "verify": [
+      "serve",
+      "browser goto /#design",
+      "load a preset or enter P_in, T_in, P_out, flow and gas composition",
+      "click the calculate button",
+      "assert KPI cards and the 7 result sub-tabs render",
+      "POST /api/v1/calculations/design returns success=true"
+    ],
+    "expected": "Design results appear without console errors; shaft power, pressure ratio and stage table are populated.",
+    "gotchas": "Protected API calls need the session cookie plus X-CSRF-Token; calculate through the UI rather than only the API when verifying rendering."
+  },
+  {
+    "id": "F03",
+    "area": "performance",
+    "title": "ASME PTC-10 performance test",
+    "entrypoint": "Performans (ASME PTC-10) tab",
+    "verify": [
+      "browser goto /#performance",
+      "enter field test data",
+      "assert derived efficiency, tolerances and verdict render",
+      "POST /api/v1/calculations/performance succeeds"
+    ],
+    "expected": "PTC-10 comparison table and verdict are populated; no NaN or Infinity is rendered.",
+    "gotchas": "Empty or zero measured values must show a validation message, not a traceback."
+  },
+  {
+    "id": "F04",
+    "area": "shootout",
+    "title": "EOS x method engineering shootout",
+    "entrypoint": "Mühendislik Shootout tab",
+    "verify": [
+      "browser goto /#shootout",
+      "run the matrix",
+      "assert the SSE ranking table fills",
+      "POST /api/v1/jobs/shootout then poll /api/v1/jobs/{id}/status"
+    ],
+    "expected": "All available EOS/method pairs are ranked and the best row is highlighted.",
+    "gotchas": "The matrix is CPU-heavy; the job endpoint is asynchronous and may need polling or SSE."
+  },
+  {
+    "id": "F05",
+    "area": "station",
+    "title": "Station summary and equipment cards",
+    "entrypoint": "3D İstasyon & P&ID tab > özet kartlar",
+    "verify": [
+      "browser goto /#station",
+      "assert summary cards show flow, pressure ratio, cooler duty and unit count",
+      "POST /api/v1/calculations/station returns station_summary"
+    ],
+    "expected": "Summary values match the latest design calculation and the selected unit count.",
+    "gotchas": "design_num_units from the last design drives the layout; changing only flow may not change unit count."
+  },
+  {
+    "id": "F06",
+    "area": "station",
+    "title": "2D P&ID and pipe schedule",
+    "entrypoint": "3D İstasyon & P&ID tab > P&ID / Boru Tablosu",
+    "verify": [
+      "assert the SVG P&ID contains suction, discharge, anti-surge, cooler and bypass lines",
+      "assert NPS labels are dynamic, not hardcoded",
+      "assert the 15-line pipe table is populated"
+    ],
+    "expected": "P&ID topology follows the process flow diagram and every line shows its NPS/OD.",
+    "gotchas": "Suction and discharge headers must have equal nominal size after sizing."
+  },
+  {
+    "id": "F07",
+    "area": "station-3d",
+    "title": "3D digital twin loads",
+    "entrypoint": "3D İstasyon & P&ID tab > 3D görünüm",
+    "verify": [
+      "browser goto /#station",
+      "wait for window.__KASP_3D__",
+      "assert window.__KASP_3D__.audit().length > 30",
+      "assert the canvas is non-empty and no console error is raised"
+    ],
+    "expected": "Procedural station renders with pipes, headers, separators, filters, coolers, buildings and turbines.",
+    "gotchas": "Only the expected guest 401 /api/v1/auth/me is acceptable when logged out. WebGL may be unavailable in headless CI; record blocked instead of fail."
+  },
+  {
+    "id": "F08",
+    "area": "station-3d",
+    "title": "Equipment click, HUD and camera fly-to",
+    "entrypoint": "3D scene > click a vessel, cooler, building or valve skid",
+    "verify": [
+      "call window.__KASP_3D__.inspect('cyclones')",
+      "assert #equip-telemetry-hud is visible with process values",
+      "assert the selection highlight box is visible",
+      "assert the camera target changed"
+    ],
+    "expected": "The HUD shows equipment-specific values, the selection outline appears and the camera flies to the equipment.",
+    "gotchas": "inspect() is a debug bridge; a real pointer click must also pass the 6 px drag threshold."
+  },
+  {
+    "id": "F09",
+    "area": "station-3d",
+    "title": "Equipment teardown popup",
+    "entrypoint": "Click air cooler, cyclone or cartridge filter; or HUD > Teardown Aç",
+    "verify": [
+      "window.__KASP_3D__.inspect('air_coolers')",
+      "assert #kasp-equipment-teardown exists",
+      "assert the parts list has at least 6 entries",
+      "move the explode slider and assert part positions change",
+      "press Escape and assert the overlay is removed"
+    ],
+    "expected": "An exploded 3D view opens with process data, a clickable part list, labels, explode/assemble and reset controls.",
+    "gotchas": "Teardown keys are air_coolers, cyclones and cartridge_filters only. Cleanup must dispose renderer, controls and geometries."
+  },
+  {
+    "id": "F10",
+    "area": "reports",
+    "title": "PDF design report",
+    "entrypoint": "Header > PDF Tasarım Raporu",
+    "verify": [
+      "click #btn-pdf-export",
+      "assert a PDF download is produced and non-empty",
+      "POST /api/v1/reports/pdf returns application/pdf"
+    ],
+    "expected": "A multi-section PDF with design, station and equipment results downloads.",
+    "gotchas": "Turkish characters require a Unicode-capable PDF font; check for tofu boxes."
+  },
+  {
+    "id": "F11",
+    "area": "reports",
+    "title": "Module and station Excel export",
+    "entrypoint": "Header > Excel indir",
+    "verify": [
+      "click #btn-module-excel",
+      "assert the workbook contains design, module and station sheets",
+      "POST /api/v1/reports/modules-excel succeeds"
+    ],
+    "expected": "Excel workbook opens and sheet names/values match the on-screen results.",
+    "gotchas": "Do not regress the i18n sheet titles used by downstream engineers."
+  },
+  {
+    "id": "F12",
+    "area": "projects",
+    "title": "Project save, load, import and export",
+    "entrypoint": "Header > Projeler",
+    "verify": [
+      "create a project from the current design",
+      "reload the page and reopen it",
+      "export .kasp and re-import it",
+      "GET /api/v1/projects returns the project"
+    ],
+    "expected": "Inputs, gas composition and results persist across reload, export and import.",
+    "gotchas": ".kasp JSON must stay backward compatible; never store secrets in project files."
+  },
+  {
+    "id": "F13",
+    "area": "logs",
+    "title": "System logs and live stream",
+    "entrypoint": "Sistem Logları tab",
+    "verify": [
+      "browser goto /#logs",
+      "assert rows render from GET /api/v1/logs",
+      "assert the SSE stream appends new rows",
+      "clear logs and assert the table empties"
+    ],
+    "expected": "Log rows show timestamp, level, logger and message; the live stream reconnects after a drop.",
+    "gotchas": "Never render raw HTML from log messages; escape user-controlled text."
+  },
+  {
+    "id": "F14",
+    "area": "users",
+    "title": "User administration",
+    "entrypoint": "Header > Kullanıcılar (admin role)",
+    "verify": [
+      "login as an admin account",
+      "list users, create a test user, reset its password, delete it",
+      "assert a non-admin session gets 403 on GET /api/v1/users"
+    ],
+    "expected": "Admin CRUD works and every mutation enforces role checks and CSRF.",
+    "gotchas": "Use throwaway usernames and delete them in the same run; never log generated passwords."
+  },
+  {
+    "id": "F15",
+    "area": "modules",
+    "title": "Integration modules",
+    "entrypoint": "Results > entegrasyon modülleri",
+    "verify": [
+      "GET /api/v1/modules lists module ids",
+      "GET /api/v1/modules/{id}/schema returns a schema",
+      "POST /api/v1/modules/{id}/calculate returns finite outputs",
+      "assert the module results render and persist with the project"
+    ],
+    "expected": "Module schema, calculation and persistence match the Python service contract.",
+    "gotchas": "Steam-service control valves remain excluded by design; do not add them."
+  },
+  {
+    "id": "F16",
+    "area": "harness",
+    "title": "OpenCode and Antigravity skill discovery",
+    "entrypoint": "Repository root > .agents/skills",
+    "verify": [
+      "python3 .agents/skills/kasp-verify/scripts/kasp_verify.py doctor",
+      "assert every SKILL.md has valid name/description frontmatter",
+      "assert .opencode/opencode.json lists .agents/skills",
+      "assert root AGENTS.md exists"
+    ],
+    "expected": "Both harnesses discover the same skills from .agents/skills with no duplicated copies.",
+    "gotchas": "Skill name must equal its folder name. Do not use harness-only tool names inside SKILL.md; use shell commands and relative paths."
+  }
+]

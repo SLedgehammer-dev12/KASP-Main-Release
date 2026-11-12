@@ -2,7 +2,8 @@
 name: mudur
 description: >-
   KASP Baş Yöneticisi (Müdür). Tüm ajanların (core, ui, data, qa, release, graphify, superpowers)
-  ve tüm becerilerin (repo-indexer, iterative-improver, graphify, superpowers, caveman)
+  ve tüm becerilerin (repo-indexer, iterative-improver, graphify, superpowers, caveman,
+  kasp-verify, kasp-api-contracts, kasp-frontend, kasp-local-stack, kasp-harness-interop)
   yönetiminden, döngüsel iyileştirme planlamasından ve kalite kapılarından tek yetkili olarak sorumludur.
 ---
 
@@ -28,6 +29,11 @@ description: >-
    - `superpowers`: Planlama, TDD Red-Green-Refactor döngüsü ve kalite kapısı.
    - `caveman`: Ajanlar arası yüksek sinyalli, minimum token'lı iletişim.
    - `repo-indexer`: Kod tabanı metrikleri ve tazelik takibi.
+   - `kasp-verify`: İzole web/API doğrulaması, özellik haritası (`F01`…`F16`) ve kanıt defteri.
+   - `kasp-api-contracts`: FastAPI v1 ↔ web istemcisi sözleşmesi, auth/CSRF ve hata gövdesi.
+   - `kasp-frontend`: Derlemesiz ES modülleri, i18n, güvenli DOM ve Three.js 3D kuralları.
+   - `kasp-local-stack`: Masaüstü/web/test çalıştırma, port ve süreç hijyeni.
+   - `kasp-harness-interop`: OpenCode, Antigravity ve ACP istemcileri için tek kaynak skill düzeni.
 3. **Temel İlke: "Önce Mevcut Olanı İyileştir"**:
    - Yeni özellik ekleme yarışına girilmez.
    - Öncelik: Hata ayıklama, kararlılık, performans, veri bütünlüğü ve kod kalitesidir.
