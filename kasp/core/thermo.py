@@ -96,7 +96,7 @@ class ThermoEngine:
     def _validate_gas_composition(self, composition):
         """UI testleriyle geriye dönük uyumluluk için GasMixtureBuilder'ı çağırır."""
         return GasMixtureBuilder.validate_and_normalize(composition)
-    def _create_gas_object(self, composition, eos_method):
+    def _create_gas_object(self, composition, eos_method, custom_kij=None):
         """Gaz objesi oluşturmayı GasMixtureBuilder'a devreder."""
         comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
         if eos_method == 'coolprop':
@@ -104,7 +104,7 @@ class ThermoEngine:
         elif eos_method == 'neqsim':
             return GasMixtureBuilder.build_neqsim_input(comp_frac)
         elif eos_method in ['pr', 'srk', 'aga8', 'gerg2008', 'thermopack', 'ccp', 'dwsim']:
-            return GasMixtureBuilder.build_thermo_data(comp_frac)
+            return GasMixtureBuilder.build_thermo_data(comp_frac, custom_kij=custom_kij)
         else:
             raise ValueError(f"Bilinmeyen EOS metodu: {eos_method}")
 
@@ -138,6 +138,7 @@ class ThermoEngine:
             'rho': state.density,
             'Cp': state.Cp,
             'Cv': state.Cv,
+            'MW': state.MW,
             'M_kg_mol': state.MW / 1000.0,
             'fallback_used': state.raw_props.get('fallback', False),
             'mu': state.raw_props.get('mu', 1.1e-5),
@@ -928,7 +929,11 @@ class ThermoEngine:
             inputs["gas_comp"] = gas_comp
         else:
             gas_comp = raw_gas_comp
-        gas_obj = self._create_gas_object(gas_comp, eos)
+        custom_kij = inputs.get("custom_kij") if isinstance(inputs.get("custom_kij"), dict) else None
+        if custom_kij:
+            gas_obj = self._create_gas_object(gas_comp, eos, custom_kij=custom_kij)
+        else:
+            gas_obj = self._create_gas_object(gas_comp, eos)
         total_mass_flow_kgs = self.convert_flow_to_kgs(
             float(inputs["flow"]),
             inputs["flow_unit"],
@@ -942,11 +947,15 @@ class ThermoEngine:
             self.thermo_solver._fallback_tracker,
             self.thermo_solver,
             raw_composition=gas_comp,
+            custom_kij=custom_kij,
         )
+
+        from kasp.core.thermo_design_support import canonical_design_method_label
 
         num_units = max(1, int(inputs.get("num_units", 1)))
         mass_flow_per_unit = total_mass_flow_kgs / num_units
-        method = inputs.get("method", "Metot 1: Ortalama Ozellikler")
+        raw_method = inputs.get("method") or inputs.get("calc_method") or "Metot 1: Ortalama Ozellikler"
+        method = canonical_design_method_label(raw_method, default="Metot 1: Ortalama Ozellikler")
         method_key = select_design_method_key(method)
         num_stages = max(1, int(inputs.get("num_stages", 1)))
         poly_eff_tgt = max(0.01, min(0.99, float(inputs.get("poly_eff", 85.0)) / 100.0))
@@ -1047,7 +1056,9 @@ class ThermoEngine:
         return capped_iter
 
     def _add_fuel_standard_density(self, results, fuel_composition, eos):
+        saved_chain = self.thermo_solver._active_eos_chain
         try:
+            self.thermo_solver._active_eos_chain = None
             fuel_gas_obj = self._create_gas_object(fuel_composition, eos)
             fuel_state_std = self.thermo_solver.get_properties(
                 self.STD_PRESS_PA,
@@ -1059,6 +1070,8 @@ class ThermoEngine:
         except Exception as error:
             self.logger.debug(f"Fuel standard density hesaplanamadi: {error}")
             results["fuel_gas_density_std"] = None
+        finally:
+            self.thermo_solver._active_eos_chain = saved_chain
 
     def _add_uncertainty_result(self, results, inputs, p_in_pa, p_out_pa, t_in_k, mass_flow_per_unit):
         if not self.uncertainty_analyzer or not inputs.get("enable_uncertainty", False):
@@ -1122,6 +1135,10 @@ class ThermoEngine:
         total_poly_head_kj_kg = stage_loop["total_poly_head_kj_kg"]
         staged_results = stage_loop["staged_results"]
 
+        eos_chain = context.get("eos_chain")
+        if eos_chain is not None and context.get("gas_comp"):
+            eos_chain.update_composition(context["gas_comp"])
+
         state_inlet = self.thermo_solver.get_properties(
             context["p_in_pa"],
             context["t_in_k"],
@@ -1149,13 +1166,18 @@ class ThermoEngine:
         unit_kw = motor_kw * (1.0 + API_617_DRIVER_MARGIN_PCT / 100.0)
 
         fuel_composition = inputs.get("fuel_gas_comp") or inputs.get("gas_comp") or inputs.get("gas_composition") or {}
-        fuel_gas_obj = self._create_gas_object(fuel_composition, context.get("eos", "pr"))
-        lhv, hhv = self._calculate_heating_values(
-            fuel_composition,
-            source=inputs.get("lhv_source", "kasp"),
-            gas_obj=fuel_gas_obj,
-            eos_method=context.get("eos", "pr")
-        )
+        saved_chain = self.thermo_solver._active_eos_chain
+        try:
+            self.thermo_solver._active_eos_chain = None
+            fuel_gas_obj = self._create_gas_object(fuel_composition, context.get("eos", "pr"))
+            lhv, hhv = self._calculate_heating_values(
+                fuel_composition,
+                source=inputs.get("lhv_source", "kasp"),
+                gas_obj=fuel_gas_obj,
+                eos_method=context.get("eos", "pr")
+            )
+        finally:
+            self.thermo_solver._active_eos_chain = saved_chain
         try:
             therm_raw = float(inputs.get("therm_eff", EngineSettings.DEFAULT_THERMAL_EFFICIENCY_PCT) or EngineSettings.DEFAULT_THERMAL_EFFICIENCY_PCT)
         except (TypeError, ValueError):
@@ -1165,6 +1187,24 @@ class ThermoEngine:
         fuel_kw = motor_kw / therm_eff if therm_eff > 0 else 0.0
         heat_rate = (fuel_kw * 3600.0) / motor_kw if motor_kw > 0 else 0.0
         fuel_kgh = (fuel_kw * 3600.0) / lhv if lhv > 0 else 0.0
+
+        inlet_props = self._get_thermo_properties(
+            context["p_in_pa"],
+            context["t_in_k"],
+            context["gas_obj"],
+            context["eos"],
+        )
+
+        final_gas_obj = stage_loop.get("final_gas_obj", context["gas_obj"])
+        final_gas_comp = stage_loop.get("final_gas_comp")
+        if eos_chain is not None and final_gas_comp:
+            eos_chain.update_composition(final_gas_comp)
+        outlet_props = self._get_thermo_properties(
+            context["p_out_pa"],
+            final_t_out_k,
+            final_gas_obj,
+            context["eos"],
+        )
 
         return {
             "final_t_out_k": final_t_out_k,
@@ -1179,20 +1219,11 @@ class ThermoEngine:
             "fuel_composition": fuel_composition,
             "fuel_kgh": fuel_kgh,
             "heat_rate": heat_rate,
+            "driver_thermal_efficiency_pct": round(therm_eff * 100.0, 2) if therm_eff > 0 else None,
             "lhv": lhv,
             "hhv": hhv,
-            "inlet_properties": self._get_thermo_properties(
-                context["p_in_pa"],
-                context["t_in_k"],
-                context["gas_obj"],
-                context["eos"],
-            ),
-            "outlet_properties": self._get_thermo_properties(
-                context["p_out_pa"],
-                final_t_out_k,
-                context["gas_obj"],
-                context["eos"],
-            ),
+            "inlet_properties": inlet_props,
+            "outlet_properties": outlet_props,
         }
 
     def calculate_design_performance(self, inputs):
@@ -1284,6 +1315,7 @@ class ThermoEngine:
                         num_stages=context["num_stages"],
                         staged_results=staged_results,
                         method=context["method"],
+                        driver_thermal_efficiency_pct=energy.get("driver_thermal_efficiency_pct"),
                     )
 
                     self._add_fuel_standard_density(results, energy["fuel_composition"], context["eos"])

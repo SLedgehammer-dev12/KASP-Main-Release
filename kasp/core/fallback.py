@@ -148,14 +148,22 @@ class EosChain:
         thermo_solver,
         *,
         raw_composition: dict[str, float],
+        custom_kij: dict[str, float] | None = None,
     ):
         self._tracker = tracker
         self._solver = thermo_solver
         self._raw_composition = dict(raw_composition)
+        self._custom_kij = dict(custom_kij) if custom_kij and isinstance(custom_kij, dict) else None
         self._gas_obj_cache: dict[str, Any] = {}
         self._comp_fractions: dict[str, float] | None = None
         self._locked_eos: str | None = None
         self._locked_fallback = False
+
+    def update_composition(self, new_composition: dict[str, float]):
+        """Ara-soğutucu VLE ayrışması sonrası aktif gaz kompozisyonunu günceller."""
+        self._raw_composition = dict(new_composition)
+        self._comp_fractions = None
+        self._gas_obj_cache.clear()
 
     def _ensure_fractions(self) -> dict[str, float]:
         if self._comp_fractions is None:
@@ -191,10 +199,10 @@ class EosChain:
             go = GasMixtureBuilder.build_coolprop_string(fractions)
         elif eos == "neqsim":
             go = GasMixtureBuilder.build_neqsim_input(fractions)
-        elif eos in ("thermopack", "pr", "srk", "aga8", "ccp", "dwsim"):
-            go = GasMixtureBuilder.build_thermo_data(fractions)
+        elif eos in ("thermopack", "pr", "srk", "aga8", "gerg2008", "ccp", "dwsim"):
+            go = GasMixtureBuilder.build_thermo_data(fractions, custom_kij=self._custom_kij)
         else:
-            go = GasMixtureBuilder.build_thermo_data(fractions)
+            go = GasMixtureBuilder.build_thermo_data(fractions, custom_kij=self._custom_kij)
 
         self._gas_obj_cache[eos] = go
         return go

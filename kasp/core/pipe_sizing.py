@@ -409,6 +409,7 @@ def size_single_pipe(
         "pipe_weight_kg_m": weight_kgm,
         "gas_density_kgm3": round(rho, 2),
         "gas_viscosity_pa_s": round(viscosity, 7),
+        "z_factor": round(Z, 4),
         "design_pressure_bar": p_design_bar,
         "pipe_material": material,
         "smys_mpa": SMYS_mpa,

@@ -92,20 +92,53 @@ _HIGH_ERROR_COMPONENTS = {"CARBONDIOXIDE", "HYDROGENSULFIDE", "HYDROGEN", "WATER
 _NORM_ALIASES = ALIAS_MAP
 
 
-def _build_kij_matrix(ids) -> list[list[float]] | None:
+def _parse_custom_kij_overrides(custom_kij) -> dict[tuple[str, str], float]:
+    """Kullanıcı kij override sözlüğünü kanonik sıralı çift anahtarlarına çevirir."""
+    if not custom_kij or not isinstance(custom_kij, dict):
+        return {}
+    parsed: dict[tuple[str, str], float] = {}
+    for raw_pair, raw_val in custom_kij.items():
+        if raw_val is None:
+            continue
+        pair_str = str(raw_pair).strip()
+        sep = ":" if ":" in pair_str else ("-" if "-" in pair_str else None)
+        if not sep:
+            continue
+        left, right = pair_str.split(sep, 1)
+        c1 = _NORM_ALIASES.get(_KEY(left), _KEY(left))
+        c2 = _NORM_ALIASES.get(_KEY(right), _KEY(right))
+        if not c1 or not c2 or c1 == c2:
+            continue
+        try:
+            val_f = float(raw_val)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(val_f):
+            continue
+        parsed[tuple(sorted((c1, c2)))] = max(-1.0, min(1.0, val_f))
+    return parsed
+
+
+def _build_kij_matrix(ids, custom_kij=None) -> list[list[float]] | None:
     """PR/SRK için NxN kij matrisi üretir (simetrik). Değer yoksa 0.0.
 
-    Tüm çiftler 0 ise `None` döndürür (thermo varsayılanı kullanılır).
+    Kullanıcı `custom_kij` değerleri literatür tablosunu ezer.
+    Tüm çiftler 0 ve kullanıcı override yoksa `None` döndürür.
     """
     n = len(ids)
     if n <= 1:
         return None
     normalized = [_NORM_ALIASES.get(_KEY(i), _KEY(i)) for i in ids]
+    overrides = _parse_custom_kij_overrides(custom_kij)
     matrix = [[0.0] * n for _ in range(n)]
-    any_nonzero = False
+    any_nonzero_or_override = False
     for i in range(n):
         for j in range(i + 1, n):
             key = tuple(sorted((normalized[i], normalized[j])))
+            if key in overrides:
+                matrix[i][j] = matrix[j][i] = float(overrides[key])
+                any_nonzero_or_override = True
+                continue
             kij = _PR_SRK_KIJ.get(key)
             if kij is None:
                 # Alt/çapraz anahtar (ör. H2S/CO2 alias) denemesi
@@ -114,8 +147,8 @@ def _build_kij_matrix(ids) -> list[list[float]] | None:
                 kij = _PR_SRK_KIJ.get((normalized[j], normalized[i]))
             if kij is not None:
                 matrix[i][j] = matrix[j][i] = float(kij)
-                any_nonzero = True
-    return matrix if any_nonzero else None
+                any_nonzero_or_override = True
+    return matrix if any_nonzero_or_override else None
 
 
 def _check_missing_kij_pairs(ids, kijs) -> list[str]:
@@ -184,13 +217,19 @@ class ThermodynamicSolver:
             ids = gas_obj.get("ids", gas_obj.get("IDs", []))
             fractions = gas_obj.get("mol_fractions", gas_obj.get("zs", []))
             components_tuple = tuple(sorted(zip(ids, fractions)))
+            custom_kij = gas_obj.get("custom_kij")
+            if custom_kij and isinstance(custom_kij, dict):
+                kij_tuple = tuple(
+                    sorted((str(k), round(float(v), 6)) for k, v in custom_kij.items() if v is not None)
+                )
+                return hash((components_tuple, kij_tuple))
             return hash(components_tuple)
         return hash(str(gas_obj))
 
     def _build_cache_key(self, P_pa: float, T_k: float, gas_obj, eos_method: str):
         return (
-            round(P_pa, 1),
-            round(T_k, 2),
+            round(P_pa, 2),
+            round(T_k, 5),
             self._build_gas_hash(gas_obj),
             eos_method,
         )
@@ -215,6 +254,118 @@ class ThermodynamicSolver:
     def _record_cache_miss(self):
         with self._cache_lock:
             self._cache_misses += 1
+
+    # (mu_298_pa_s, sutherland_S_k, Tc_k, Pc_pa, Vc_cm3_mol, mw_g_mol)
+    _COMPONENT_VISCOSITY_DATA = {
+        "METHANE": (1.106e-5, 169.0, 190.56, 4.599e6, 98.6, 16.043),
+        "ETHANE": (9.35e-6, 252.0, 305.32, 4.872e6, 145.5, 30.069),
+        "PROPANE": (8.15e-6, 278.0, 369.83, 4.248e6, 200.0, 44.096),
+        "ISOBUTANE": (7.45e-6, 300.0, 407.85, 3.640e6, 262.7, 58.123),
+        "BUTANE": (7.40e-6, 310.0, 425.12, 3.796e6, 255.0, 58.123),
+        "ISOPENTANE": (6.80e-6, 325.0, 460.40, 3.381e6, 306.0, 72.150),
+        "PENTANE": (6.75e-6, 330.0, 469.70, 3.370e6, 313.0, 72.150),
+        "HEXANE": (6.40e-6, 350.0, 507.60, 3.025e6, 371.0, 86.177),
+        "HEPTANE": (6.00e-6, 370.0, 540.20, 2.740e6, 428.0, 100.204),
+        "OCTANE": (5.60e-6, 390.0, 568.70, 2.490e6, 486.0, 114.231),
+        "NONANE": (5.25e-6, 410.0, 594.60, 2.290e6, 544.0, 128.258),
+        "DECANE": (4.95e-6, 430.0, 617.70, 2.110e6, 600.0, 142.285),
+        "HYDROGEN": (8.90e-6, 72.0, 33.19, 1.313e6, 64.2, 2.016),
+        "HYDROGENSULFIDE": (1.240e-5, 331.0, 373.53, 8.963e6, 98.5, 34.081),
+        "NITROGEN": (1.781e-5, 111.0, 126.20, 3.398e6, 89.5, 28.013),
+        "CARBONDIOXIDE": (1.495e-5, 240.0, 304.13, 7.377e6, 94.1, 44.010),
+        "WATER": (9.85e-6, 650.0, 647.10, 22.064e6, 55.9, 18.015),
+        "OXYGEN": (2.055e-5, 127.0, 154.58, 5.043e6, 73.4, 31.999),
+        "ARGON": (2.260e-5, 144.0, 150.86, 4.898e6, 74.6, 39.948),
+        "HELIUM": (1.985e-5, 79.4, 5.19, 0.227e6, 57.3, 4.003),
+        "NEON": (3.175e-5, 61.0, 44.40, 2.760e6, 41.7, 20.180),
+        "KRYPTON": (2.535e-5, 188.0, 209.40, 5.500e6, 91.2, 83.798),
+        "XENON": (2.310e-5, 252.0, 289.70, 5.840e6, 118.0, 131.293),
+        "AIR": (1.845e-5, 110.4, 132.53, 3.786e6, 88.3, 28.965),
+    }
+
+    @classmethod
+    def _estimate_real_gas_viscosity(
+        cls,
+        T_k: float,
+        density_kg_m3: float,
+        MW_g_mol: float,
+        ids=None,
+        zs=None,
+    ) -> float:
+        """Herning-Zipperer (1936) seyreltik gaz karışımı + Jossi-Stiel-Thodos (1962)
+        yoğun gaz rezidüel viskozite korelasyonu ile dinamik viskozite (Pa·s) hesaplar."""
+        try:
+            t_safe = max(80.0, min(1500.0, float(T_k)))
+            rho_safe = max(0.0, float(density_kg_m3))
+            mw_safe = max(2.0, float(MW_g_mol)) if MW_g_mol and math.isfinite(MW_g_mol) else 18.0
+        except (TypeError, ValueError):
+            return 1.1e-5
+
+        from kasp.core.mixture import GasMixtureBuilder
+
+        rev_map = GasMixtureBuilder.REVERSE_THERMO_ID_MAP
+        comp_entries = []
+        if ids and zs and len(ids) == len(zs):
+            total_z = 0.0
+            for cid, z_raw in zip(ids, zs):
+                try:
+                    zf = float(z_raw)
+                except (TypeError, ValueError):
+                    continue
+                if zf <= 0.0:
+                    continue
+                canon = rev_map.get(str(cid).strip().lower(), normalize_component(str(cid)))
+                data = cls._COMPONENT_VISCOSITY_DATA.get(canon)
+                if data is not None:
+                    comp_entries.append((zf, data))
+                    total_z += zf
+            if total_z > 0.0:
+                comp_entries = [(zf / total_z, data) for zf, data in comp_entries]
+
+        if not comp_entries:
+            # Kompozisyon bilinmiyorsa Lee-Gonzalez-Eakin (1966) genel gaz korelasyonu
+            t_rankine = t_safe * 1.8
+            rho_g_cm3 = rho_safe * 1e-3
+            k_lge = ((9.379 + 0.01607 * mw_safe) * (t_rankine ** 1.5)) / (209.2 + 19.26 * mw_safe + t_rankine)
+            x_lge = 3.448 + (986.4 / t_rankine) + 0.01009 * mw_safe
+            y_lge = max(0.2, 2.447 - 0.2224 * x_lge)
+            mu_cp = 1e-4 * k_lge * math.exp(x_lge * (max(0.0, min(0.8, rho_g_cm3)) ** y_lge))
+            return max(4.0e-6, min(1.5e-4, mu_cp * 1e-3))
+
+        # 1. Herning-Zipperer seyreltik gaz viskozitesi mu_0(T) [Pa·s]
+        num_hz = 0.0
+        den_hz = 0.0
+        t_pc = 0.0
+        p_pc_pa = 0.0
+        v_pc_cm3_mol = 0.0
+        for y_i, (mu_298, s_k, tc_i, pc_i, vc_i, mw_i) in comp_entries:
+            mu_i_0 = mu_298 * ((t_safe / 298.15) ** 1.5) * ((298.15 + s_k) / (t_safe + s_k))
+            root_m = math.sqrt(mw_i)
+            num_hz += y_i * mu_i_0 * root_m
+            den_hz += y_i * root_m
+            t_pc += y_i * tc_i
+            p_pc_pa += y_i * pc_i
+            v_pc_cm3_mol += y_i * vc_i
+
+        mu_0_pa_s = (num_hz / den_hz) if den_hz > 0 else 1.1e-5
+
+        # 2. Jossi-Stiel-Thodos (1962) yoğun-gaz rezidüel viskozitesi
+        molar_density_mol_m3 = rho_safe / (mw_safe * 1e-3)
+        rho_r = max(0.0, min(2.8, molar_density_mol_m3 * (v_pc_cm3_mol * 1e-6)))
+        p_pc_atm = max(1.0, p_pc_pa / 101325.0)
+        xi_inv_cp = (max(10.0, t_pc) ** (1.0 / 6.0)) * (mw_safe ** -0.5) * (p_pc_atm ** (-2.0 / 3.0))
+
+        rhs = (
+            0.10230
+            + 0.023364 * rho_r
+            + 0.058533 * (rho_r ** 2)
+            - 0.040758 * (rho_r ** 3)
+            + 0.0093324 * (rho_r ** 4)
+        )
+        base_zero = 0.10230 ** 4
+        delta_mu_cp = max(0.0, (rhs ** 4) - base_zero) / max(1e-6, xi_inv_cp)
+        mu_pa_s = mu_0_pa_s + (delta_mu_cp * 1e-3)
+        return max(4.0e-6, min(2.5e-4, mu_pa_s))
 
     @staticmethod
     def _speed_of_sound(k_value, pressure_pa, density, Z=1.0):
@@ -599,7 +750,8 @@ class ThermodynamicSolver:
             from kasp.core.mixture import GasMixtureBuilder
             fractions = self._parse_composition_from_gas_obj(gas_obj)
             if fractions:
-                return GasMixtureBuilder.build_thermo_data(fractions)
+                custom_kij = gas_obj.get("custom_kij") if isinstance(gas_obj, dict) else None
+                return GasMixtureBuilder.build_thermo_data(fractions, custom_kij=custom_kij)
         except Exception as exc:
             logger.debug("Failed to coerce gas_obj to thermo data: %s", exc)
         return None
@@ -651,27 +803,52 @@ class ThermodynamicSolver:
         if mixture_string not in self._run_tracking.as_cache:
             try:
                 from CoolProp import AbstractState
-                AS = AbstractState("HEOS", mixture_string)
-                try:
-                    AS.build_phase_envelope("")
-                except Exception as e:
-                    logger.debug("Phase envelope build failed for %s: %s", mixture_string, e)
+
+                backend = "HEOS"
+                spec = str(mixture_string or "").strip()
+                if "::" in spec:
+                    b_part, spec = spec.split("::", 1)
+                    if b_part.strip():
+                        backend = b_part.strip()
+
+                names: list[str] = []
+                fracs: list[float] = []
+                has_brackets = "[" in spec and "]" in spec
+                if has_brackets:
+                    for token in spec.split("&"):
+                        tok = token.strip()
+                        if not tok:
+                            continue
+                        if "[" in tok and tok.endswith("]"):
+                            nm, fr_s = tok[:-1].split("[", 1)
+                            names.append(nm.strip())
+                            fracs.append(float(fr_s))
+                        else:
+                            names.append(tok)
+                            fracs.append(1.0)
+                    AS = AbstractState(backend, "&".join(names))
+                    fsum = sum(fracs)
+                    if fsum > 0:
+                        AS.set_mole_fractions([f / fsum for f in fracs])
+                else:
+                    AS = AbstractState(backend, spec)
                 self._run_tracking.as_cache[mixture_string] = AS
             except Exception:
                 self._run_tracking.as_cache[mixture_string] = None
         return self._run_tracking.as_cache.get(mixture_string)
 
-    def _get_coolprop_phase(self, mixture_string: str, P_pa: float, T_k: float) -> str | None:
-        """AbstractState.phase() ile güvenilir faz tespiti, karışımlarda faz zarfını yönetir."""
+    @staticmethod
+    def _coolprop_iphase_to_str(iphase: int) -> str | None:
         try:
-            AS = self._get_coolprop_abstract_state(mixture_string)
-            if AS is None:
-                return None
-            AS.update(CP.PT_INPUTS, P_pa, T_k)
-            iphase = AS.phase()
-            from CoolProp import iphase_gas, iphase_liquid, iphase_supercritical
-            from CoolProp import iphase_supercritical_gas, iphase_supercritical_liquid
-            from CoolProp import iphase_twophase, iphase_not_imposed
+            from CoolProp import (
+                iphase_gas,
+                iphase_liquid,
+                iphase_supercritical,
+                iphase_supercritical_gas,
+                iphase_supercritical_liquid,
+                iphase_twophase,
+            )
+
             phase_map = {
                 iphase_gas: "gas",
                 iphase_liquid: "liquid",
@@ -681,36 +858,85 @@ class ThermodynamicSolver:
                 iphase_twophase: "twophase",
             }
             return phase_map.get(iphase)
+        except Exception:
+            return None
+
+    def _get_coolprop_phase(self, mixture_string: str, P_pa: float, T_k: float) -> str | None:
+        """AbstractState.phase() ile güvenilir faz tespiti, karışımlarda faz zarfını yönetir."""
+        try:
+            AS = self._get_coolprop_abstract_state(mixture_string)
+            if AS is None:
+                return None
+            AS.update(CP.PT_INPUTS, P_pa, T_k)
+            return self._coolprop_iphase_to_str(AS.phase())
         except Exception as exc:
             logger.debug("CoolProp phase detection failed: %s", exc)
             return None
 
     def _solve_coolprop(self, P_pa: float, T_k: float, mixture_string: str) -> ThermodynamicState:
-        """CoolProp HEOS motorunu kullanarak özellikleri çözer."""
+        """CoolProp HEOS motorunu kullanarak özellikleri çözer (tekil AbstractState hızlı yolu + PropsSI yedekli)."""
         if not COOLPROP_LOADED:
             raise ImportError("CoolProp kütüphanesi aktif değil.")
         if P_pa <= 0 or T_k <= 0:
             raise ValueError(f"Geçersiz basınç veya sıcaklık: P={P_pa}, T={T_k}")
-            
-        H = CP.PropsSI('Hmass', 'P', P_pa, 'T', T_k, mixture_string)
-        S = CP.PropsSI('Smass', 'P', P_pa, 'T', T_k, mixture_string)
-        Z = CP.PropsSI('Z', 'P', P_pa, 'T', T_k, mixture_string)
-        D = CP.PropsSI('Dmass', 'P', P_pa, 'T', T_k, mixture_string)
-        a = CP.PropsSI('A', 'P', P_pa, 'T', T_k, mixture_string)
-        Cp = CP.PropsSI('Cpmass', 'P', P_pa, 'T', T_k, mixture_string)
-        Cv = CP.PropsSI('Cvmass', 'P', P_pa, 'T', T_k, mixture_string)
-        k = Cp / Cv if Cv > 0 else 1.4
-        MW_kg_mol = CP.PropsSI('M', mixture_string) 
-        
-        # Faz tespiti: AbstractState ile (karışım faz zarfını otomatik yönetir)
-        # AbstractState başarısız olursa PhaseSI, o da başarısız olursa Z+ρ sınıflandırıcıya bırak
-        phase_str = self._get_coolprop_phase(mixture_string, P_pa, T_k)
+
+        props_mod = getattr(getattr(CP, "PropsSI", None), "__module__", "") or ""
+        is_native_coolprop = "CoolProp" in props_mod
+
+        H = S = Z = D = a = Cp = Cv = MW_kg_mol = mu_val = None
+        phase_str = None
+
+        if is_native_coolprop:
+            AS = self._get_coolprop_abstract_state(mixture_string)
+            if AS is not None:
+                try:
+                    AS.update(CP.PT_INPUTS, float(P_pa), float(T_k))
+                    H = float(AS.hmass())
+                    S = float(AS.smass())
+                    D = float(AS.rhomass())
+                    Cp = float(AS.cpmass())
+                    Cv = float(AS.cvmass())
+                    MW_kg_mol = float(AS.molar_mass())
+                    rhomolar = float(AS.rhomolar())
+                    r_gas = float(AS.gas_constant())
+                    Z = float(P_pa) / (rhomolar * r_gas * float(T_k)) if (rhomolar > 0 and r_gas > 0) else float(AS.compressibility_factor())
+                    phase_str = self._coolprop_iphase_to_str(AS.phase())
+                    try:
+                        a = float(AS.speed_sound())
+                    except Exception:
+                        a = 0.0
+                    try:
+                        mu_val = float(AS.viscosity())
+                    except Exception:
+                        mu_val = None
+                except Exception as exc:
+                    logger.debug("AbstractState fast path failed for %s: %s", mixture_string, exc)
+                    H = None
+
+        if H is None:
+            H = CP.PropsSI('Hmass', 'P', P_pa, 'T', T_k, mixture_string)
+            S = CP.PropsSI('Smass', 'P', P_pa, 'T', T_k, mixture_string)
+            Z = CP.PropsSI('Z', 'P', P_pa, 'T', T_k, mixture_string)
+            D = CP.PropsSI('Dmass', 'P', P_pa, 'T', T_k, mixture_string)
+            a = CP.PropsSI('A', 'P', P_pa, 'T', T_k, mixture_string)
+            Cp = CP.PropsSI('Cpmass', 'P', P_pa, 'T', T_k, mixture_string)
+            Cv = CP.PropsSI('Cvmass', 'P', P_pa, 'T', T_k, mixture_string)
+            MW_kg_mol = CP.PropsSI('M', mixture_string)
+            phase_str = self._get_coolprop_phase(mixture_string, P_pa, T_k)
+
+        if mu_val is None or not math.isfinite(mu_val) or mu_val <= 0:
+            try:
+                mu_val = CP.PropsSI('V', 'P', P_pa, 'T', T_k, mixture_string)
+            except Exception:
+                mu_val = self._estimate_real_gas_viscosity(T_k, D, MW_kg_mol * 1000.0)
+
+        k = Cp / Cv if Cv and Cv > 0 else 1.4
         if phase_str is None:
             try:
                 phase_str = CP.PhaseSI('P', P_pa, 'T', T_k, mixture_string)
             except Exception:
                 phase_str = None
-        
+
         state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
@@ -724,7 +950,7 @@ class ThermodynamicSolver:
             density=D,
             phase=phase_str or "gas",
             fallback=False,
-            mu=CP.PropsSI('V', 'P', P_pa, 'T', T_k, mixture_string),
+            mu=mu_val,
             speed_of_sound=a,
         )
         # a² = (∂P/∂ρ)_s → k_s = a²·ρ/P. CoolProp'ın "isentropic_exponent"
@@ -751,8 +977,9 @@ class ThermodynamicSolver:
         molar_mass = MW_g_mol / 1000.0  # kg/mol
         
         EOS_CLASS = PRMIX if eos_method == 'pr' else SRKMIX
-        # PR/SRK ikili etkileşim katsayıları (kij) — literatür tablosundan.
-        kijs = _build_kij_matrix(ids)
+        # PR/SRK ikili etkileşim katsayıları (kij) — kullanıcı override + literatür tablosu.
+        custom_kij = gas_data.get("custom_kij") if isinstance(gas_data, dict) else None
+        kijs = _build_kij_matrix(ids, custom_kij=custom_kij)
         missing_risky_pairs = _check_missing_kij_pairs(ids, kijs)
         if missing_risky_pairs:
             # Yüksek-sapma riskli bileşen içeren çift(ler)de kij=0 varsa kullanıcıyı uyar
@@ -883,6 +1110,7 @@ class ThermodynamicSolver:
         except Exception as e:
             logger.debug("Speed of sound calculation error: %s", e)
 
+        mu_est = self._estimate_real_gas_viscosity(T_k, D, MW_g_mol, ids=ids, zs=zs)
         state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
@@ -896,6 +1124,7 @@ class ThermodynamicSolver:
             density=D,
             phase=phase_str,
             fallback=internal_fallback,
+            mu=mu_est,
             speed_of_sound=speed_of_sound,
         )
         if missing_risky_pairs:
@@ -1013,6 +1242,7 @@ class ThermodynamicSolver:
         if Z < 0.3:
             phase_str = 'liquid'
             
+        mu_est = self._estimate_real_gas_viscosity(T_k, density, MW_g_mol, ids=ids, zs=zs)
         state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
@@ -1026,6 +1256,7 @@ class ThermodynamicSolver:
             density=density,
             phase=phase_str,
             fallback=False,
+            mu=mu_est,
             speed_of_sound=speed_of_sound,
             isentropic_exponent=true_isentropic_exponent,
         )
@@ -1126,6 +1357,7 @@ class ThermodynamicSolver:
             except Exception:
                 speed_of_sound = self._speed_of_sound(k, P_pa, density)
             
+        mu_est = self._estimate_real_gas_viscosity(T_k, density, MW_g_mol, ids=ids, zs=zs)
         state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
@@ -1139,6 +1371,7 @@ class ThermodynamicSolver:
             density=density,
             phase=phase_str,
             fallback=internal_fallback,
+            mu=mu_est,
             speed_of_sound=speed_of_sound
         )
         if internal_fallback:
@@ -1218,6 +1451,7 @@ class ThermodynamicSolver:
             
         speed_of_sound = self._speed_of_sound(k, P_pa, density)
         
+        mu_est = self._estimate_real_gas_viscosity(T_k, density, MW_g_mol, ids=ids, zs=zs)
         return self._build_state(
             P_pa=P_pa,
             T_k=T_k,
@@ -1231,6 +1465,7 @@ class ThermodynamicSolver:
             density=density,
             phase=phase_str,
             fallback=False,
+            mu=mu_est,
             speed_of_sound=speed_of_sound
         )
 
@@ -1359,6 +1594,9 @@ class ThermodynamicSolver:
         # Önceki log(T/273.15) paydası PR yoluyla ~Cp·ln(298.15/273.15)≈90 J/kgK süreksizlik yaratıyordu.
         S_ideal = Cp_ideal * math.log(T_k / 298.15) - R_specific * math.log(P_pa / STD_PRESS_PA) if T_k > 0 else 0
         
+        mu_fb = self._estimate_real_gas_viscosity(
+            T_k, max(0.1, rho_ideal), M_kg_mol * 1000.0, ids=ids, zs=zs
+        )
         state = self._build_state(
             P_pa=P_pa,
             T_k=T_k,
@@ -1372,6 +1610,7 @@ class ThermodynamicSolver:
             density=max(0.1, rho_ideal),
             phase='z_factor_fallback' if z_estimate is not None else 'ideal_fallback',
             fallback=True,
+            mu=mu_fb,
             speed_of_sound=self._speed_of_sound(k_ideal, P_pa, max(rho_ideal, 0.1)),
         )
         if z_estimate is not None:

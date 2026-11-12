@@ -92,7 +92,8 @@ class ThermoMethodSuite:
 
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
-            k1, Z1 = isentropic_exponent(state_in), state_in.Z
+            m1, _, k1 = CompressorAerodynamics.real_gas_temperature_exponents(state_in, poly_eff)
+            Z1 = state_in.Z
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 1): {error}")
 
@@ -118,7 +119,7 @@ class ThermoMethodSuite:
                 f"📊 API 617 Appendix C — İntegral metodu: PR={pr:.2f} > {EngineSettings.PR_INTEGRATION_THRESHOLD}"
             )
 
-        n_init = (k1 - 1) / (k1 * poly_eff)
+        n_init = m1
         t2_guess = t_in * (p_out / p_in) ** n_init
         if t2_guess <= 0 or t2_guess > t_in * 10:
             t2_guess = t_in * 1.5
@@ -143,7 +144,8 @@ class ThermoMethodSuite:
 
             try:
                 state_out = self.thermo_solver.get_properties(p_out, t2_old, gas_obj, eos)
-                k2, Z2 = isentropic_exponent(state_out), state_out.Z
+                m2, _, k2 = CompressorAerodynamics.real_gas_temperature_exponents(state_out, poly_eff)
+                Z2 = state_out.Z
             except Exception as error:
                 raise RuntimeError(f"Çıkış özellikleri hesaplanamadı (Metot 1, iter {iteration}): {error}")
 
@@ -160,12 +162,12 @@ class ThermoMethodSuite:
                 except Exception as error:
                     self.logger.warning(f"⚠ İntegral metot başarısız, ortalamaya dönülüyor: {error}")
                     k_avg = (k1 + k2) / 2.0
-                    n_minus_1_over_n = (k_avg - 1) / (k_avg * poly_eff)
+                    n_minus_1_over_n = (m1 + m2) / 2.0
                     use_integral_local = False
                     history["method_used"] = "averaging_fallback"
             else:
                 k_avg = (k1 + k2) / 2.0
-                n_minus_1_over_n = (k_avg - 1) / (k_avg * poly_eff)
+                n_minus_1_over_n = (m1 + m2) / 2.0
 
             z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, Z2)
 
@@ -184,6 +186,10 @@ class ThermoMethodSuite:
 
             if abs(t2_guess - t2_old) < tolerance:
                 try:
+                    state_out_conv = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+                except Exception:
+                    state_out_conv = state_out
+                try:
                     state_avg = self.thermo_solver.get_properties(
                         (p_in + p_out) / 2, (t_in + t2_guess) / 2, gas_obj, eos
                     )
@@ -193,13 +199,15 @@ class ThermoMethodSuite:
                     mw = state_in.MW
 
                 r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
-                poly_head = self._calculate_polytropic_head(
-                    z_avg,
-                    r_specific,
-                    t_in,
-                    p_out / p_in,
-                    n_minus_1_over_n,
-                )
+                v1 = CompressorAerodynamics._specific_volume_m3_kg(state_in, r_specific)
+                v2 = CompressorAerodynamics._specific_volume_m3_kg(state_out_conv, r_specific)
+                w_uncorr = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(p_in, v1, p_out, v2)
+                if w_uncorr > 0.0 and math.isfinite(w_uncorr):
+                    poly_head = w_uncorr / 1000.0
+                else:
+                    poly_head = self._calculate_polytropic_head(
+                        z_avg, r_specific, t_in, p_out / p_in, n_minus_1_over_n
+                    )
 
                 self.logger.debug(f"✓ Metot 1 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K")
                 history["converged"] = True
@@ -210,22 +218,27 @@ class ThermoMethodSuite:
         try:
             state_avg = self.thermo_solver.get_properties((p_in + p_out) / 2, (t_in + t2_guess) / 2, gas_obj, eos)
             z_avg_final = state_avg.Z
-            k_final = isentropic_exponent(state_avg)
+            n_final, _, _ = CompressorAerodynamics.real_gas_temperature_exponents(state_avg, poly_eff)
             mw = state_avg.MW
         except Exception:
             z_avg_final = Z1
-            k_final = k1
+            n_final = m1
             mw = state_in.MW
 
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
-        n_final = (k_final - 1) / (k_final * poly_eff)
-        poly_head = self._calculate_polytropic_head(
-            z_avg_final,
-            r_specific,
-            t_in,
-            p_out / p_in,
-            n_final,
-        )
+        try:
+            state_out_fb = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+            v1 = CompressorAerodynamics._specific_volume_m3_kg(state_in, r_specific)
+            v2 = CompressorAerodynamics._specific_volume_m3_kg(state_out_fb, r_specific)
+            poly_head = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(p_in, v1, p_out, v2) / 1000.0
+        except Exception:
+            poly_head = self._calculate_polytropic_head(
+                z_avg_final,
+                r_specific,
+                t_in,
+                p_out / p_in,
+                n_final,
+            )
         history["termination_reason"] = history["termination_reason"] or "max_iterations"
         return t2_guess, poly_head, z_avg_final, history
 
@@ -234,9 +247,11 @@ class ThermoMethodSuite:
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
         poly_eff = self._coerce_poly_eff(poly_eff)
+        poly_eff_clamped = max(0.3, min(0.99, float(poly_eff) if math.isfinite(poly_eff) else 0.75))
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
-            k1, Z1 = isentropic_exponent(state_in), state_in.Z
+            m1, _, k1 = CompressorAerodynamics.real_gas_temperature_exponents(state_in, poly_eff_clamped)
+            Z1 = state_in.Z
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 2): {error}")
 
@@ -254,7 +269,7 @@ class ThermoMethodSuite:
                 "termination_reason": "zero_dp",
             }
 
-        n_init = (k1 - 1) / (k1 * poly_eff)
+        n_init = max(0.02, min(0.45, m1))
         t2_guess = t_in * (p_out / p_in) ** n_init
         if t2_guess <= 0:
             t2_guess = t_in * 1.1
@@ -272,19 +287,21 @@ class ThermoMethodSuite:
             "termination_reason": None,
         }
 
+        m2 = m1
+        k2 = k1
+        Z2 = Z1
         for iteration in range(max_iter):
             t2_old = t2_guess
 
             try:
                 state_out = self.thermo_solver.get_properties(p_out, t2_old, gas_obj, eos)
-                k2, Z2 = isentropic_exponent(state_out), state_out.Z
+                m2, _, k2 = CompressorAerodynamics.real_gas_temperature_exponents(state_out, poly_eff_clamped)
+                Z2 = state_out.Z
             except Exception as error:
                 raise RuntimeError(f"Çıkış özellikleri hesaplanamadı (Metot 2, iter {iteration}): {error}")
 
-            # k ve poly_eff sınırla - eff 0 olmamalı
-            k2_clamped = max(1.02, min(1.8, float(k2) if math.isfinite(k2) else 1.4))
-            poly_eff_clamped = max(0.3, min(0.99, float(poly_eff) if math.isfinite(poly_eff) else 0.75))
-            n_minus_1_over_n = (k2_clamped - 1) / (k2_clamped * poly_eff_clamped)
+            m2_val = float(m2) if math.isfinite(m2) else m1
+            n_minus_1_over_n = 0.5 * (m1 + m2_val)
             if abs(n_minus_1_over_n) < 1e-10:
                 history["termination_reason"] = "near_zero_exponent"
                 break
@@ -315,17 +332,21 @@ class ThermoMethodSuite:
                     break
                 state_out_final = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
                 z2_final = state_out_final.Z
-                k2_final = max(1.02, min(1.8, isentropic_exponent(state_out_final)))
-                n_final_conv = max(0.02, min(0.45, (k2_final - 1) / (k2_final * poly_eff_clamped)))
+                m2_final, _, _ = CompressorAerodynamics.real_gas_temperature_exponents(
+                    state_out_final, poly_eff_clamped
+                )
+                n_final_conv = max(0.02, min(0.45, 0.5 * (m1 + m2_final)))
                 z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, z2_final)
                 r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
-                poly_head = self._calculate_polytropic_head(
-                    z_avg,
-                    r_specific,
-                    t_in,
-                    p_out / p_in,
-                    n_final_conv,
-                )
+                v1 = CompressorAerodynamics._specific_volume_m3_kg(state_in, r_specific)
+                v2_final = CompressorAerodynamics._specific_volume_m3_kg(state_out_final, r_specific)
+                w_uncorr = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(p_in, v1, p_out, v2_final)
+                if w_uncorr > 0.0 and math.isfinite(w_uncorr):
+                    poly_head = w_uncorr / 1000.0
+                else:
+                    poly_head = self._calculate_polytropic_head(
+                        z_avg, r_specific, t_in, p_out / p_in, n_final_conv
+                    )
 
                 self.logger.debug(f"✓ Metot 2 yakınsadı: {iteration + 1} iter, T_out={t2_guess:.1f} K")
                 history["converged"] = True
@@ -335,16 +356,20 @@ class ThermoMethodSuite:
         self.logger.warning(f"⚠ Metot 2: Yakınsama sağlanamadı ({max_iter} iter).")
         z_avg_final = CompressorAerodynamics._calculate_z_average_logarithmic(Z1, Z2)
         r_specific = R_UNIVERSAL_J_MOL_K / (state_in.MW / 1000.0)
-        poly_eff_clamped = max(0.3, min(0.99, float(poly_eff) if math.isfinite(poly_eff) else 0.75))
-        k2_clamped_final = max(1.02, min(1.8, float(k2) if math.isfinite(k2) else 1.4))
-        n_final = max(0.02, min(0.45, (k2_clamped_final - 1) / (k2_clamped_final * poly_eff_clamped)))
-        poly_head = self._calculate_polytropic_head(
-            z_avg_final,
-            r_specific,
-            t_in,
-            p_out / p_in,
-            n_final,
-        )
+        n_final = max(0.02, min(0.45, float(m2) if math.isfinite(m2) else 0.25))
+        try:
+            state_out_fb = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
+            v1 = CompressorAerodynamics._specific_volume_m3_kg(state_in, r_specific)
+            v2_fb = CompressorAerodynamics._specific_volume_m3_kg(state_out_fb, r_specific)
+            poly_head = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(p_in, v1, p_out, v2_fb) / 1000.0
+        except Exception:
+            poly_head = self._calculate_polytropic_head(
+                z_avg_final,
+                r_specific,
+                t_in,
+                p_out / p_in,
+                n_final,
+            )
         history["termination_reason"] = history["termination_reason"] or "max_iterations"
         return t2_guess, poly_head, z_avg_final, history
 
@@ -357,6 +382,7 @@ class ThermoMethodSuite:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
             z0 = state_in.Z
             mw = state_in.MW
+            _, _, k0 = CompressorAerodynamics.real_gas_temperature_exponents(state_in, poly_eff)
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 3): {error}")
 
@@ -365,6 +391,7 @@ class ThermoMethodSuite:
                 "pressure": [p_in],
                 "temperature": [t_in],
                 "z_factor": [z0],
+                "k_value": [k0],
                 "head_incremental": [0.0],
                 "step": [0],
                 "method_used": "incremental_pressure",
@@ -379,6 +406,7 @@ class ThermoMethodSuite:
             "pressure": [p_in],
             "temperature": [t_in],
             "z_factor": [z0],
+            "k_value": [k0],
             "head_incremental": [0.0],
             "step": [0],
             "method_used": "incremental_pressure",
@@ -390,36 +418,46 @@ class ThermoMethodSuite:
         t_current = t_in
         total_head = 0.0
         z_list = [z0]
+        state_step = state_in
 
         for index in range(step_count):
-            p_start = pressures[index]
-            p_end = pressures[index + 1]
+            p_start = float(pressures[index])
+            p_end = float(pressures[index + 1])
 
             try:
-                state_step = self.thermo_solver.get_properties(p_start, t_current, gas_obj, eos)
-                k_step = isentropic_exponent(state_step)
-                z_step = state_step.Z
+                if index > 0:
+                    state_step = self.thermo_solver.get_properties(p_start, t_current, gas_obj, eos)
+                n_step, _, k_step = CompressorAerodynamics.real_gas_temperature_exponents(
+                    state_step, poly_eff
+                )
             except Exception as error:
                 raise RuntimeError(f"Artımlı hesaplama hatası — Adım {index}: {error}")
 
-            n_step = (k_step - 1) / (k_step * poly_eff)
             if abs(n_step) < 1e-10:
                 raise RuntimeError(f"n_step sıfıra çok yakın (adım {index}).")
 
-            head_step = self._calculate_polytropic_head(
-                z_step,
-                r_specific,
-                t_current,
-                p_end / p_start,
-                n_step,
-            )
-            total_head += head_step
-            t_current = t_current * (p_end / p_start) ** n_step
+            t_next = t_current * (p_end / p_start) ** n_step
+            try:
+                state_next = self.thermo_solver.get_properties(p_end, t_next, gas_obj, eos)
+                v_start = CompressorAerodynamics._specific_volume_m3_kg(state_step, r_specific)
+                v_end = CompressorAerodynamics._specific_volume_m3_kg(state_next, r_specific)
+                head_step = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(
+                    p_start, v_start, p_end, v_end
+                ) / 1000.0
+                z_end = state_next.Z
+                _, _, k_end = CompressorAerodynamics.real_gas_temperature_exponents(state_next, poly_eff)
+                state_step = state_next
+            except Exception as error:
+                raise RuntimeError(f"Artımlı hesaplama hatası — Adım {index}: {error}")
 
-            z_list.append(z_step)
+            total_head += head_step
+            t_current = t_next
+
+            z_list.append(z_end)
             history["pressure"].append(p_end)
             history["temperature"].append(t_current)
-            history["z_factor"].append(z_step)
+            history["z_factor"].append(z_end)
+            history["k_value"].append(k_end)
             history["head_incremental"].append(total_head)
             history["step"].append(index + 1)
 
@@ -432,7 +470,10 @@ class ThermoMethodSuite:
         poly_eff = self._coerce_poly_eff(poly_eff)
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
-            h1, s1, k1, z1 = state_in.H, state_in.S, isentropic_exponent(state_in), state_in.Z
+            h1, s1, z1 = state_in.H, state_in.S, state_in.Z
+            m_poly_1, m_isen_1, k1 = CompressorAerodynamics.real_gas_temperature_exponents(
+                state_in, poly_eff
+            )
             mw = state_in.MW
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 4): {error}")
@@ -467,7 +508,7 @@ class ThermoMethodSuite:
                 f"⚠ Metot 4: ΔH_isen negatif ({delta_h_isen:.1f} J/kg). k-tabanlı izentropik fallback kullanılıyor."
             )
             pressure_ratio = p_out / p_in
-            n_isen_fb = (k1 - 1) / k1
+            n_isen_fb = m_isen_1
             z_avg_fb = z1
             delta_h_isen = (
                 z_avg_fb
@@ -483,29 +524,38 @@ class ThermoMethodSuite:
 
         pressure_ratio = p_out / p_in
         k_avg = k1
+        exponent_isen = m_isen_1
+        exponent_poly = m_poly_1
         t2_guess = t_isen * (1.0 + (1.0 - poly_eff) * 0.3)
         iterations_hs = []
-        outer_iterations = 3
+        outer_iterations = 4
         hs_converged = False
+        v1_hs = CompressorAerodynamics._specific_volume_m3_kg(state_in, r_specific)
+        v2s_hs = CompressorAerodynamics._specific_volume_m3_kg(state_isen, r_specific) if not fallback_used else v1_hs
+        w_isen_hs = (
+            CompressorAerodynamics._uncorrected_polytropic_work_j_kg(p_in, v1_hs, p_out, v2s_hs)
+            if not fallback_used
+            else delta_h_isen
+        )
+        eta_isen_override = None
 
         for outer in range(outer_iterations):
-            exponent_isen = (k_avg - 1) / k_avg
-            exponent_poly = (k_avg - 1) / (k_avg * poly_eff)
-
-            pr_isen_term = math.pow(pressure_ratio, exponent_isen) - 1.0
-            pr_poly_term = math.pow(pressure_ratio, exponent_poly) - 1.0
-
-            if abs(pr_poly_term) < 1e-10:
-                eta_isen = poly_eff
+            if eta_isen_override is not None and math.isfinite(eta_isen_override) and eta_isen_override > 0:
+                eta_isen = eta_isen_override
             else:
-                eta_isen = pr_isen_term / pr_poly_term
+                pr_isen_term = math.pow(pressure_ratio, exponent_isen) - 1.0
+                pr_poly_term = math.pow(pressure_ratio, exponent_poly) - 1.0
+                if abs(pr_poly_term) < 1e-10:
+                    eta_isen = poly_eff
+                else:
+                    eta_isen = pr_isen_term / pr_poly_term
 
             eta_isen = max(0.01, min(1.0, eta_isen))
             delta_h_actual = delta_h_isen / eta_isen
             h_target = h1 + delta_h_actual
 
             max_iter = self._coerce_iteration_limit(30)
-            tol_h = 100.0
+            tol_h = 25.0
 
             for iteration in range(max_iter):
                 try:
@@ -566,8 +616,26 @@ class ThermoMethodSuite:
 
             try:
                 state_t2 = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
-                k2 = isentropic_exponent(state_t2)
+                m_poly_2, m_isen_2, k2 = CompressorAerodynamics.real_gas_temperature_exponents(
+                    state_t2, poly_eff
+                )
                 k_avg_new = (k1 + k2) / 2.0
+                exponent_isen = (m_isen_1 + m_isen_2) / 2.0
+                exponent_poly = (m_poly_1 + m_poly_2) / 2.0
+                if not fallback_used and w_isen_hs > 0.0:
+                    v2_t2 = CompressorAerodynamics._specific_volume_m3_kg(state_t2, r_specific)
+                    w_poly_t2 = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(
+                        p_in, v1_hs, p_out, v2_t2
+                    )
+                    if w_poly_t2 > 0.0:
+                        eta_isen_new = poly_eff * (w_isen_hs / w_poly_t2)
+                        if eta_isen_override is not None and abs(eta_isen_new - eta_isen_override) < 1e-4:
+                            k_avg = k_avg_new
+                            eta_isen = max(0.01, min(1.0, eta_isen_new))
+                            break
+                        eta_isen_override = eta_isen_new
+                        k_avg = k_avg_new
+                        continue
                 self.logger.debug(
                     f"  Dış döngü {outer}: k₁={k1:.4f}, k₂={k2:.4f}, k_avg: {k_avg:.4f} → {k_avg_new:.4f}"
                 )
@@ -578,6 +646,7 @@ class ThermoMethodSuite:
             except Exception:
                 break
 
+        state_out = None
         try:
             state_out = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
             z2 = state_out.Z
@@ -600,6 +669,14 @@ class ThermoMethodSuite:
 
         if abs(ln_pr) < 1e-10:
             poly_head = 0.0
+        elif state_out is not None and not fallback_used:
+            v1 = CompressorAerodynamics._specific_volume_m3_kg(state_in, r_specific)
+            v2 = CompressorAerodynamics._specific_volume_m3_kg(state_out, r_specific)
+            v2s = CompressorAerodynamics._specific_volume_m3_kg(state_isen, r_specific)
+            w_poly = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(p_in, v1, p_out, v2)
+            w_isen = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(p_in, v1, p_out, v2s)
+            f_s = max(0.85, min(1.15, delta_h_isen / w_isen)) if w_isen > 0 else 1.0
+            poly_head = (f_s * w_poly) / 1000.0
         else:
             sigma = ln_tr / ln_pr
             if abs(sigma) < 1e-10:
@@ -618,6 +695,7 @@ class ThermoMethodSuite:
             "pressure": [p_in, p_out],
             "temperature": [t_in, t2_guess],
             "z_factor": [z1, z2],
+            "k_value": [k1, k_avg],
             "iteration": list(range(len(iterations_hs) + 1)),
             "t_isentropic": t_isen,
             "delta_h_isentropic_kj": delta_h_isen / 1000.0,
@@ -637,9 +715,9 @@ class ThermoMethodSuite:
             f"ΔH_isen={delta_h_isen/1000:.1f} kJ/kg, ΔH_actual={delta_h_actual/1000:.1f} kJ/kg"
         )
 
-        # Faz siniri kontrolu: k-tabanli referans ile karsilastir
+        # Faz siniri kontrolu: gerçek gaz sıcaklık üssü referansı ile karşılaştır
         pr_total = p_out / p_in
-        n_poly_ref = (k1 - 1.0) / (k1 * poly_eff) if poly_eff > 0 else 0.1
+        n_poly_ref = exponent_poly if exponent_poly > 0 else m_poly_1
         t_out_kbased = t_in * (pr_total ** n_poly_ref)
         deviation_pct = abs(t2_guess - t_out_kbased) / t_out_kbased * 100.0 if t_out_kbased > 0 else 0
         if deviation_pct > 3.0:
@@ -872,21 +950,20 @@ class ThermoMethodSuite:
 
     def method_schultz_3exp(self, p_in, t_in, p_out, poly_eff, gas_obj, eos, max_iter=100, tolerance=0.01):
         """
-        Metot 6: Schultz 3-Üslü Gerçek Gaz Modeli (Schultz 1962, ASME Original).
+        Metot 6: Schultz 3-Üslü Gerçek Gaz Modeli (Schultz 1962, ASME PTC-10).
         X = (T/Z)*(dZ/dT)_P
         Y = 1 - (P/Z)*(dZ/dP)_T
-        n_v = k / [Y - X*(k-1)*(1/eta_p - 1)]
         m_T = (R*Z/Cp) * (1/eta_p + X)
+        1/n_v = Y - m_T * (1 + X), H_p = f_s * [n_v / (n_v - 1)] * (P_2*v_2 - P_1*v_1)
         """
         p_in, p_out = self._coerce_pressures(p_in, p_out)
         max_iter = self._coerce_iteration_limit(max_iter)
         tolerance = self._coerce_tolerance(tolerance)
         poly_eff = self._coerce_poly_eff(poly_eff)
-        
+
         try:
             state_in = self.thermo_solver.get_properties(p_in, t_in, gas_obj, eos)
             z1, k1 = state_in.Z, isentropic_exponent(state_in)
-            cp1 = max(100.0, float(state_in.Cp))
             mw = state_in.MW
         except Exception as error:
             raise RuntimeError(f"Giriş özellikleri hesaplanamadı (Metot 6): {error}")
@@ -905,8 +982,82 @@ class ThermoMethodSuite:
 
         r_specific = R_UNIVERSAL_J_MOL_K / (mw / 1000.0)
         pr = p_out / p_in
-        t2_guess = t_in * math.pow(pr, (k1 - 1.0) / (k1 * poly_eff))
-        
+
+        def _eval_schultz_point(p_pa: float, t_k: float, base_state=None):
+            st = base_state or self.thermo_solver.get_properties(p_pa, t_k, gas_obj, eos)
+            z_pt = max(1e-4, float(st.Z))
+            cp_pt = max(100.0, float(st.Cp))
+            k_pt = isentropic_exponent(st)
+
+            dt = max(0.25, min(1.0, 0.002 * t_k))
+            t_hi = t_k + dt
+            t_lo = max(1.0, t_k - dt)
+            st_t_hi = self.thermo_solver.get_properties(p_pa, t_hi, gas_obj, eos)
+            st_t_lo = self.thermo_solver.get_properties(p_pa, t_lo, gas_obj, eos)
+            dz_dt = (st_t_hi.Z - st_t_lo.Z) / max(1e-6, t_hi - t_lo)
+
+            dp = max(500.0, 0.005 * p_pa)
+            p_hi = p_pa + dp
+            p_lo = max(100.0, p_pa - dp)
+            st_p_hi = self.thermo_solver.get_properties(p_hi, t_k, gas_obj, eos)
+            st_p_lo = self.thermo_solver.get_properties(p_lo, t_k, gas_obj, eos)
+            dz_dp = (st_p_hi.Z - st_p_lo.Z) / max(1.0, p_hi - p_lo)
+
+            x_val = (t_k / z_pt) * dz_dt
+            y_val = 1.0 - (p_pa / z_pt) * dz_dp
+            m_t_val = (r_specific * z_pt / cp_pt) * (1.0 / poly_eff + x_val)
+            return st, x_val, y_val, m_t_val, k_pt
+
+        def _compute_schultz_head(t_out_final: float, x_eff: float, y_eff: float, m_t_eff: float, k_ref: float):
+            st_out_final = self.thermo_solver.get_properties(p_out, t_out_final, gas_obj, eos)
+            z2_final = st_out_final.Z
+            v1 = (1.0 / state_in.density) if state_in.density and state_in.density > 0 else (z1 * r_specific * t_in / p_in)
+            v2 = (1.0 / st_out_final.density) if st_out_final.density and st_out_final.density > 0 else (z2_final * r_specific * t_out_final / p_out)
+
+            inv_nv_local = y_eff - m_t_eff * (1.0 + x_eff)
+            nv_local = (1.0 / inv_nv_local) if abs(inv_nv_local) > 1e-6 else (k_ref / max(1e-4, y_eff))
+
+            if v1 > 0 and v2 > 0 and abs(math.log(v1 / v2)) > 1e-8:
+                n_v_val = math.log(pr) / math.log(v1 / v2)
+            else:
+                n_v_val = nv_local
+
+            if abs(n_v_val - 1.0) > 1e-6:
+                head_uncorr = ((n_v_val / (n_v_val - 1.0)) * (p_out * v2 - p_in * v1)) / 1000.0
+            else:
+                head_uncorr = (p_in * v1 * math.log(pr)) / 1000.0
+
+            # Schultz (1962) Eq. 27 gerçek hacim-üslü head düzeltme faktörü:
+            # f_s = (h_2s - h_1) / [ (n_s / (n_s - 1)) * (P_2*v_2s - P_1*v_1) ]
+            schultz_f = 1.0
+            try:
+                t2_isen = CompressorAerodynamics.calculate_isentropic_temp_fallback(
+                    state_in, p_out, self.thermo_solver, gas_obj, eos
+                )
+                st_isen = self.thermo_solver.get_properties(p_out, t2_isen, gas_obj, eos)
+                dh_isen_j = st_isen.H - state_in.H
+                v2s = (
+                    (1.0 / st_isen.density)
+                    if st_isen.density and st_isen.density > 0
+                    else (st_isen.Z * r_specific * t2_isen / p_out)
+                )
+                if dh_isen_j > 0 and v1 > 0 and v2s > 0 and abs(math.log(v1 / v2s)) > 1e-8:
+                    n_s = math.log(pr) / math.log(v1 / v2s)
+                    if abs(n_s - 1.0) > 1e-6:
+                        w_isen_poly = (n_s / (n_s - 1.0)) * (p_out * v2s - p_in * v1)
+                    else:
+                        w_isen_poly = p_in * v1 * math.log(pr)
+                    if w_isen_poly > 0:
+                        schultz_f = max(0.90, min(1.10, dh_isen_j / w_isen_poly))
+            except Exception as exc:
+                self.logger.debug("Schultz Eq.27 factor fallback to 1.0: %s", exc)
+            z_avg_val = CompressorAerodynamics._calculate_z_average_logarithmic(z1, z2_final)
+            return head_uncorr * schultz_f, z_avg_val, n_v_val, schultz_f
+
+        _, x1, y1, m_t1, _ = _eval_schultz_point(p_in, t_in, base_state=state_in)
+        t2_guess = t_in * math.pow(pr, max(0.01, m_t1))
+        p_mid = math.sqrt(p_in * p_out)
+
         history = {
             "pressure": [p_in],
             "temperature": [t_in],
@@ -919,73 +1070,63 @@ class ThermoMethodSuite:
         }
 
         z2 = z1
+        X_eff, Y_eff, m_T_eff, k_avg = x1, y1, m_t1, k1
         for iteration in range(max_iter):
             t2_old = t2_guess
             try:
-                state_out = self.thermo_solver.get_properties(p_out, t2_guess, gas_obj, eos)
-                z2, k2 = state_out.Z, isentropic_exponent(state_out)
-                cp2 = max(100.0, float(state_out.Cp))
+                state_out, x2, y2, m_t2, k2 = _eval_schultz_point(p_out, t2_guess)
+                z2 = state_out.Z
+                t_mid = math.sqrt(max(1.0, t_in * t2_guess))
+                _, x_mid, y_mid, m_t_mid, k_mid = _eval_schultz_point(p_mid, t_mid)
             except Exception as error:
                 self.logger.warning(f"Metot 6 iterasyon hatası: {error}")
                 break
 
-            t_avg = (t_in + t2_guess) / 2.0
-            p_avg = (p_in + p_out) / 2.0
-            
-            # Calculate X and Y compressibility derivatives at average state
-            dt = 0.5
-            dp = 5000.0
-            st_avg = self.thermo_solver.get_properties(p_avg, t_avg, gas_obj, eos)
-            z_avg_pt = st_avg.Z
-            cp_avg = max(100.0, float(st_avg.Cp))
-            k_avg = isentropic_exponent(st_avg)
-            
-            st_t_plus = self.thermo_solver.get_properties(p_avg, t_avg + dt, gas_obj, eos)
-            dz_dt = (st_t_plus.Z - z_avg_pt) / dt
-            
-            st_p_plus = self.thermo_solver.get_properties(p_avg + dp, t_avg, gas_obj, eos)
-            dz_dp = (st_p_plus.Z - z_avg_pt) / dp
-            
-            X = (t_avg / max(1e-4, z_avg_pt)) * dz_dt
-            Y = 1.0 - (p_avg / max(1e-4, z_avg_pt)) * dz_dp
-            
-            # Temperature exponent m_T
-            m_T = (r_specific * z_avg_pt / max(100.0, cp_avg)) * (1.0 / poly_eff + X)
-            t2_calc = t_in * math.pow(pr, m_T)
-            t2_guess = t2_old + 0.5 * (t2_calc - t2_old)
-            
+            X_eff = (x1 + 4.0 * x_mid + x2) / 6.0
+            Y_eff = (y1 + 4.0 * y_mid + y2) / 6.0
+            m_T_eff = (m_t1 + 4.0 * m_t_mid + m_t2) / 6.0
+            k_avg = (k1 + 4.0 * k_mid + k2) / 6.0
+
+            t2_calc = t_in * math.pow(pr, m_T_eff)
+            t2_guess = t2_old + 0.6 * (t2_calc - t2_old)
+
             history["pressure"].append(p_out)
             history["temperature"].append(t2_guess)
             history["z_factor"].append(z2)
             history["k_value"].append(k2)
             history["iteration"].append(iteration + 1)
-            
+
             if abs(t2_guess - t2_old) < tolerance:
-                # Polytropic volume exponent n_v
-                denom = Y - X * (k_avg - 1.0) * (1.0 / poly_eff - 1.0)
-                n_v = k_avg / denom if abs(denom) > 1e-4 else k_avg / Y
-                exp_v = (n_v - 1.0) / n_v if abs(n_v) > 1e-4 else (k_avg - 1.0) / k_avg
-                
-                z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(z1, z2)
-                poly_head = self._calculate_polytropic_head(
-                    z_avg, r_specific, t_in, pr, exp_v
+                poly_head, z_avg, n_v, schultz_f = _compute_schultz_head(
+                    t2_guess, X_eff, Y_eff, m_T_eff, k_avg
                 )
                 history["converged"] = True
                 history["termination_reason"] = "converged"
-                history["X"] = X
-                history["Y"] = Y
+                history["X"] = X_eff
+                history["Y"] = Y_eff
                 history["n_v"] = n_v
-                history["m_T"] = m_T
+                history["m_T"] = m_T_eff
+                history["schultz_f"] = schultz_f
                 self.logger.info(
                     f"✓ Metot 6 (Schultz 3-Exp) tamamlandı: T_out={t2_guess:.1f} K ({t2_guess-273.15:.1f}°C), "
-                    f"H_poly={poly_head:.2f} kJ/kg, X={X:.4f}, Y={Y:.4f}, n_v={n_v:.4f}"
+                    f"H_poly={poly_head:.2f} kJ/kg, X={X_eff:.4f}, Y={Y_eff:.4f}, n_v={n_v:.4f}, f={schultz_f:.4f}"
                 )
                 return t2_guess, poly_head, z_avg, history
 
-        # Fallback if loop finishes
-        z_avg_final = CompressorAerodynamics._calculate_z_average_logarithmic(z1, z2)
-        n_final = (k1 - 1.0) / (k1 * poly_eff)
-        poly_head = self._calculate_polytropic_head(z_avg_final, r_specific, t_in, pr, n_final)
+        # Fallback if loop finishes without hitting tolerance
+        try:
+            poly_head, z_avg_final, n_v_fb, schultz_f_fb = _compute_schultz_head(
+                t2_guess, X_eff, Y_eff, m_T_eff, k_avg
+            )
+            history["X"] = X_eff
+            history["Y"] = Y_eff
+            history["n_v"] = n_v_fb
+            history["m_T"] = m_T_eff
+            history["schultz_f"] = schultz_f_fb
+        except Exception:
+            z_avg_final = CompressorAerodynamics._calculate_z_average_logarithmic(z1, z2)
+            n_final = (k1 - 1.0) / (k1 * poly_eff)
+            poly_head = self._calculate_polytropic_head(z_avg_final, r_specific, t_in, pr, n_final)
         history["termination_reason"] = "max_iterations"
         return t2_guess, poly_head, z_avg_final, history
 

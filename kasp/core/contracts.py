@@ -47,9 +47,15 @@ DESIGN_INPUT_DEFAULTS = {
 
 LEGACY_INPUT_ALIASES = {
     "ambient_press": "ambient_pressure",
+    "t_amb": "ambient_temp",
     "consistency_check": "use_consistency_iteration",
     "calc_method": "method",
     "eos_model": "eos_method",
+    "eos": "eos_method",
+    "stages": "num_stages",
+    "units": "num_units",
+    "driver_thermal_eff_pct": "therm_eff",
+    "turbine_thermal_eff_pct": "therm_eff",
 }
 
 
@@ -87,6 +93,16 @@ def normalize_design_inputs(inputs: Mapping[str, Any] | None) -> dict[str, Any]:
         else:
             source["ambient_pressure"] = numeric_pressure / 10.0 if numeric_pressure > 200 else numeric_pressure
 
+    if "use_consistency_iteration" not in source and "consistency_check" in source:
+        source["use_consistency_iteration"] = source.get("consistency_check")
+
+    # Map legacy & web UI aliases to canonical calculation keys without clobbering explicit canonical keys.
+    for alias_key, target_key in LEGACY_INPUT_ALIASES.items():
+        if alias_key == "ambient_press":
+            continue
+        if alias_key in source and source[alias_key] is not None and source.get(target_key) is None:
+            source[target_key] = source[alias_key]
+
     if "num_stages" in source and source["num_stages"] is not None:
         try:
             source["num_stages"] = max(1, int(source["num_stages"]))
@@ -98,18 +114,6 @@ def normalize_design_inputs(inputs: Mapping[str, Any] | None) -> dict[str, Any]:
             source["num_units"] = max(1, int(source["num_units"]))
         except (TypeError, ValueError):
             source["num_units"] = 1
-
-    if "use_consistency_iteration" not in source and "consistency_check" in source:
-        source["use_consistency_iteration"] = source.get("consistency_check")
-
-    # Map legacy & web UI aliases to canonical calculation keys.
-    # ambient_press is handled above with its mbar -> kPa conversion; letting
-    # the generic alias loop copy it again would overwrite the converted value.
-    for alias_key, target_key in LEGACY_INPUT_ALIASES.items():
-        if alias_key == "ambient_press":
-            continue
-        if alias_key in source and source[alias_key] is not None:
-            source[target_key] = source[alias_key]
 
     for key, value in source.items():
         if key in LEGACY_INPUT_ALIASES and key not in ("calc_method", "eos_model"):

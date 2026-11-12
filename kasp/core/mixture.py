@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from kasp.core.constants import MOLAR_MASSES, SUPPORTED_GASES, normalize_component
@@ -186,7 +187,37 @@ class GasMixtureBuilder:
         return "&".join(components)
 
     @staticmethod
-    def build_thermo_data(composition_fraction: dict[str, float]) -> dict[str, Any]:
+    def normalize_custom_kij(custom_kij: dict[str, float] | None) -> dict[str, float]:
+        if not custom_kij or not isinstance(custom_kij, dict):
+            return {}
+        normalized: dict[str, float] = {}
+        for raw_pair, raw_val in custom_kij.items():
+            if raw_val is None:
+                continue
+            pair_str = str(raw_pair).strip()
+            sep = ":" if ":" in pair_str else ("-" if "-" in pair_str else None)
+            if not sep:
+                continue
+            left, right = pair_str.split(sep, 1)
+            c1 = normalize_component(left)
+            c2 = normalize_component(right)
+            if not c1 or not c2 or c1 == c2:
+                continue
+            try:
+                val_f = float(raw_val)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(val_f):
+                continue
+            key = ":".join(sorted((c1, c2)))
+            normalized[key] = max(-1.0, min(1.0, val_f))
+        return normalized
+
+    @staticmethod
+    def build_thermo_data(
+        composition_fraction: dict[str, float],
+        custom_kij: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
         ids: list[str] = []
         mol_fractions: list[float] = []
         kept_components: list[str] = []
@@ -217,11 +248,15 @@ class GasMixtureBuilder:
             for comp, frac in zip(kept_components, mol_fractions)
         )
 
-        return {
+        payload: dict[str, Any] = {
             "ids": ids,
             "mol_fractions": mol_fractions,
             "MW": mixture_mw,
         }
+        norm_kij = GasMixtureBuilder.normalize_custom_kij(custom_kij)
+        if norm_kij:
+            payload["custom_kij"] = norm_kij
+        return payload
 
     @staticmethod
     def build_neqsim_input(composition_fraction: dict[str, float]) -> dict[str, float]:

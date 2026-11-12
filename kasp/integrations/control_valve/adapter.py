@@ -49,6 +49,54 @@ def _result_dict(result) -> Dict[str, Any]:
     return out
 
 
+_EOS_ALIASES = {
+    "coolprop": "coolprop",
+    "heos": "coolprop",
+    "pr": "pr",
+    "peng-robinson": "pr",
+    "bwrs": "pr",
+    "srk": "srk",
+    "rk": "srk",
+    "gerg2008": "gerg2008",
+    "gerg-2008": "gerg2008",
+    "aga8": "aga8",
+    "thermopack": "thermopack",
+    "ccp": "ccp",
+    "dwsim": "dwsim",
+    "neqsim": "neqsim",
+}
+
+_EOS_LABELS = {
+    "coolprop": "KASP CoolProp (HEOS)",
+    "pr": "KASP Peng-Robinson (PR)",
+    "srk": "KASP SRK",
+    "gerg2008": "KASP GERG-2008",
+    "aga8": "KASP AGA8-DC92",
+    "thermopack": "KASP ThermoPack",
+    "ccp": "KASP CCP",
+    "dwsim": "KASP DWSIM",
+    "neqsim": "KASP NeqSim",
+}
+
+
+def _normalize_eos(raw_eos: Any) -> str:
+    if raw_eos is None:
+        return "gerg2008"
+    cleaned = str(raw_eos).strip().lower()
+    if not cleaned:
+        return "gerg2008"
+    return _EOS_ALIASES.get(cleaned, "pr")
+
+
+def _build_gas_obj_for_eos(composition: Dict[str, Any], eos_method: str):
+    comp_frac = GasMixtureBuilder.validate_and_normalize(composition)
+    if eos_method == "coolprop":
+        return GasMixtureBuilder.build_coolprop_string(comp_frac)
+    if eos_method == "neqsim":
+        return GasMixtureBuilder.build_neqsim_input(comp_frac)
+    return GasMixtureBuilder.build_thermo_data(comp_frac)
+
+
 class ControlValveAdapter:
     manifest = ModuleManifest(
         id="control_valve",
@@ -64,6 +112,7 @@ class ControlValveAdapter:
         return {
             "service": "gas | liquid",
             "composition": "KASP gas composition, mol% (gas service)",
+            "eos_model": "Optional EOS model (pr, srk, coolprop, gerg2008, aga8, thermopack, neqsim)",
             "mass_flow_kgs": "Gas mass flow, kg/s",
             "flow_m3h": "Liquid volumetric flow, m3/h",
             "density_kg_m3": "Liquid density (liquid service)",
@@ -80,13 +129,14 @@ class ControlValveAdapter:
             "path": "Optional station path label (ASV/TCV/PCV)",
         }
 
-    def _gas_properties(self, composition, p_in_bar, t_c):
+    def _gas_properties(self, composition, p_in_bar, t_c, eos_model: str = "gerg2008"):
         solver = ThermodynamicSolver()
-        gas_obj = GasMixtureBuilder.build_thermo_data(composition)
-        state = solver.get_properties(p_in_bar * 1e5, t_c + 273.15, gas_obj, "gerg2008")
-        std_obj = GasMixtureBuilder.build_thermo_data(composition)
-        std_state = solver.get_properties(_STANDARD_P_PA, _STANDARD_T_K, std_obj, "gerg2008")
-        return state, std_state
+        eos_key = _normalize_eos(eos_model)
+        gas_obj = _build_gas_obj_for_eos(composition, eos_key)
+        state = solver.get_properties(p_in_bar * 1e5, t_c + 273.15, gas_obj, eos_key)
+        std_obj = _build_gas_obj_for_eos(composition, eos_key)
+        std_state = solver.get_properties(_STANDARD_P_PA, _STANDARD_T_K, std_obj, eos_key)
+        return state, std_state, eos_key
 
     def calculate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         service = str(payload.get("service", "gas")).strip().lower()
@@ -97,14 +147,16 @@ class ControlValveAdapter:
         target_dn = _f(payload.get("target_dn_mm"))
         pipe_in = _f(payload.get("pipe_inlet_diameter_mm"))
         pipe_out = _f(payload.get("pipe_outlet_diameter_mm"))
+        raw_eos = payload.get("eos_model") or payload.get("eos_method")
+        eos_used = _normalize_eos(raw_eos)
         warnings: List[str] = []
 
         if service == "gas":
             composition = payload.get("composition") or {}
             if not composition:
                 raise ValueError("Gaz vana boyutlandırması için composition gerekli.")
-            state, std_state = self._gas_properties(composition, p_in, t_c)
-            mass_flow = _f(payload.get("mass_flow_kgs"), 0.0) or 0.0
+            state, std_state, eos_used = self._gas_properties(composition, p_in, t_c, eos_used)
+            mass_flow = _f(payload.get("mass_flow_kgs"), _f(payload.get("mass_flow_kg_s"), 0.0)) or 0.0
             flow_nm3h = mass_flow / max(1e-9, std_state.density) * 3600.0
             data = GasSizingInput(
                 flow_nm3h=flow_nm3h,
@@ -145,6 +197,7 @@ class ControlValveAdapter:
             raise ValueError(f"Desteklenmeyen vana servisi: {service}")
 
         raw = _result_dict(result)
+        gas_props_label = _EOS_LABELS.get(eos_used, f"KASP {eos_used.upper()}") if service == "gas" else "liquid inputs"
         normalized = {
             "service": raw.get("service"),
             "required_cv": raw.get("required_cv"),
@@ -163,6 +216,8 @@ class ControlValveAdapter:
             "actuator": raw.get("actuator"),
             "warning": raw.get("warning"),
             "path": payload.get("path"),
+            "eos_model": eos_used if service == "gas" else None,
+            "gas_properties_eos": gas_props_label,
             "detail": raw,
         }
         if raw.get("warning"):
@@ -179,6 +234,6 @@ class ControlValveAdapter:
             provenance={
                 "standard": "IEC 60534-2-1 / ISA 75.01.01 / IEC 60534-8-4",
                 "source": "Control Valve Sizing core",
-                "gas_properties": "KASP GERG-2008" if service == "gas" else "liquid inputs",
+                "gas_properties": gas_props_label,
             },
         )

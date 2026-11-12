@@ -167,62 +167,139 @@ class CompressorAerodynamics:
         return t_out_isen
 
     @staticmethod
+    def _specific_volume_m3_kg(state: ThermodynamicState, r_specific: float) -> float:
+        """Return specific volume v [m³/kg] from state.density with Z·R·T/P fallback."""
+        rho = getattr(state, "density", None)
+        if rho is not None:
+            try:
+                rho_f = float(rho)
+                if math.isfinite(rho_f) and rho_f > 0.0:
+                    return 1.0 / rho_f
+            except (TypeError, ValueError):
+                pass
+        p_val = max(1.0, float(getattr(state, "P", 101325.0) or 101325.0))
+        t_val = max(1.0, float(getattr(state, "T", 300.0) or 300.0))
+        z_val = float(getattr(state, "Z", 1.0) or 1.0)
+        if not math.isfinite(z_val) or z_val <= 0.0:
+            z_val = 1.0
+        r_safe = float(r_specific) if (r_specific and math.isfinite(r_specific) and r_specific > 0) else 287.0
+        return (z_val * r_safe * t_val) / p_val
+
+    @staticmethod
+    def _uncorrected_polytropic_work_j_kg(p1: float, v1: float, p2: float, v2: float) -> float:
+        """Uncorrected polytropic head W = (n_v / (n_v - 1)) * (P2*v2 - P1*v1) [J/kg].
+
+        Uses the C^infinity-smooth log-ratio form P1*v1*ln(P2/P1)*((e^u - 1)/u)
+        where u = ln((P2*v2)/(P1*v1)), avoiding division-by-zero near P2*v2 == P1*v1.
+        """
+        if p1 <= 0.0 or p2 <= 0.0 or v1 <= 0.0 or v2 <= 0.0:
+            return 0.0
+        ln_pr = math.log(p2 / p1)
+        if abs(ln_pr) < 1e-12:
+            return 0.0
+        pv1 = p1 * v1
+        pv2 = p2 * v2
+        ratio = pv2 / pv1
+        if not math.isfinite(ratio) or ratio <= 0.0:
+            return pv1 * ln_pr
+        u = math.log(ratio)
+        if abs(u) < 1e-6:
+            phi = 1.0 + 0.5 * u + (u * u) / 6.0
+        else:
+            phi = (ratio - 1.0) / u
+        return pv1 * ln_pr * phi
+
+    @staticmethod
+    def real_gas_temperature_exponents(state: ThermodynamicState, poly_eff: float = 1.0) -> tuple[float, float, float]:
+        """Compute exact real-gas Schultz temperature exponents via Bridgman's relations.
+
+        Uses (∂v/∂T)_P = [1 / (ρ · a)] · sqrt(Cp · (Cp - Cv) / (T · Cv)), requiring zero
+        additional EOS evaluations.
+
+        Returns:
+            (m_poly, m_isen, k_temp):
+                - m_poly: (∂ ln T / ∂ ln P)_poly = (P·v / (Cp·T)) · (1/η_p + X)
+                - m_isen: (∂ ln T / ∂ ln P)_s    = (P·v / (Cp·T)) · (1 + X)
+                - k_temp: Schultz isentropic temperature exponent κ_T = 1 / (1 - m_isen)
+        """
+        eff = max(0.10, min(0.999, float(poly_eff) if (poly_eff and math.isfinite(poly_eff)) else 0.75))
+        try:
+            rho = float(getattr(state, "density", 0.0) or 0.0)
+            a_snd = float(getattr(state, "speed_of_sound", 0.0) or 0.0)
+            cp = float(getattr(state, "Cp", 0.0) or 0.0)
+            cv = float(getattr(state, "Cv", 0.0) or 0.0)
+            t_k = float(getattr(state, "T", 0.0) or 0.0)
+            p_pa = float(getattr(state, "P", 0.0) or 0.0)
+            if (
+                rho > 0.0
+                and a_snd > 0.0
+                and cp > cv > 0.0
+                and t_k > 0.0
+                and p_pa > 0.0
+                and all(math.isfinite(x) for x in (rho, a_snd, cp, cv, t_k, p_pa))
+            ):
+                v = 1.0 / rho
+                dv_dt = (1.0 / (rho * a_snd)) * math.sqrt(cp * (cp - cv) / (t_k * cv))
+                x_schultz = max(-0.85, min(5.0, (t_k / v) * dv_dt - 1.0))
+                pref = (p_pa * v) / (cp * t_k)
+                m_isen = max(0.01, min(0.65, pref * (1.0 + x_schultz)))
+                m_poly = max(0.01, min(0.85, pref * ((1.0 / eff) + x_schultz)))
+                k_temp = 1.0 / max(0.15, 1.0 - m_isen)
+                return m_poly, m_isen, k_temp
+        except Exception:
+            pass
+
+        k_fb = isentropic_exponent(state)
+        if not math.isfinite(k_fb) or k_fb <= 1.001:
+            k_fb = 1.3
+        k_fb = min(1.85, k_fb)
+        m_isen = (k_fb - 1.0) / k_fb
+        m_poly = m_isen / eff
+        return m_poly, m_isen, k_fb
+
+    @staticmethod
     def calculate_schultz_factor(state_in: ThermodynamicState, state_out: ThermodynamicState,
                                  p_out: float, thermo_solver, gas_obj, eos: str, R_specific: float) -> float:
         """
-        Calculates the Schultz polytropic head correction factor (f_t) per ASME PTC 10.
+        Calculates the Schultz polytropic head correction factor (f_s) per ASME PTC 10 / Schultz (1962) Eq. 26:
+            f_s = (h_2s - h_1) / [(n_s / (n_s - 1)) * (P_2 * v_2s - P_1 * v_1)]
         """
         try:
-            if not state_in or not state_out:
+            if not state_in or not state_out or thermo_solver is None:
                 return 1.0
-            p_in = getattr(state_in, 'P', 0.0)
+            p_in = float(getattr(state_in, 'P', 0.0) or 0.0)
             p_out_val = float(p_out) if p_out is not None else 0.0
-            t_in = getattr(state_in, 'T', 0.0)
-            t_out = getattr(state_out, 'T', 0.0)
-            if p_in <= 0 or p_out_val <= 0 or t_in <= 0 or t_out <= 0:
+            t_in = float(getattr(state_in, 'T', 0.0) or 0.0)
+            t_out = float(getattr(state_out, 'T', 0.0) or 0.0)
+            if p_in <= 0.0 or p_out_val <= 0.0 or t_in <= 0.0 or t_out <= 0.0:
+                return 1.0
+
+            pressure_ratio = p_out_val / p_in
+            if abs(pressure_ratio - 1.0) <= 1e-4:
                 return 1.0
 
             t_out_isen = CompressorAerodynamics.calculate_isentropic_temp_fallback(
                 state_in, p_out_val, thermo_solver, gas_obj, eos
             )
-            state_isen = thermo_solver.get_properties(p_out, t_out_isen, gas_obj, eos)
-            dh_isen = state_isen.H - state_in.H
-            
-            if dh_isen <= 0:
+            state_isen = thermo_solver.get_properties(p_out_val, t_out_isen, gas_obj, eos)
+            dh_isen = float(state_isen.H) - float(state_in.H)
+            if not math.isfinite(dh_isen) or dh_isen <= 0.0:
                 return 1.0
-                
-            k1 = isentropic_exponent(state_in)
-            if k1 <= 1.001:
-                k1 = 1.3
-                
-            pressure_ratio = p_out / state_in.P
-            if pressure_ratio <= 1.001:
+
+            v1 = CompressorAerodynamics._specific_volume_m3_kg(state_in, R_specific)
+            v2s = CompressorAerodynamics._specific_volume_m3_kg(state_isen, R_specific)
+            w_isen_uncorrected = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(
+                p_in, v1, p_out_val, v2s
+            )
+            if not math.isfinite(w_isen_uncorrected) or w_isen_uncorrected <= 0.0:
                 return 1.0
-                
-            # Ideal isentropic head
-            k_exp = (k1 - 1.0) / k1
-            h_isen_ideal = (1.0 / k_exp) * state_in.Z * R_specific * state_in.T * (math.pow(pressure_ratio, k_exp) - 1.0)
-            
-            # Isentropic head correction factor (f_s)
-            f_s = dh_isen / h_isen_ideal if h_isen_ideal > 0 else 1.0
-            
-            # Polytropic temperature exponent sigma
-            ln_TR = math.log(state_out.T / state_in.T)
-            ln_PR = math.log(state_out.P / state_in.P)
-            sigma = ln_TR / ln_PR if abs(ln_PR) > 1e-10 else k_exp
-            
-            # Schultz polytropic head correction factor (f_t)
-            if abs(sigma) < 1e-5:
-                # Isothermal limit: lim_{sigma->0} (PR^sigma - 1)/sigma = ln(PR)
-                denom_iso = math.pow(pressure_ratio, k_exp) - 1.0
-                f_t = f_s * (k_exp * ln_PR) / denom_iso if abs(denom_iso) > 1e-12 else f_s
-            else:
-                numerator = k_exp * (math.pow(pressure_ratio, sigma) - 1.0)
-                denominator = sigma * (math.pow(pressure_ratio, k_exp) - 1.0)
-                f_t = f_s * (numerator / denominator) if denominator > 0 else f_s
-                
+
+            f_s = dh_isen / w_isen_uncorrected
+            if not math.isfinite(f_s):
+                return 1.0
+
             # Clamp to physical range (typically between 0.85 and 1.15)
-            return max(0.85, min(1.15, f_t))
+            return max(0.85, min(1.15, f_s))
         except Exception as e:
             logger.warning(f"Schultz correction factor calculation failed: {e}. Using 1.0.")
             return 1.0
@@ -236,43 +313,35 @@ class CompressorAerodynamics:
                                         eos: str = None) -> float:
         """
         Giriş ve Çıkış koşulları (Test/Gerçek) bilindiğinde Politropik Verimi hesaplar.
-        ASME PTC 10 Schultz metodu ve API 617 logaritmik formülasyonunu kullanır.
+        ASME PTC 10 / Schultz (1962) Eq. 26-27 hacimsel politropik yük formülasyonunu kullanır:
+            H_p = f_s * (n_v / (n_v - 1)) * (P_2 * v_2 - P_1 * v_1)
+            η_p = H_p / (h_2 - h_1)
         """
         if state_in.P <= 0 or state_out.P <= 0 or state_in.T <= 0 or state_out.T <= 0:
             return 0.0
-            
+
         if abs(state_out.P - state_in.P) < 1e-5:
             return 0.0  # İş yok
-            
+
         delta_H = state_out.H - state_in.H
-        if delta_H <= 0:
+        if not math.isfinite(delta_H) or delta_H <= 0:
             return 0.0  # Kompresör işi pozitiftir
-            
-        ln_TR = math.log(state_out.T / state_in.T)
-        ln_PR = math.log(state_out.P / state_in.P)
-        
-        if abs(ln_PR) < 1e-10:
+
+        v1 = CompressorAerodynamics._specific_volume_m3_kg(state_in, R_specific)
+        v2 = CompressorAerodynamics._specific_volume_m3_kg(state_out, R_specific)
+        poly_head_uncorrected = CompressorAerodynamics._uncorrected_polytropic_work_j_kg(
+            float(state_in.P), v1, float(state_out.P), v2
+        )
+        if not math.isfinite(poly_head_uncorrected) or poly_head_uncorrected <= 0.0:
             return 0.0
-            
-        sigma = ln_TR / ln_PR # (n-1)/n
-        
-        # Z average (Logarithmic per ASME PTC 10)
-        Z_avg = CompressorAerodynamics._calculate_z_average_logarithmic(state_in.Z, state_out.Z)
-        
-        if abs(sigma) < 1e-5:
-             # Isothermal limit
-             poly_head_ideal = Z_avg * R_specific * state_in.T * ln_PR
-        else:
-             poly_head_ideal = (1.0 / sigma) * Z_avg * R_specific * state_in.T * (math.pow(state_out.P / state_in.P, sigma) - 1.0)
-             
-        # Schultz düzeltme katsayısını uygula (ASME PTC 10)
-        f_t = 1.0
+
+        f_s = 1.0
         if thermo_solver is not None and gas_obj is not None and eos is not None:
-             f_t = CompressorAerodynamics.calculate_schultz_factor(
-                 state_in, state_out, state_out.P, thermo_solver, gas_obj, eos, R_specific
-             )
-             
-        poly_head = f_t * poly_head_ideal
+            f_s = CompressorAerodynamics.calculate_schultz_factor(
+                state_in, state_out, state_out.P, thermo_solver, gas_obj, eos, R_specific
+            )
+
+        poly_head = f_s * poly_head_uncorrected
         poly_efficiency = poly_head / delta_H
         return max(0.0, min(1.0, poly_efficiency))
 
@@ -509,12 +578,14 @@ class CompressorAerodynamics:
         if abs(p_out_val - p_in_val) < 1e-5:
             try:
                 state_single = thermo_solver.get_properties(p_in_val, t_in_val, gas_obj, eos)
-                k_single = isentropic_exponent(state_single)
+                n_single, _, k_single = CompressorAerodynamics.real_gas_temperature_exponents(
+                    state_single, poly_eff
+                )
                 z_single = float(state_single.Z) if getattr(state_single, 'Z', 0) > 0 else 1.0
             except Exception:
                 k_single = 1.3
+                n_single = (k_single - 1.0) / (k_single * poly_eff)
                 z_single = 1.0
-            n_single = (k_single - 1.0) / (k_single * poly_eff)
             return n_single, k_single, {
                 'pressures': [p_in_val, p_out_val],
                 'k_values': [k_single],
@@ -530,6 +601,7 @@ class CompressorAerodynamics:
         pressures = np.geomspace(p_in_val, p_out_val, steps + 1)
 
         k_values = []
+        m_poly_values = []
         temperatures = []
         z_factors = []
         t_current = t_in_val
@@ -541,22 +613,26 @@ class CompressorAerodynamics:
 
             try:
                 state_mid = thermo_solver.get_properties(p_mid, t_current, gas_obj, eos)
-                k_mid = isentropic_exponent(state_mid)
+                n_step, _, k_mid = CompressorAerodynamics.real_gas_temperature_exponents(
+                    state_mid, poly_eff
+                )
                 z_mid = state_mid.Z
             except Exception:
                 k_mid = k_values[-1] if k_values else 1.4
+                n_step = m_poly_values[-1] if m_poly_values else ((k_mid - 1.0) / (k_mid * poly_eff))
                 z_mid = 1.0
                 logger.warning(f"İntegral adım {i}: özellik hesabı başarısız, fallback k={k_mid:.4f}")
 
             k_values.append(k_mid)
+            m_poly_values.append(n_step)
             z_factors.append(z_mid)
             temperatures.append(t_current)
 
             # Sonraki adım için sıcaklığı güncelle
-            n_step = (k_mid - 1) / (k_mid * poly_eff)
             t_current = t_current * (p_end / p_start) ** n_step
 
-        # Basınç farkına göre ağırlıklı ortalama k (ASME PTC 10 uyumlu)
+        # Log-basınç adımlarında ortalama politropik sıcaklık üssü
+        n_minus_1_over_n = float(np.mean(m_poly_values)) if m_poly_values else ((1.3 - 1.0) / (1.3 * poly_eff))
         pressure_diffs = np.abs(np.diff(pressures))
         diff_sum = float(np.sum(pressure_diffs))
         if diff_sum > 0:
@@ -564,8 +640,6 @@ class CompressorAerodynamics:
             k_integral = float(np.average(k_values, weights=weights))
         else:
             k_integral = float(np.mean(k_values)) if k_values else 1.3
-
-        n_minus_1_over_n = (k_integral - 1) / (k_integral * poly_eff)
 
         k_mean = float(np.mean(k_values)) if k_values else 1.3
         k_range_pct = ((max(k_values) - min(k_values)) / k_mean) * 100.0 if k_mean > 0 else 0.0

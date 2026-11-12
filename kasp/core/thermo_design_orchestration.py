@@ -315,7 +315,7 @@ class ThermoDesignOrchestrator:
             # Schultz Düzeltme Katsayısı (ASME PTC 10)
             # direct_hs, huntington_rk45, schultz_3exp ve incremental_pressure zaten gerçek gaz
             # integrali / türevleri (X, Y, n_v) kullandığı için f_t=1.0 uygulanır (çift düzeltme önlenir).
-            if method_key in ("direct_hs", "huntington_rk45", "schultz_3exp", "incremental_pressure"):
+            if method_key in ("direct_hs", "huntington_rk45", "schultz_3exp", "incremental", "incremental_pressure"):
                 f_t = 1.0
             else:
                 f_t = CompressorAerodynamics.calculate_schultz_factor(
@@ -436,16 +436,22 @@ class ThermoDesignOrchestrator:
                                 )
                             else:
                                 # Sonraki kademeler icin curr_gas_obj'yi yeni gaz kompozisyonu ile guncelle
+                                custom_kij_curr = (
+                                    curr_gas_obj.get("custom_kij")
+                                    if isinstance(curr_gas_obj, dict)
+                                    else (getattr(eos_chain, "_custom_kij", None) if eos_chain is not None else None)
+                                )
                                 if eos == "coolprop":
                                     curr_gas_obj = GasMixtureBuilder.build_coolprop_string(curr_gas_comp)
                                 elif eos == "neqsim":
                                     curr_gas_obj = GasMixtureBuilder.build_neqsim_input(curr_gas_comp)
                                 else:
-                                    curr_gas_obj = GasMixtureBuilder.build_thermo_data(curr_gas_comp)
+                                    curr_gas_obj = GasMixtureBuilder.build_thermo_data(
+                                        curr_gas_comp, custom_kij=custom_kij_curr
+                                    )
 
                                 if eos_chain is not None:
-                                    eos_chain._raw_composition = curr_gas_comp
-                                    eos_chain._gas_obj_cache.clear()
+                                    eos_chain.update_composition(curr_gas_comp)
 
                                 self.logger.info(
                                     f"💧 Kademe {stage} sonrasi ara-sogutucuda {stage_liquid_knockout:.2f} kg/h sivi ayristirildi "
@@ -489,4 +495,6 @@ class ThermoDesignOrchestrator:
             "total_liquid_knockout_kg_h": total_liquid_knockout_kg_h,
             "any_invalid_stage": any_invalid_stage,
             "staged_results": staged_results,
+            "final_gas_obj": curr_gas_obj if curr_mass_flow > 0 else gas_obj,
+            "final_gas_comp": curr_gas_comp if (curr_mass_flow > 0 and curr_gas_comp) else gas_comp,
         }

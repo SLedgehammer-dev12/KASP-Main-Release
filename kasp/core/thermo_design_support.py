@@ -133,17 +133,76 @@ def optimize_stage_pressure_ratios(
 
 
 def select_design_method_key(method_label):
-    if "Metot 2" in method_label or "Endpoint" in method_label or "Uç Nokta" in method_label:
-        return "endpoint"
-    if "Metot 3" in method_label or "Artımlı" in method_label or "Incremental" in method_label:
-        return "incremental"
-    if "Metot 4" in method_label or "H-S" in method_label or "Doğrudan" in method_label:
-        return "direct_hs"
-    if "Metot 5" in method_label or "Huntington" in method_label or "RK45" in method_label or "Diferansiyel" in method_label:
-        return "huntington_rk45"
-    if "Metot 6" in method_label or "Schultz 3" in method_label or "3-Üslü" in method_label or "3-Exp" in method_label:
+    raw = str(method_label or "").strip()
+    low = raw.lower()
+    if (
+        low in ("schultz_3exp", "method_6", "m6", "3exp")
+        or "metot 6" in low
+        or "schultz 3" in low
+        or "3-üslü" in low
+        or "3-uslu" in low
+        or "3-exp" in low
+    ):
         return "schultz_3exp"
+    if (
+        low in ("huntington_rk45", "huntington", "rk45", "method_5", "m5")
+        or "metot 5" in low
+        or "huntington" in low
+        or "rk45" in low
+        or "diferansiyel" in low
+        or "2-üslü" in low
+        or "2-uslu" in low
+    ):
+        return "huntington_rk45"
+    if (
+        low in ("direct_hs", "hs", "h-s", "method_4", "m4")
+        or "metot 4" in low
+        or "h-s" in low
+        or "doğrudan" in low
+        or "dogrudan" in low
+        or "artımlı entalpi" in low
+    ):
+        return "direct_hs"
+    if (
+        low in ("incremental", "incremental_pressure", "method_3", "m3")
+        or "metot 3" in low
+        or "artımlı" in low
+        or "artimli" in low
+        or "incremental" in low
+    ):
+        return "incremental"
+    if (
+        low in ("endpoint", "method_2", "m2")
+        or "metot 2" in low
+        or "endpoint" in low
+        or "uç nokta" in low
+        or "uc nokta" in low
+    ):
+        return "endpoint"
     return "average"
+
+
+CANONICAL_METHOD_LABELS = {
+    "average": "Metot 1: Ortalama Özellikler",
+    "endpoint": "Metot 2: Endpoint Yaklaşımı",
+    "incremental": "Metot 3: Artımlı Basınç",
+    "direct_hs": "Metot 4: Doğrudan H-S",
+    "huntington_rk45": "Metot 5: Huntington-RK45 Diferansiyel",
+    "schultz_3exp": "Metot 6: Schultz 3-Üslü Gerçek Gaz",
+}
+
+
+def canonical_design_method_label(method_label, default="Metot 1: Ortalama Özellikler"):
+    raw = str(method_label or "").strip()
+    if not raw:
+        return default
+    key = select_design_method_key(raw)
+    if key != "average":
+        return CANONICAL_METHOD_LABELS[key]
+    low = raw.lower()
+    if low in ("average", "averaging", "method_1", "m1") or "metot 1" in low or "ortalama" in low:
+        return CANONICAL_METHOD_LABELS["average"]
+    return raw
 
 
 def build_stage_result(
@@ -201,15 +260,35 @@ def build_stage_result(
 
 
 def calculate_total_actual_poly_efficiency(staged_results, total_poly_head_kj_kg, poly_eff_tgt):
+    valid_stages = [s for s in (staged_results or []) if isinstance(s, dict)]
+    weighted_poly_kw = 0.0
+    weighted_gas_kw = 0.0
+    has_all_mass_weighted = bool(valid_stages)
+    for stage in valid_stages:
+        m_dot = stage.get("mass_flow_kgs")
+        dh = stage.get("delta_h_kj_kg")
+        hd = stage.get("head_kj_kg")
+        if m_dot is None or hd is None:
+            has_all_mass_weighted = False
+            break
+        m_val = _coerce_float(m_dot, 0.0)
+        dh_val = _coerce_float(dh, 0.0)
+        hd_val = _coerce_float(hd, 0.0)
+        if m_val > 0.0 and dh_val > 0.0:
+            weighted_poly_kw += m_val * hd_val
+            weighted_gas_kw += m_val * dh_val
+
+    if has_all_mass_weighted and weighted_gas_kw > 0.0 and weighted_poly_kw > 0.0:
+        return max(0.0, min(1.0, weighted_poly_kw / weighted_gas_kw))
+
     total_actual_delta_h_kj_kg = sum(
         _coerce_float(stage.get("delta_h_kj_kg"), 0.0)
-        for stage in (staged_results or [])
-        if isinstance(stage, dict)
+        for stage in valid_stages
     )
     head = _coerce_float(total_poly_head_kj_kg, 0.0)
     if total_actual_delta_h_kj_kg > 0:
         return max(0.0, min(1.0, head / total_actual_delta_h_kj_kg))
-    last_stage = staged_results[-1] if (staged_results and isinstance(staged_results[-1], dict)) else {}
+    last_stage = valid_stages[-1] if valid_stages else {}
     raw_eff = _coerce_float(last_stage.get("poly_eff_diagnostic", poly_eff_tgt), 0.75)
     if raw_eff > 1.0:
         raw_eff = raw_eff / 100.0
@@ -261,6 +340,7 @@ def build_design_results_payload(
     num_stages,
     staged_results,
     method,
+    driver_thermal_efficiency_pct=None,
 ):
     actual_poly_eff_total = calculate_total_actual_poly_efficiency(
         staged_results,
@@ -313,6 +393,7 @@ def build_design_results_payload(
         "design_poly_efficiency": poly_eff_tgt,
         "actual_poly_efficiency": actual_poly_eff_total,
         "liquid_knockout_total_kg_h": round(total_knockout, 2),
+        "total_liquid_knockout_kg_h": round(total_knockout, 2),
         "power_gas_per_unit_kw": total_stage_gas_power_kw,
         "power_shaft_per_unit_kw": total_shaft_kw,
         "power_motor_per_unit_kw": motor_kw,
@@ -330,6 +411,11 @@ def build_design_results_payload(
         "fuel_total_kgh": fuel_kgh * num_units,
         "mass_flow_total_kgs": total_mass_flow_kgs,
         "heat_rate": heat_rate,
+        "driver_thermal_efficiency_pct": (
+            round(float(driver_thermal_efficiency_pct), 2)
+            if driver_thermal_efficiency_pct is not None
+            else (round(360000.0 / float(heat_rate), 2) if heat_rate and float(heat_rate) > 0 else None)
+        ),
         "lhv": lhv,
         "hhv": hhv,
         "inlet_properties": inlet_properties,
