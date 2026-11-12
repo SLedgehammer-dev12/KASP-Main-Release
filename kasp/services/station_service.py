@@ -12,11 +12,84 @@ Implements rigorous process engineering sizing for natural gas compressor statio
 - Process Nodal Telemetry & Animated Flow Vector Velocities
 """
 
+import logging
 import math
 from typing import Any, Dict, List, Optional
-from kasp.core.constants import MOLAR_MASSES, normalize_component
+from kasp.core.constants import MOLAR_MASSES, R_UNIVERSAL_J_MOL_K, normalize_component
+from kasp.core.mixture import GasMixtureBuilder
+from kasp.core.thermo import ThermoEngine
 from kasp.core.units import UnitSystem
 from kasp.services.pipe_sizing_service import PipeSizingService
+
+logger = logging.getLogger(__name__)
+
+_STATION_EOS_ALIASES = {
+    "coolprop": "coolprop",
+    "heos": "coolprop",
+    "pr": "pr",
+    "peng-robinson": "pr",
+    "bwrs": "pr",
+    "srk": "srk",
+    "rk": "srk",
+    "gerg2008": "gerg2008",
+    "gerg-2008": "gerg2008",
+    "aga8": "aga8",
+    "thermopack": "thermopack",
+    "ccp": "ccp",
+    "dwsim": "dwsim",
+    "neqsim": "neqsim",
+}
+
+
+def _normalize_station_eos(raw_eos: Any) -> str:
+    if not raw_eos:
+        return "pr"
+    cleaned = str(raw_eos).strip().lower()
+    return _STATION_EOS_ALIASES.get(cleaned, "pr")
+
+
+def _canonical_flow_unit(raw_unit: Any) -> str:
+    u = str(raw_unit or "kg/s").strip()
+    u_low = u.lower()
+    if u_low == "kg/s":
+        return "kg/s"
+    if u_low in ("kg/h", "kgh"):
+        return "kg/h"
+    if u_low in ("sm³/h", "sm3/h", "smâ³/h", "m3/h", "m³/h"):
+        return "Sm³/h"
+    if u_low in ("nm³/h", "nm3/h", "nmâ³/h"):
+        return "Nm³/h"
+    if u_low == "mmscfd":
+        return "MMSCFD"
+    if u_low == "mmscmd":
+        return "MMSCMD"
+    if u_low in ("kmol/h", "kgmol/h"):
+        return "kmol/h"
+    return u
+
+
+def _fallback_convert_flow_with_mw(raw_flow: float, flow_unit: str, mw_g_mol: float) -> float:
+    """Physical MW-based ideal-gas standard conversion fallback when EOS solver cannot run."""
+    mw_kg_mol = max(1e-3, mw_g_mol / 1000.0)
+    canon = _canonical_flow_unit(flow_unit)
+    if canon == "kg/s":
+        return raw_flow
+    if canon == "kg/h":
+        return raw_flow / 3600.0
+    if canon in ("Sm³/h", "MMSCMD"):
+        rho_std = (101325.0 * mw_kg_mol) / (R_UNIVERSAL_J_MOL_K * 288.15)
+        if canon == "Sm³/h":
+            return (raw_flow * rho_std) / 3600.0
+        return (raw_flow * 1e6 / 86400.0) * rho_std
+    if canon == "Nm³/h":
+        rho_norm = (101325.0 * mw_kg_mol) / (R_UNIVERSAL_J_MOL_K * 273.15)
+        return (raw_flow * rho_norm) / 3600.0
+    if canon == "MMSCFD":
+        rho_scfd = (101559.8 * mw_kg_mol) / (R_UNIVERSAL_J_MOL_K * 288.7056)
+        return (raw_flow * 1e6 * 0.0283168466 / 86400.0) * rho_scfd
+    if canon == "kmol/h":
+        return (raw_flow * mw_g_mol) / 3600.0
+    return raw_flow
 
 
 def calculate_station_process_model(
@@ -33,10 +106,47 @@ def calculate_station_process_model(
         Structured dictionary with station summary, dynamic equipment counts,
         nodal process states, and animated pipe flow velocity vectors.
     """
-    # 1. Parse Baseline Process Inputs
-    # Station UI provides an explicit kg/s slider in `mass_flow`; direct API
-    # callers may provide `flow` + `flow_unit`. Prefer the explicit mass_flow
-    # value so the live station slider is not silently ignored.
+    # 0. Parse Gas Composition, Molecular Weight, and Selected EOS FIRST
+    raw_gas_comp = inputs.get("gas_comp")
+    gas_comp: Dict[str, float] = {}
+    if isinstance(raw_gas_comp, dict) and raw_gas_comp:
+        for k, v in raw_gas_comp.items():
+            try:
+                fv = float(v)
+                if math.isfinite(fv) and fv > 0:
+                    gas_comp[k] = fv
+            except (TypeError, ValueError):
+                continue
+    if not gas_comp:
+        gas_comp = {"METHANE": 95.0, "ETHANE": 3.0, "NITROGEN": 2.0}
+
+    norm_comp: Dict[str, float] = {}
+    tot_mol = sum(gas_comp.values()) or 1.0
+    for k, v in gas_comp.items():
+        canon_k = normalize_component(k)
+        norm_comp[canon_k] = norm_comp.get(canon_k, 0.0) + (v / tot_mol)
+
+    mw = sum(norm_comp.get(g, 0.0) * MOLAR_MASSES.get(g, 16.04) for g in norm_comp)
+    if not math.isfinite(mw) or mw <= 0.0:
+        mw = 18.2
+
+    eos_key = _normalize_station_eos(
+        inputs.get("eos_model") or inputs.get("eos_method") or (design_results or {}).get("eos_method") or "pr"
+    )
+    engine = ThermoEngine()
+    solver = engine.thermo_solver
+    try:
+        gas_obj = engine._create_gas_object(gas_comp, eos_key)
+    except Exception:
+        try:
+            eos_key = "pr"
+            gas_obj = GasMixtureBuilder.build_thermo_data(
+                GasMixtureBuilder.validate_and_normalize(gas_comp)
+            )
+        except Exception:
+            gas_obj = None
+
+    # 1. Parse Baseline Process Inputs & Convert Volumetric/Molar Flow via Real EOS / MW
     raw_mass_flow = inputs.get("mass_flow")
     if raw_mass_flow is not None and str(raw_mass_flow).strip() != "":
         try:
@@ -45,27 +155,23 @@ def calculate_station_process_model(
             mass_flow_kgs = 50.0
     else:
         try:
-            raw_flow = float(inputs.get("flow", inputs.get("mass_flow", 50.0)) or 50.0)
+            raw_flow = float(inputs.get("flow", 50.0) or 50.0)
         except (TypeError, ValueError):
             raw_flow = 50.0
-        flow_unit = str(inputs.get("flow_unit", "kg/s")).strip()
-
-        # Robust flow conversion to kg/s across all supported engineering units
-        # Standard natural gas density at 15°C, 1.01325 bar is approx 0.772 kg/Sm³
-        if flow_unit == "kg/s":
+        canon_unit = _canonical_flow_unit(inputs.get("flow_unit", "kg/s"))
+        if not math.isfinite(raw_flow) or raw_flow <= 0:
+            mass_flow_kgs = 50.0
+        elif canon_unit == "kg/s":
             mass_flow_kgs = raw_flow
-        elif flow_unit in ("kg/h", "kgh"):
+        elif canon_unit == "kg/h":
             mass_flow_kgs = raw_flow / 3600.0
-        elif flow_unit in ("Sm³/h", "Sm3/h", "m3/h", "m³/h", "Nm³/h", "Nm3/h"):
-            mass_flow_kgs = (raw_flow * 0.772) / 3600.0
-        elif flow_unit in ("MMSCFD", "mmscfd"):
-            # 1 MMSCFD ≈ 0.320 kg/s
-            mass_flow_kgs = raw_flow * 0.320
-        elif flow_unit in ("MMSCMD", "mmscmd"):
-            # 1 MMSCMD = 1e6 Sm³/day
-            mass_flow_kgs = (raw_flow * 1e6 * 0.772) / 86400.0
+        elif gas_obj is not None and canon_unit in ("Sm³/h", "Nm³/h", "MMSCFD", "MMSCMD", "kmol/h"):
+            try:
+                mass_flow_kgs = engine.convert_flow_to_kgs(raw_flow, canon_unit, gas_obj, eos_key)
+            except Exception:
+                mass_flow_kgs = _fallback_convert_flow_with_mw(raw_flow, canon_unit, mw)
         else:
-            mass_flow_kgs = max(1.0, raw_flow)
+            mass_flow_kgs = _fallback_convert_flow_with_mw(raw_flow, canon_unit, mw)
 
     if not math.isfinite(mass_flow_kgs) or mass_flow_kgs <= 0:
         mass_flow_kgs = 50.0
@@ -84,14 +190,20 @@ def calculate_station_process_model(
     except (TypeError, ValueError):
         raw_p_out = 75.0
 
-    p_in = UnitSystem.convert_pressure(raw_p_in, p_in_unit, "bar(a)")
-    p_out = UnitSystem.convert_pressure(raw_p_out, p_out_unit, "bar(a)")
+    try:
+        p_in = UnitSystem.convert_pressure(raw_p_in, p_in_unit, "bar(a)")
+    except Exception:
+        p_in = raw_p_in
+    try:
+        p_out = UnitSystem.convert_pressure(raw_p_out, p_out_unit, "bar(a)")
+    except Exception:
+        p_out = raw_p_out
 
     if not math.isfinite(p_in) or p_in < 0.5:
         p_in = 0.5
 
     # Ensure pressure ratio >= 1.05
-    if not math.isfinite(p_out) or p_out <= p_in:
+    if not math.isfinite(p_out) or p_out <= p_in * 1.02:
         p_out = p_in * 2.5
 
     # Temperature in °C (supports °C / K / °F inputs from the UI)
@@ -100,40 +212,41 @@ def calculate_station_process_model(
     except (TypeError, ValueError):
         raw_t_in = 20.0
 
-    t_in = UnitSystem.convert_temperature(
-        raw_t_in,
-        str(inputs.get("t_in_unit", "°C")),
-        "°C",
-    )
+    try:
+        t_in = UnitSystem.convert_temperature(
+            raw_t_in,
+            str(inputs.get("t_in_unit", "°C")),
+            "°C",
+        )
+    except Exception:
+        t_in = raw_t_in
     if not math.isfinite(t_in):
         t_in = 20.0
-    # Clamping temperature to physical range above absolute zero (-100 °C = 173.15 K)
     t_in = max(-100.0, min(250.0, t_in))
-    gas_comp = inputs.get("gas_comp") or {"CH4": 0.95, "C2H6": 0.03, "N2": 0.02}
 
-    # Estimate average Molecular Weight using the canonical component map.
-    # This accepts both web keys (METHANE) and legacy keys (CH4) via ALIAS_MAP.
-    norm_comp = {}
-    tot_mol = sum(float(v) for v in gas_comp.values()) or 1.0
-    for k, v in gas_comp.items():
-        norm_comp[normalize_component(k)] = float(v) / tot_mol
-
-    mw = sum(norm_comp.get(g, 0.0) * MOLAR_MASSES.get(g, 16.04) for g in norm_comp)
-    if mw <= 0.0:
-        mw = 18.2  # Typical Natural Gas MW fallback
-
-    # Gas densities (approx PR / ideal gas with compressibility Z ~ 0.88 - 0.92)
-    R_gas = 8.314462 / (mw * 1e-3)  # J/(kg*K)
+    R_gas = R_UNIVERSAL_J_MOL_K / (mw * 1e-3)  # J/(kg*K)
     T_in_K = t_in + 273.15
-    Z_in = 0.89
-    rho_suction = (p_in * 1e5) / (Z_in * R_gas * T_in_K)  # kg/m3
 
-    # MMSCMD (Million Standard Cubic Meters per Day at 15°C, 1.01325 bar)
-    rho_std = (1.01325e5) / (1.0 * R_gas * 288.15)
+    def _safe_eos_state(p_bar_val: float, t_c_val: float):
+        if gas_obj is None:
+            return None
+        try:
+            p_pa = max(0.5e5, float(p_bar_val) * 1e5)
+            t_k = max(120.0, min(800.0, float(t_c_val) + 273.15))
+            return solver.get_properties(p_pa, t_k, gas_obj, eos_key)
+        except Exception:
+            return None
+
+    inlet_state = _safe_eos_state(p_in, t_in)
+    std_state = _safe_eos_state(1.01325, 15.0)
+
+    if std_state is not None and std_state.density and math.isfinite(std_state.density) and std_state.density > 0:
+        rho_std = float(std_state.density)
+    else:
+        rho_std = 1.01325e5 / (R_gas * 288.15)
     vol_flow_mmscmd = (mass_flow_kgs * 86400.0) / (rho_std * 1e6)
 
     # 2. Dynamic Cyclone Separator (Scrubber) Sizing
-    # Typical heavy liquid & solid dropout scrubber vessel capacity is ~15-25 kg/s (2.0-3.0 MMSCMD)
     unit_cap_cyclone = 22.0  # kg/s per cyclone vessel
     user_cyclone_op = inputs.get("cyclone_op_count") or inputs.get("cyclones_count")
     if user_cyclone_op:
@@ -143,10 +256,9 @@ def calculate_station_process_model(
     cyclone_total_count = cyclone_op_count + 1  # Standard N+1 sparing
     flow_per_cyclone = mass_flow_kgs / cyclone_op_count
     dp_cyclone = round(0.30 * (flow_per_cyclone / unit_cap_cyclone) ** 1.8, 3)  # bar drop
-    p_post_cyclone = round(p_in - dp_cyclone, 2)
+    p_post_cyclone = round(max(0.5, p_in - dp_cyclone), 2)
 
     # 3. Dynamic Cartridge Coalescing Filter Sizing
-    # Downstream of cyclones on suction header, fine particulate (< 0.3 micron)
     unit_cap_filter = 18.0  # kg/s per filter vessel
     user_filter_op = inputs.get("filter_op_count") or inputs.get("filters_count")
     if user_filter_op:
@@ -156,12 +268,9 @@ def calculate_station_process_model(
     filter_total_count = filter_op_count + 1  # Standard N+1 sparing
     flow_per_filter = mass_flow_kgs / filter_op_count
     dp_filter = round(0.22 * (flow_per_filter / unit_cap_filter) ** 1.5, 3)
-    p_comp_inlet = round(p_post_cyclone - dp_filter, 2)
+    p_comp_inlet = round(max(0.5, p_post_cyclone - dp_filter), 2)
 
-    # 4. Dynamic Turbo-Compressor Train Sizing & Unit Building
-    # Use the real design payload when available (power_shaft_per_unit_kw,
-    # t_out_c, head_kj_kg, actual_poly_efficiency). Legacy callers that send
-    # a `summary` sub-document are still supported.
+    # 4. Dynamic Turbo-Compressor Train Sizing & Real ThermoEngine Coupling
     dr = design_results or {}
     summ = dr.get("summary") or {}
 
@@ -184,12 +293,14 @@ def calculate_station_process_model(
 
     design_power_total = _first_number(
         dr.get("power_shaft_total_kw"),
+        dr.get("power_total_kw"),
         summ.get("power"),
         summ.get("gas_power"),
     )
-    design_num_units = max(1, int(_first_number(dr.get("num_units")) or 1))
+    design_num_units = max(1, int(_first_number(dr.get("num_units"), inputs.get("num_units")) or 1))
     design_power_per_unit = _first_number(
         dr.get("power_shaft_per_unit_kw"),
+        dr.get("power_unit_kw"),
         (design_power_total / design_num_units) if design_power_total else None,
     )
 
@@ -200,6 +311,7 @@ def calculate_station_process_model(
     design_head = _first_number(
         dr.get("head_kj_kg"),
         dr.get("head_total_kj_kg"),
+        (float(dr["head_polytropic"]) / 1000.0) if _first_number(dr.get("head_polytropic")) else None,
         summ.get("head"),
         summ.get("polytropic_head"),
     )
@@ -212,18 +324,28 @@ def calculate_station_process_model(
     if design_eff is not None and 0.0 < design_eff <= 1.0:
         design_eff *= 100.0
 
-    # Only trust the design thermodynamic point when the station pressure ratio
-    # still matches it. If the live panel changes P_in/P_out, fall back to the
-    # local polytropic estimate instead of showing a stale design power.
     design_pr = _first_number(dr.get("compression_ratio"))
+    design_t_in_c = _first_number(dr.get("t_in_c"))
     current_pr = p_out / p_in if p_in > 0 else 1.0
-    if design_pr and design_pr > 0 and abs(current_pr - design_pr) / design_pr > 0.01:
+    pr_shifted = bool(design_pr and design_pr > 0 and abs(current_pr - design_pr) / design_pr > 0.01)
+    temp_shifted = bool(design_t_in_c is not None and abs(t_in - design_t_in_c) > 0.5)
+    if pr_shifted or temp_shifted:
         design_power_per_unit = None
         design_head = None
-        design_eff = None
         design_t_discharge = None
 
-    # Flow per design train is used later to scale power when only mass flow changes.
+    dr_rho_in = _first_number(dr.get("rho_in")) if not (pr_shifted or temp_shifted) else None
+    dr_z_in = _first_number(dr.get("z_in")) if not (pr_shifted or temp_shifted) else None
+    if dr_rho_in and dr_rho_in > 0:
+        rho_suction = dr_rho_in
+        z_in_real = dr_z_in if (dr_z_in and dr_z_in > 0) else ((p_in * 1e5) / (rho_suction * R_gas * max(120.0, T_in_K)))
+    elif inlet_state is not None and inlet_state.density and math.isfinite(inlet_state.density) and inlet_state.density > 0:
+        rho_suction = float(inlet_state.density)
+        z_in_real = float(inlet_state.Z) if (inlet_state.Z and math.isfinite(inlet_state.Z) and inlet_state.Z > 0) else 1.0
+    else:
+        z_in_real = 1.0
+        rho_suction = max(0.05, (p_in * 1e5) / (z_in_real * R_gas * max(120.0, T_in_K)))
+
     design_total_flow = _first_number(dr.get("mass_flow_total_kgs"))
     design_flow_per_unit = (
         design_total_flow / design_num_units
@@ -232,13 +354,86 @@ def calculate_station_process_model(
     )
 
     unit_cap_comp = design_unit_cap if design_unit_cap and design_unit_cap > 0 else 35.0
+    user_comp_op = inputs.get("comp_op_count") or inputs.get("operating_trains") or inputs.get("num_units")
+    if user_comp_op:
+        try:
+            comp_op_count = max(1, min(8, int(user_comp_op)))
+        except (TypeError, ValueError):
+            comp_op_count = max(1, min(6, math.ceil(mass_flow_kgs / unit_cap_comp)))
+    else:
+        comp_op_count = max(1, min(6, math.ceil(mass_flow_kgs / unit_cap_comp)))
+    comp_total_count = comp_op_count + 1
+    flow_per_comp = round(mass_flow_kgs / comp_op_count, 2)
+
+    thermo_warnings: List[str] = []
+    if (design_head is None or design_t_discharge is None or design_power_per_unit is None) and gas_obj is not None:
+        raw_poly_eff = _first_number(inputs.get("poly_eff"), design_eff, 82.5) or 82.5
+        if raw_poly_eff <= 0:
+            raw_poly_eff = 82.5
+        elif raw_poly_eff <= 1.0:
+            raw_poly_eff *= 100.0
+        raw_poly_eff = max(25.0, min(95.0, raw_poly_eff))
+
+        raw_mech_eff = _first_number(inputs.get("mech_eff"), 98.0) or 98.0
+        if raw_mech_eff <= 1.0:
+            raw_mech_eff *= 100.0
+        raw_mech_eff = max(50.0, min(100.0, raw_mech_eff))
+
+        try:
+            live_calc_inputs = {
+                "p_in": p_in,
+                "p_in_unit": "bar(a)",
+                "p_out": p_out,
+                "p_out_unit": "bar(a)",
+                "t_in": t_in,
+                "t_in_unit": "°C",
+                "flow": mass_flow_kgs,
+                "flow_unit": "kg/s",
+                "gas_comp": gas_comp,
+                "eos_method": eos_key,
+                "method": str(
+                    inputs.get("calc_method")
+                    or inputs.get("method")
+                    or dr.get("method")
+                    or "Metot 6: Schultz 3-Üslü Gerçek Gaz"
+                ),
+                "poly_eff": raw_poly_eff,
+                "mech_eff": raw_mech_eff,
+                "num_units": comp_op_count,
+                "num_stages": max(1, int(_first_number(inputs.get("num_stages"), dr.get("num_stages"), 1) or 1)),
+                "intercooler_t": float(_first_number(inputs.get("intercooler_t"), 40.0) or 40.0),
+                "intercooler_dp_pct": float(_first_number(inputs.get("intercooler_dp_pct"), 2.0) or 2.0),
+                "use_consistency_iteration": False,
+            }
+            live_thermo_res = engine.calculate_design_performance_with_mode(live_calc_inputs)
+            if live_thermo_res:
+                live_head_j = _first_number(live_thermo_res.get("head_polytropic"))
+                if design_head is None and live_head_j and live_head_j > 0:
+                    design_head = live_head_j / 1000.0
+                live_eff_val = _first_number(live_thermo_res.get("actual_poly_efficiency"), raw_poly_eff)
+                if live_eff_val is not None and 0.0 < live_eff_val <= 1.0:
+                    live_eff_val *= 100.0
+                if design_eff is None or design_eff <= 0:
+                    design_eff = live_eff_val
+                live_tout = _first_number(live_thermo_res.get("t_out_c"), live_thermo_res.get("t_out"))
+                if live_tout is not None and live_tout > 200.0:
+                    live_tout -= 273.15
+                if design_t_discharge is None and live_tout is not None:
+                    design_t_discharge = live_tout
+                live_p_unit = _first_number(
+                    live_thermo_res.get("power_shaft_per_unit_kw"),
+                    live_thermo_res.get("power_unit_kw"),
+                )
+                if design_power_per_unit is None and live_p_unit and live_p_unit > 0:
+                    design_power_per_unit = live_p_unit
+                    design_flow_per_unit = mass_flow_kgs / comp_op_count
+                for w_msg in (live_thermo_res.get("warnings") or []):
+                    if w_msg:
+                        thermo_warnings.append(str(w_msg))
+        except Exception as exc:
+            logger.debug("Station live ThermoEngine fallback triggered: %s", exc)
 
     pr_safe = max(1.001, p_out / max(0.5, p_in))
-
-    if design_head and design_head > 0:
-        polytropic_head_kj = round(design_head, 2)
-    else:
-        polytropic_head_kj = round(115.0 * math.log(pr_safe), 2)
 
     if design_eff and design_eff > 0:
         polytropic_eff = round(design_eff, 2)
@@ -246,22 +441,25 @@ def calculate_station_process_model(
         polytropic_eff = 82.5
     polytropic_eff = max(10.0, min(95.0, polytropic_eff))
 
+    k_in_real = (
+        float(inlet_state.k)
+        if (inlet_state is not None and getattr(inlet_state, "k", 0) and math.isfinite(inlet_state.k) and inlet_state.k > 1.01)
+        else 1.28
+    )
+
+    if design_head and design_head > 0:
+        polytropic_head_kj = round(design_head, 2)
+    else:
+        n_exp = ((k_in_real - 1.0) / k_in_real) / (polytropic_eff / 100.0)
+        head_j_est = z_in_real * R_gas * max(120.0, T_in_K) * ((pr_safe ** n_exp) - 1.0) / max(1e-4, n_exp)
+        polytropic_head_kj = round(max(1.0, head_j_est / 1000.0), 2)
+
     if design_t_discharge is not None:
         t_discharge_hot = round(design_t_discharge, 1)
     else:
-        # Isentropic/polytropic temperature estimate
-        k_ratio = 1.28
-        n_poly = (polytropic_eff / 100.0 * (k_ratio - 1)) / k_ratio + 1.0
-        t_discharge_hot = round(T_in_K * (pr_safe ** ((n_poly - 1) / n_poly)) - 273.15, 1)
+        n_exp = ((k_in_real - 1.0) / k_in_real) / (polytropic_eff / 100.0)
+        t_discharge_hot = round(max(120.0, T_in_K) * (pr_safe ** n_exp) - 273.15, 1)
     t_discharge_hot = max(t_in, min(350.0, t_discharge_hot))
-
-    user_comp_op = inputs.get("comp_op_count") or inputs.get("operating_trains")
-    if user_comp_op:
-        comp_op_count = max(1, min(8, int(user_comp_op)))
-    else:
-        comp_op_count = max(1, min(6, math.ceil(mass_flow_kgs / unit_cap_comp)))
-    comp_total_count = comp_op_count + 1  # Standard N+1 operational reliability
-    flow_per_comp = round(mass_flow_kgs / comp_op_count, 2)
 
     if design_power_per_unit is not None and design_power_per_unit > 0:
         scaled_power_per_unit = design_power_per_unit
@@ -276,15 +474,14 @@ def calculate_station_process_model(
         )
         power_per_unit_kw = round(total_power_kw / comp_op_count, 1)
 
-    # Unit Building Dimensions (housing N compressor trains)
     shelter_width_m = 24.0
     shelter_length_m = round(14.0 * comp_total_count + 8.0, 1)
     shelter_height_m = 12.5
 
-    # 5. Anti-Surge & Recycle Lines Sizing
+    # 5. Anti-Surge & Recycle Lines Sizing (with selected eos_model)
     surge_flow_limit = round(0.68 * flow_per_comp, 2)
     asv_valve_size_in = 8 if flow_per_comp < 30.0 else (12 if flow_per_comp < 60.0 else 16)
-    asv_stroke_time_s = 0.8  # Fail-open fast pneumatic actuator (< 1.0s)
+    asv_stroke_time_s = 0.8
     station_recycle_capacity_kgs = round(mass_flow_kgs * 1.0, 1)
 
     def _size_control_valve(path, flow_kgs, p_in_bar, p_out_bar, t_c):
@@ -300,6 +497,7 @@ def calculate_station_process_model(
                 {
                     "service": "gas",
                     "composition": gas_comp,
+                    "eos_model": eos_key,
                     "mass_flow_kgs": max(0.001, float(flow_kgs)),
                     "p_in_bar": p_in_val,
                     "p_out_bar": p_out_val,
@@ -307,7 +505,9 @@ def calculate_station_process_model(
                     "path": path,
                 }
             )
-            return res.get("results", {}), list(res.get("warnings", []) or [])
+            res_dict = dict(res.get("results") or {})
+            res_dict["provenance"] = res.get("provenance", {})
+            return res_dict, list(res.get("warnings", []) or [])
         except BaseException as exc:
             return None, [f"{path} vana boyutlandırma hatası: {exc}"]
 
@@ -318,19 +518,46 @@ def calculate_station_process_model(
         "PCV", station_recycle_capacity_kgs, p_out, max(p_in, p_comp_inlet), t_discharge_hot
     )
 
-    # 6. Fin-Fan Gas Air Coolers Sizing
-    # High discharge gas (100-140°C) must be cooled to pipeline limit (approx 40-45°C)
+    # 6. Fin-Fan Gas Air Coolers Sizing (Real EOS Enthalpy Δh / Real Cp — NO hardcoded Cp=2.45)
     t_target_pipeline = 45.0
-    cp_avg = 2.45  # kJ/(kg*K) average heat capacity for natural gas
-    heat_duty_mw = round(max(0.1, mass_flow_kgs * cp_avg * (t_discharge_hot - t_target_pipeline) / 1000.0), 2)
-    cooler_bay_capacity_mw = 3.2  # MW thermal duty per cooler bay
+    dp_cooler = 0.40  # bar
+    p_post_cooler = round(max(0.5, p_out - dp_cooler), 2)
+
+    hot_state = _safe_eos_state(p_out, t_discharge_hot)
+    cooled_state = _safe_eos_state(p_post_cooler, t_target_pipeline)
+
+    if t_discharge_hot > t_target_pipeline:
+        delta_h_kj_kg: Optional[float] = None
+        if (
+            hot_state is not None
+            and cooled_state is not None
+            and math.isfinite(hot_state.H)
+            and math.isfinite(cooled_state.H)
+            and hot_state.H > cooled_state.H
+        ):
+            delta_h_kj_kg = (hot_state.H - cooled_state.H) / 1000.0
+        if delta_h_kj_kg is None or delta_h_kj_kg <= 0:
+            cp_hot = (hot_state.Cp / 1000.0) if (hot_state is not None and hot_state.Cp and hot_state.Cp > 0) else None
+            cp_cold = (cooled_state.Cp / 1000.0) if (cooled_state is not None and cooled_state.Cp and cooled_state.Cp > 0) else None
+            if cp_hot and cp_cold:
+                cp_real = 0.5 * (cp_hot + cp_cold)
+            elif cp_hot:
+                cp_real = cp_hot
+            elif inlet_state is not None and inlet_state.Cp and inlet_state.Cp > 0:
+                cp_real = inlet_state.Cp / 1000.0
+            else:
+                cp_real = (k_in_real * R_gas / max(0.05, k_in_real - 1.0)) / 1000.0
+            delta_h_kj_kg = cp_real * (t_discharge_hot - t_target_pipeline)
+        heat_duty_mw = round(max(0.05, (mass_flow_kgs * delta_h_kj_kg) / 1000.0), 2)
+    else:
+        heat_duty_mw = 0.05
+
+    cooler_bay_capacity_mw = 3.2
     user_cooler_bays = inputs.get("cooler_bays_count")
     if user_cooler_bays:
         cooler_bays_count = max(2, min(16, int(user_cooler_bays)))
     else:
         cooler_bays_count = max(2, min(8, math.ceil(heat_duty_mw / cooler_bay_capacity_mw)))
-    dp_cooler = 0.40  # bar
-    p_post_cooler = round(p_out - dp_cooler, 2)
 
     air_cooler_design = None
     air_cooler_warnings = []
@@ -339,9 +566,12 @@ def calculate_station_process_model(
         try:
             from kasp.integrations.air_cooler.adapter import AirCoolerAdapter
 
+            cooler_eos_map = {"pr": "PR", "srk": "SRK"}
+            cooler_eos = cooler_eos_map.get(eos_key, "HEOS")
             design = AirCoolerAdapter().calculate(
                 {
                     "composition": gas_comp,
+                    "eos": cooler_eos,
                     "mass_flow_kgs": mass_flow_kgs,
                     "p_in_bar": p_out,
                     "p_out_bar": p_post_cooler,
@@ -360,34 +590,51 @@ def calculate_station_process_model(
     tcv_sizing, tcv_warnings = _size_control_valve(
         "TCV", mass_flow_kgs * 0.35, p_out, p_post_cooler, t_discharge_hot
     )
-    # Gas Cooler By-pass Line (BOTAŞ PFD Note 17: TCV secondary temperature control)
     cooler_bypass_valve_size_in = 16 if mass_flow_kgs < 60.0 else 24
 
-    # 7. Safety & Depressurization (PSV & Blowdown)
+    # 7. Safety & Depressurization (PSV & Blowdown) with Real EOS Z, MW, k
     psv_set_pressure_bar = round(p_out * 1.10, 1)
-    psv_count = 2  # 1 Duty + 1 Standby (100% capacity each)
-    bdv_depressurization_time_min = 15.0  # API 521 standard
+    psv_count = 2
+    bdv_depressurization_time_min = 15.0
 
-    # Preliminary gas relief sizing via the integrated API 520/521 module.
     psv_sizing = None
     psv_sizing_warnings = []
     try:
         from kasp.integrations.psv.adapter import PSVAdapter
 
-        psv_result = PSVAdapter().calculate(
-            {
-                "service": "gas",
-                "p1_bar": psv_set_pressure_bar * 1.10,
-                "p2_bar": 1.01325,
-                "t_c": t_discharge_hot,
-                "mass_flow_kgs": mass_flow_kgs,
-                "composition": gas_comp,
-                "valve_type": "conventional",
-                "num_valves": 1,
-            }
-        )
+        p_relieve_bar = psv_set_pressure_bar * 1.10
+        relieve_state = _safe_eos_state(p_relieve_bar, t_discharge_hot) or hot_state
+        psv_payload: Dict[str, Any] = {
+            "service": "gas",
+            "p1_bar": p_relieve_bar,
+            "p2_bar": 1.01325,
+            "t_c": t_discharge_hot,
+            "mass_flow_kgs": mass_flow_kgs,
+            "valve_type": "conventional",
+            "num_valves": 1,
+        }
+        has_full_eos_props = False
+        if relieve_state is not None:
+            z_ok = bool(relieve_state.Z and math.isfinite(relieve_state.Z) and 0.05 < relieve_state.Z <= 2.0)
+            mw_ok = bool(relieve_state.MW and math.isfinite(relieve_state.MW) and relieve_state.MW > 0)
+            k_ok = bool(relieve_state.k and math.isfinite(relieve_state.k) and 1.0 < relieve_state.k <= 2.5)
+            if z_ok:
+                psv_payload["z"] = round(float(relieve_state.Z), 4)
+            if mw_ok:
+                psv_payload["mw"] = round(float(relieve_state.MW), 3)
+            if k_ok:
+                psv_payload["k"] = round(float(relieve_state.k), 4)
+            has_full_eos_props = z_ok and mw_ok and k_ok
+        if not has_full_eos_props:
+            psv_payload["composition"] = gas_comp
+
+        psv_result = PSVAdapter().calculate(psv_payload)
         psv_sizing = psv_result.get("results", {})
         psv_sizing_warnings = list(psv_result.get("warnings", []) or [])
+        if psv_sizing.get("Selected_Orifice_Letter") == "Multiple Valves Required":
+            multi_msg = "Tek PSV orifisi (API 526 T) kapasitesi aşıldı; çoklu paralel PSV seçimi gereklidir."
+            if multi_msg not in psv_sizing_warnings:
+                psv_sizing_warnings.append(multi_msg)
         if psv_sizing.get("Required_Area_sqin") is not None:
             psv_sizing = {
                 "required_area_sqin": psv_sizing.get("Required_Area_sqin"),
@@ -395,6 +642,9 @@ def calculate_station_process_model(
                 "selected_orifice_area_sqin": psv_sizing.get("Selected_Orifice_Area_sqin"),
                 "orifice_loading_pct": psv_sizing.get("Orifice_Loading_Pct"),
                 "flow_type": psv_sizing.get("Flow_Type"),
+                "z_used": psv_payload.get("z"),
+                "mw_used": psv_payload.get("mw"),
+                "k_used": psv_payload.get("k"),
                 "standard": (psv_result.get("provenance") or {}).get("standard"),
                 "warnings": psv_sizing_warnings,
             }
@@ -511,8 +761,34 @@ def calculate_station_process_model(
         design_factor_F=float(inputs.get("design_factor_F", 0.50)),
         pipe_standard=inputs.get("pipe_standard", "BOTAŞ"),
         psl_level=inputs.get("psl_level", "PSL2"),
+        dp_cyclone_bar=dp_cyclone,
+        dp_filter_bar=dp_filter,
+        dp_cooler_bar=dp_cooler,
+        gas_comp=gas_comp,
+        eos_model=eos_key,
+        thermo_solver=solver,
     )
     p_lines = station_piping["lines"]
+
+    # Aggregate unique station-wide engineering warnings across thermo, valves, cooler, PSV, and piping
+    station_warnings: List[str] = []
+
+    def _add_warnings(prefix: str, items: List[str]):
+        for item in items or []:
+            msg = str(item).strip()
+            if not msg:
+                continue
+            labeled = msg if msg.startswith(prefix) else f"{prefix}: {msg}"
+            if labeled not in station_warnings:
+                station_warnings.append(labeled)
+
+    _add_warnings("Termodinamik", thermo_warnings)
+    _add_warnings("ASV", asv_warnings)
+    _add_warnings("PCV", pcv_warnings)
+    _add_warnings("TCV", tcv_warnings)
+    _add_warnings("Hava Soğutucu", air_cooler_warnings)
+    _add_warnings("PSV", psv_sizing_warnings)
+    _add_warnings("Boru Ağı", station_piping.get("warnings", []))
 
     # 11. Pipe Flow Vectors (Dynamic speed factors scaled by actual flow velocities)
     pipe_flows = {
@@ -592,6 +868,7 @@ def calculate_station_process_model(
 
     return {
         "success": True,
+        "warnings": station_warnings,
         "station_summary": {
             "total_mass_flow_kgs": round(mass_flow_kgs, 2),
             "volumetric_flow_mmscmd": round(vol_flow_mmscmd, 2),
@@ -603,6 +880,8 @@ def calculate_station_process_model(
             "cooler_heat_duty_mw": heat_duty_mw,
             "gas_mw": round(mw, 2),
             "suction_density_kgm3": round(rho_suction, 2),
+            "suction_z_factor": round(z_in_real, 4),
+            "eos_model": eos_key,
             "mainline_pipe_size": p_lines["mainline_inlet"]["nominal_size_in"],
             "mainline_velocity_ms": p_lines["mainline_inlet"]["actual_velocity_ms"],
         },
@@ -635,6 +914,8 @@ def calculate_station_process_model(
                 "flow_per_unit_kgs": flow_per_comp,
                 "power_per_unit_kw": power_per_unit_kw,
                 "power_per_unit_hp": round(power_per_unit_kw * 1.34102, 1),
+                "polytropic_head_kj_kg": polytropic_head_kj,
+                "polytropic_efficiency_pct": polytropic_eff,
                 "suction_nozzle_size_in": f"{p_lines['comp_suction_branch']['nominal_size_in']} (başlık {p_lines['comp_suction_header']['nominal_size_in']} - Note 32)",
                 "discharge_nozzle_size_in": f"{p_lines['comp_discharge_branch']['nominal_size_in']} (başlık {p_lines['discharge_header']['nominal_size_in']} - Note 32)",
                 "suction_velocity_ms": p_lines["comp_suction_branch"]["actual_velocity_ms"],

@@ -40,6 +40,8 @@ class PerformancePdfRequest(BaseModel):
 class ModuleExcelRequest(BaseModel):
     inputs: Dict[str, Any]
     results: Optional[Dict[str, Any]] = None
+    selected_units: Optional[List[Dict[str, Any]]] = None
+    warnings: Optional[List[Any]] = None
     modules: Optional[Dict[str, Any]] = None
     station_data: Optional[Dict[str, Any]] = None
     filename: Optional[str] = "kasp_modul_raporu.xlsx"
@@ -112,6 +114,8 @@ async def generate_module_excel_report(
             results=req.results,
             modules=req.modules,
             station_data=req.station_data,
+            selected_units=req.selected_units,
+            warnings=req.warnings,
         )
         filename = req.filename or "kasp_modul_raporu.xlsx"
         if not filename.endswith(".xlsx"):

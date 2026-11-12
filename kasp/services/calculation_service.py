@@ -19,6 +19,56 @@ from kasp.services.validation_service import validate_design_inputs
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_CORE_EOS = (
+    "coolprop",
+    "pr",
+    "srk",
+    "gerg2008",
+    "aga8",
+    "thermopack",
+    "neqsim",
+    "ccp",
+    "dwsim",
+)
+
+LEGACY_EOS_ALIASES = {
+    "rk": "srk",
+    "redlich-kwong": "srk",
+    "vdw": "pr",
+    "van_der_waals": "pr",
+    "bwrs": "gerg2008",
+    "peng-robinson": "pr",
+    "gerg-2008": "gerg2008",
+    "aga8-dc92": "aga8",
+    "heos": "coolprop",
+}
+
+
+def resolve_supported_eos(raw_eos: Any) -> tuple[str, str, bool]:
+    """Normalize an incoming EOS identifier and map legacy aliases safely.
+
+    Returns:
+        (requested_eos_clean, effective_target_eos, was_aliased)
+    """
+    requested = str(raw_eos or "pr").strip().lower()
+    if not requested:
+        requested = "pr"
+    if requested in SUPPORTED_CORE_EOS:
+        return requested, requested, False
+    mapped = LEGACY_EOS_ALIASES.get(requested)
+    if mapped:
+        return requested, mapped, True
+    return requested, requested, False
+
+
+def resolve_supported_method(raw_method: Any) -> str:
+    """Map legacy or shorthand compression path labels to canonical 6-method names."""
+    from kasp.core.thermo_design_support import canonical_design_method_label
+
+    return canonical_design_method_label(
+        raw_method, default="Metot 6: Schultz 3-Üslü Gerçek Gaz"
+    )
+
 
 def serialize_turbine_recommendation(rec: Any, required_power_kw: float = 0.0) -> Dict[str, Any]:
     """Convert a TurbineRecommendation object or dict to a clean serializable dict."""
@@ -60,6 +110,20 @@ def serialize_turbine_recommendation(rec: Any, required_power_kw: float = 0.0) -
             surge_raw = d.get("surge_margin_pct")
         surge_opt = _safe_opt_float(surge_raw)
         d["surge_margin_pct"] = round(surge_opt, 1) if surge_opt is not None else None
+
+        stonewall_raw = d.get("stonewall_margin_percent")
+        if stonewall_raw is None:
+            stonewall_raw = d.get("stonewall_margin_pct", d.get("choke_margin_pct"))
+        stonewall_opt = _safe_opt_float(stonewall_raw)
+        d["stonewall_margin_pct"] = round(stonewall_opt, 1) if stonewall_opt is not None else None
+        if "meets_api617_surge" not in d and surge_opt is not None:
+            d["meets_api617_surge"] = bool(surge_opt >= 10.0)
+        iso_hr_d = _safe_float(d.get("iso_heat_rate_kj_kwh") or d.get("iso_heat_rate"))
+        site_hr_d = _safe_float(d.get("site_heat_rate_kj_kwh") or d.get("site_heat_rate"))
+        if "iso_thermal_efficiency_pct" not in d or d["iso_thermal_efficiency_pct"] is None:
+            d["iso_thermal_efficiency_pct"] = round(360000.0 / iso_hr_d, 2) if iso_hr_d > 0 else None
+        if "site_thermal_efficiency_pct" not in d or d["site_thermal_efficiency_pct"] is None:
+            d["site_thermal_efficiency_pct"] = round(360000.0 / site_hr_d, 2) if site_hr_d > 0 else None
         return d
 
     avail_val = getattr(rec, "available_power_kw", None) or getattr(rec, "iso_power_kw", None)
@@ -79,6 +143,15 @@ def serialize_turbine_recommendation(rec: Any, required_power_kw: float = 0.0) -
         surge_val = getattr(rec, "surge_margin_pct", None)
     surge_opt = _safe_opt_float(surge_val)
     surge_pct = round(surge_opt, 1) if surge_opt is not None else None
+
+    stonewall_val = getattr(rec, "stonewall_margin_percent", None)
+    if stonewall_val is None:
+        stonewall_val = getattr(rec, "stonewall_margin_pct", None)
+    stonewall_opt = _safe_opt_float(stonewall_val)
+    stonewall_pct = round(stonewall_opt, 1) if stonewall_opt is not None else None
+
+    meets_surge_raw = getattr(rec, "meets_api617_surge", None)
+    meets_surge = bool(meets_surge_raw) if meets_surge_raw is not None else (bool(surge_pct >= 10.0) if surge_pct is not None else True)
 
     iso_hr_val = getattr(rec, "iso_heat_rate", None) or getattr(rec, "iso_heat_rate_kj_kwh", None)
     iso_hr = round(_safe_float(iso_hr_val), 1)
@@ -102,9 +175,13 @@ def serialize_turbine_recommendation(rec: Any, required_power_kw: float = 0.0) -
         "site_power_kw": avail_power,
         "iso_heat_rate_kj_kwh": iso_hr,
         "site_heat_rate_kj_kwh": site_hr,
+        "iso_thermal_efficiency_pct": round(360000.0 / iso_hr, 2) if iso_hr > 0 else None,
+        "site_thermal_efficiency_pct": round(360000.0 / site_hr, 2) if site_hr > 0 else None,
         "power_margin_pct": margin_pct,
         "power_margin": round(margin_pct / 100.0, 4),
         "surge_margin_pct": surge_pct,
+        "stonewall_margin_pct": stonewall_pct,
+        "meets_api617_surge": meets_surge,
         "efficiency_rating": str(getattr(rec, "efficiency_rating", "İyi")),
         "selection_score": score,
         "recommendation_level": str(getattr(rec, "recommendation_level", "Önerilen")),
@@ -138,12 +215,23 @@ def execute_design_calculation(
 
     # 2. Normalization
     norm_inputs = normalize_design_inputs(inputs)
+    requested_eos, target_eos, eos_aliased = resolve_supported_eos(norm_inputs.get("eos_method"))
+    norm_inputs["eos_method"] = target_eos
+    if "eos_model" in norm_inputs:
+        norm_inputs["eos_model"] = target_eos
+    if norm_inputs.get("method"):
+        norm_inputs["method"] = resolve_supported_method(norm_inputs.get("method"))
     use_consistency = bool(inputs.get("use_consistency_iteration", inputs.get("consistency_check", False)))
     norm_inputs["use_consistency_iteration"] = use_consistency
 
     # 3. Thermodynamic Calculation
     logger.info("Executing design thermodynamic calculation (mode=%s)...", "consistency" if use_consistency else "direct")
     results = engine.calculate_design_performance_with_mode(norm_inputs)
+    if eos_aliased:
+        results["requested_eos"] = requested_eos
+        results.setdefault("warnings", []).append(
+            f"İstenen eski EOS '{requested_eos}' doğrudan desteklenmediği için '{target_eos.upper()}' modeli kullanıldı."
+        )
 
     # 4. Turbine Selection Orchestration
     # Pass un-margined motor power so API 617 4% margin is not double-counted
@@ -201,14 +289,44 @@ def execute_design_calculation(
     in_props = results.get("inlet_properties") or {}
     out_props = results.get("outlet_properties") or {}
 
-    p_in_val = float(norm_inputs.get("p_in", 20.0))
-    p_out_val = float(norm_inputs.get("p_out", 60.0))
-    t_in_val = float(norm_inputs.get("t_in", 25.0))
+    p_in_raw = float(norm_inputs.get("p_in", 20.0))
+    p_out_raw = float(norm_inputs.get("p_out", 60.0))
+    t_in_raw = float(norm_inputs.get("t_in", 25.0))
     t_out_val = float(results.get("t_out", 65.0))
+    ambient_pressure_pa = norm_inputs.get("ambient_pressure_pa")
+    altitude_m = norm_inputs.get("altitude_m")
 
-    results["p_in_bar"] = round(p_in_val, 3)
-    results["p_out_bar"] = round(p_out_val, 3)
-    results["t_in_c"] = round(t_in_val, 2)
+    try:
+        p_in_bar_abs = engine.convert_pressure_to_pa(
+            p_in_raw,
+            str(norm_inputs.get("p_in_unit", "bar(a)")),
+            ambient_pressure_pa=ambient_pressure_pa,
+            altitude_m=altitude_m,
+        ) / 1e5
+    except Exception:
+        p_in_bar_abs = p_in_raw
+
+    try:
+        p_out_bar_abs = engine.convert_pressure_to_pa(
+            p_out_raw,
+            str(norm_inputs.get("p_out_unit", "bar(a)")),
+            ambient_pressure_pa=ambient_pressure_pa,
+            altitude_m=altitude_m,
+        ) / 1e5
+    except Exception:
+        p_out_bar_abs = p_out_raw
+
+    try:
+        t_in_c_val = engine.convert_temperature_to_k(
+            t_in_raw,
+            str(norm_inputs.get("t_in_unit", "°C")),
+        ) - 273.15
+    except Exception:
+        t_in_c_val = t_in_raw
+
+    results["p_in_bar"] = round(p_in_bar_abs, 3)
+    results["p_out_bar"] = round(p_out_bar_abs, 3)
+    results["t_in_c"] = round(t_in_c_val, 2)
     results["t_out_c"] = round(t_out_val, 2)
 
     results["z_in"] = round(float(in_props.get("Z", 0.0)), 4) if in_props.get("Z") is not None else 0.0

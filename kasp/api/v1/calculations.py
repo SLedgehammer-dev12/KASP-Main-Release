@@ -52,6 +52,11 @@ class DesignCalculationRequest(BaseModel):
     num_stages: int = Field(default=1, ge=1, le=20)
     intercooler_t: float = 35.0
     intercooler_dp_pct: float = 2.0
+    ambient_temp: float = 19.0
+    t_amb: Optional[float] = None
+    altitude: float = 0.0
+    ambient_pressure: float = 101.325
+    humidity: float = 60.0
     theme: str = "light"
     custom_kij: Optional[Dict[str, float]] = None
     enable_uncertainty: bool = False
@@ -74,7 +79,10 @@ async def calculate_design(
     ve 8 adet interaktif Plotly.js grafik verisini tek seferde döner.
     FastAPI event loop'u bloke etmemek için hesaplamayı worker thread'de çalıştırır.
     """
-    input_dict = req.dict() if hasattr(req, "dict") else req.model_dump()
+    input_dict = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    fields_set = getattr(req, "model_fields_set", None) or getattr(req, "__fields_set__", set())
+    if input_dict.get("t_amb") is not None and "ambient_temp" not in fields_set:
+        input_dict["ambient_temp"] = float(input_dict["t_amb"])
 
     # Doğrulama
     val_res = validate_design_inputs(input_dict)
@@ -98,9 +106,19 @@ async def calculate_design(
             theme_name=req.theme or "light",
         )
 
+        merged_warnings: List[Any] = list(val_res.get("warnings") or [])
+        existing_texts = {
+            (w.get("message") if isinstance(w, dict) else str(w))
+            for w in merged_warnings
+        }
+        for rw in results.get("warnings") or []:
+            if str(rw) not in existing_texts:
+                merged_warnings.append(rw)
+                existing_texts.add(str(rw))
+
         return {
             "success": True,
-            "warnings": val_res["warnings"],
+            "warnings": merged_warnings,
             "inputs": input_dict,
             "results": results,
             "selected_units": selected_units,
@@ -130,6 +148,11 @@ async def calculate_performance(
             engine=engine,
         )
         return ptc10_results
+    except ValueError as ve:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(ve),
+        )
     except Exception as e:
         logger.error(f"Performance calculation error: {e}", exc_info=True)
         raise HTTPException(

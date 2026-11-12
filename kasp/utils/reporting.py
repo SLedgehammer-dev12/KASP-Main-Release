@@ -170,13 +170,25 @@ class ReportGenerator:
             
             # 1. PROJE BİLGİLERİ
             story.append(Paragraph(_L("1. PROJE BİLGİLERİ", "1. PROJECT INFORMATION"), styles['Heading2']))
-            req_eos = str(inputs.get('eos_method', 'coolprop'))
+            req_eos = str(
+                inputs.get('eos_method')
+                or inputs.get('eos_model')
+                or results.get('requested_eos')
+                or 'coolprop'
+            )
             eff_eos = results.get('effective_eos') or results.get('_effective_eos')
             if eff_eos and str(eff_eos).lower() != req_eos.lower():
                 eos_display = f"{self._get_eos_display_name(req_eos)} -> {self._get_eos_display_name(str(eff_eos))} (Fallback)"
             else:
                 eos_display = self._get_eos_display_name(req_eos)
 
+            calc_method_display = str(
+                inputs.get('method')
+                or inputs.get('calc_method')
+                or results.get('calculation_method')
+                or '—'
+            )
+            amb_temp_val = float(inputs.get('ambient_temp', inputs.get('t_amb', 15.0)))
             amb_p_val = float(inputs.get('ambient_pressure', inputs.get('ambient_press', 101.325)))
             amb_p_unit = 'kPa' if amb_p_val <= 200.0 else 'mbar'
 
@@ -186,8 +198,8 @@ class ReportGenerator:
                 [_L("Ünite Sayısı", "Number of Units"), f"{inputs.get('num_units', 1)}", ''],
                 [_L("Gaz Kompozisyonu", "Gas Composition"), self._format_composition(inputs.get('gas_comp', {})), ''],
                 [_L("EOS Metodu", "EOS Method"), eos_display, ''],
-                [_L("Hesaplama Metodu", "Calculation Method"), str(inputs.get('method', '—')), ''],
-                [_L("Ortam Sıcaklığı", "Ambient Temperature"), f"{float(inputs.get('ambient_temp', 15.0)):.1f}", '°C'],
+                [_L("Hesaplama Metodu", "Calculation Method"), calc_method_display, ''],
+                [_L("Ortam Sıcaklığı", "Ambient Temperature"), f"{amb_temp_val:.1f}", '°C'],
                 [_L("Ortam Basıncı", "Ambient Pressure"), f"{amb_p_val:.2f}", amb_p_unit],
                 [_L("Rakım", "Altitude"), f"{float(inputs.get('altitude', 0.0)):.0f}", 'm']
             ]
@@ -209,9 +221,20 @@ class ReportGenerator:
             
             # 2. PROSES KOŞULLARI
             story.append(Paragraph(_L("2. PROSES KOŞULLARI", "2. PROCESS CONDITIONS"), styles['Heading2']))
+            p_in_unit = str(inputs.get('p_in_unit', 'bar'))
+            p_out_unit = str(inputs.get('p_out_unit', p_in_unit))
+            if p_in_unit != p_out_unit:
+                p_in_cell = f"{inputs.get('p_in', '-')} {p_in_unit}"
+                p_out_cell = f"{inputs.get('p_out', '-')} {p_out_unit}"
+                p_unit_cell = f"{p_in_unit} / {p_out_unit}"
+            else:
+                p_in_cell = f"{inputs.get('p_in', '-')}"
+                p_out_cell = f"{inputs.get('p_out', '-')}"
+                p_unit_cell = p_in_unit
+
             process_data = [
                 [_L("Parametre", "Parameter"), _L("Giriş", "Inlet"), _L("Çıkış", "Outlet"), _L("Birim", "Unit")],
-                [_L("Basınç", "Pressure"), f"{inputs.get('p_in', '-')}", f"{inputs.get('p_out', '-')}", inputs.get('p_in_unit', 'bar')],
+                [_L("Basınç", "Pressure"), p_in_cell, p_out_cell, p_unit_cell],
                 [_L("Sıcaklık", "Temperature"), f"{inputs.get('t_in', '-')}", f"{results.get('t_out', 0.0):.1f}" if results.get('t_out') is not None else '-', inputs.get('t_in_unit', '°C')],
                 [_L("Sıkıştırma Oranı", "Compression Ratio"), '-', f"{results.get('compression_ratio', 0.0):.2f}" if results.get('compression_ratio') is not None else '-', ''],
                 [_L("Politropik Verim", "Polytropic Efficiency"), f"{float(inputs.get('poly_eff', 80.0)):.1f}", f"{float(results.get('actual_poly_efficiency', 0.8))*100:.2f}" if results.get('actual_poly_efficiency') is not None else '-', '%'],

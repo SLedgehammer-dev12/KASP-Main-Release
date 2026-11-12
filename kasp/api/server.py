@@ -114,11 +114,20 @@ os.makedirs(_web_dir, exist_ok=True)
 # Mount Static Files
 app.mount("/static", StaticFiles(directory=_web_dir), name="static")
 
+@app.middleware("http")
+async def _revalidate_app_modules(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/src/") or path.startswith("/static/css/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
+
+
 @app.get("/")
 async def read_index():
     index_path = os.path.join(_web_dir, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers={"Cache-Control": "no-cache"})
     return {"message": "KASP Web Platform API is running. UI not yet deployed."}
 
 # CORS - yalnizca yapilandirilmis origin'ler

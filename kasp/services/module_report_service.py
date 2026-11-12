@@ -80,11 +80,18 @@ def build_module_workbook(
     results: Dict[str, Any] | None,
     modules: Dict[str, Any] | None,
     station_data: Dict[str, Any] | None,
+    selected_units: List[Dict[str, Any]] | None = None,
+    warnings: List[Any] | None = None,
 ) -> BytesIO:
-    """Build a multi-sheet XLSX workbook with design, module and station results."""
+    """Build a multi-sheet XLSX workbook with design, turbine, module and station results."""
     modules = modules or {}
     results = results or {}
     station_data = station_data or {}
+    turbine_rows = (
+        selected_units
+        if selected_units is not None
+        else (results.get("selected_units") if isinstance(results.get("selected_units"), list) else [])
+    ) or []
     wb = Workbook()
 
     # 1. Summary
@@ -95,10 +102,125 @@ def build_module_workbook(
         ("Rapor Tarihi", datetime.datetime.now().strftime("%d/%m/%Y %H:%M")),
         ("EOS", inputs.get("eos_model") or inputs.get("eos_method", "-")),
         ("Hesaplama Metodu", inputs.get("calc_method") or inputs.get("method", "-")),
+        ("Ortam Sıcaklığı (°C)", inputs.get("ambient_temp", inputs.get("t_amb", "-"))),
+        ("Rakım (m)", inputs.get("altitude", 0)),
+        ("Türbin Isıl Verimi (%)", results.get("driver_thermal_efficiency_pct") or inputs.get("therm_eff", "-")),
         ("Modüller", ", ".join(sorted(modules.keys())) if modules else "-"),
         ("İstasyon Modeli", "Var" if station_data else "Yok"),
     ]
+    if results:
+        summary_rows.extend([
+            ("Mil Gücü / Ünite (kW)", results.get("power_shaft_per_unit_kw")),
+            ("Sürücü Gücü API 617 / Ünite (kW)", results.get("power_unit_kw")),
+            ("Yakıt Tüketimi / Ünite (kg/h)", results.get("fuel_unit_kgh")),
+            ("Isı Tüketim Oranı - Heat Rate (kJ/kWh)", results.get("heat_rate")),
+        ])
     _write_kv(ws, "KASP Entegrasyon Raporu", summary_rows)
+
+    # 1B. Design Thermodynamics & Stage Breakdown
+    if results:
+        ws = wb.create_sheet("Tasarım")
+        poly_eff_val = results.get("actual_poly_efficiency")
+        if isinstance(poly_eff_val, (int, float)) and 0 < poly_eff_val <= 1.0:
+            poly_eff_val = round(poly_eff_val * 100.0, 2)
+        design_kv = [
+            ("Giriş Basıncı", f"{inputs.get('p_in', '-')} {inputs.get('p_in_unit', 'bar(a)')}"),
+            ("Çıkış Basıncı", f"{inputs.get('p_out', '-')} {inputs.get('p_out_unit', 'bar(a)')}"),
+            ("Giriş Sıcaklığı", f"{inputs.get('t_in', '-')} {inputs.get('t_in_unit', '°C')}"),
+            ("Çıkış Sıcaklığı (°C)", results.get("t_out")),
+            ("Sıkıştırma Oranı (PR)", results.get("compression_ratio")),
+            ("Politropik Yük - Head (kJ/kg)", results.get("head_kj_kg")),
+            ("Gerçek Politropik Verim (%)", poly_eff_val),
+            ("Gaz Gücü / Ünite (kW)", results.get("power_gas_per_unit_kw")),
+            ("Mil Gücü / Ünite (kW)", results.get("power_shaft_per_unit_kw")),
+            ("Kaplin Gücü / Ünite (kW)", results.get("power_motor_per_unit_kw")),
+            ("API 617 Sürücü Gücü / Ünite (kW)", results.get("power_unit_kw")),
+            ("İstasyon Toplam Sürücü Gücü (kW)", results.get("power_unit_total_kw")),
+            ("Sürücü Isıl Verimi (%)", results.get("driver_thermal_efficiency_pct") or inputs.get("therm_eff")),
+            ("Heat Rate (kJ/kWh)", results.get("heat_rate")),
+            ("Alt Isıl Değer - LHV (kJ/kg)", results.get("lhv")),
+            ("Yakıt Tüketimi / Ünite (kg/h)", results.get("fuel_unit_kgh")),
+            ("İstasyon Toplam Yakıt (kg/h)", results.get("fuel_total_kgh")),
+        ]
+        _write_kv(ws, "Kompresör Tasarım ve Yakıt Özeti", design_kv)
+
+        stages = results.get("stages") or []
+        if isinstance(stages, list) and stages:
+            start_row = 4 + len(design_kv) + 1
+            stage_headers = [
+                "Kademe",
+                "P_in (bar a)",
+                "P_out (bar a)",
+                "T_in (°C)",
+                "T_out (°C)",
+                "Head (kJ/kg)",
+                "Güç (kW)",
+                "Politropik Verim (%)",
+            ]
+            for col_idx, header in enumerate(stage_headers, start=1):
+                cell = ws.cell(row=start_row, column=col_idx, value=header)
+                cell.fill = HEADER_FILL
+                cell.font = HEADER_FONT
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = BORDER
+                ws.column_dimensions[get_column_letter(col_idx)].width = max(
+                    ws.column_dimensions[get_column_letter(col_idx)].width or 14,
+                    18,
+                )
+            for offset, stg in enumerate(stages, start=1):
+                if not isinstance(stg, dict):
+                    continue
+                stg_eff = stg.get("actual_poly_eff", stg.get("poly_eff"))
+                if isinstance(stg_eff, (int, float)) and 0 < stg_eff <= 1.0:
+                    stg_eff = round(stg_eff * 100.0, 2)
+                row_vals = [
+                    stg.get("stage", offset),
+                    stg.get("p_in_bar", stg.get("p_in")),
+                    stg.get("p_out_bar", stg.get("p_out")),
+                    stg.get("t_in_c", stg.get("t_in")),
+                    stg.get("t_out_c", stg.get("t_out")),
+                    stg.get("head_kj_kg"),
+                    stg.get("power_kw", stg.get("power_gas_kw")),
+                    stg_eff,
+                ]
+                for col_idx, val in enumerate(row_vals, start=1):
+                    c = ws.cell(row=start_row + offset, column=col_idx, value=_safe(val))
+                    c.border = BORDER
+
+    # 1C. Matched ISO 2314 Turbines
+    if turbine_rows:
+        ws = wb.create_sheet("Türbinler")
+        t_headers = [
+            "Model",
+            "Üretici",
+            "Tip",
+            "Saha Gücü (kW)",
+            "ISO Gücü (kW)",
+            "Saha Heat Rate (kJ/kWh)",
+            "Saha Isıl Verim (%)",
+            "Güç Marjı (%)",
+            "Seçim Skoru",
+        ]
+        t_data = []
+        for u in turbine_rows:
+            if not isinstance(u, dict):
+                continue
+            s_hr = u.get("site_heat_rate_kj_kwh") or u.get("site_heat_rate")
+            s_eff = u.get("site_thermal_efficiency_pct")
+            if s_eff is None and isinstance(s_hr, (int, float)) and s_hr > 0:
+                s_eff = round(360000.0 / float(s_hr), 2)
+            t_data.append([
+                u.get("model") or u.get("name"),
+                u.get("manufacturer", "Genel"),
+                u.get("type", "Industrial"),
+                u.get("site_power_kw") or u.get("available_power_kw"),
+                u.get("iso_power_kw"),
+                s_hr,
+                s_eff,
+                u.get("power_margin_pct"),
+                u.get("selection_score"),
+            ])
+        _write_table(ws, "Eşleşen Gaz Türbinleri (ISO 2314 Saha Düzeltmeli)", t_headers, t_data)
 
     # 2. PSV
     psv = _module_results(modules, "psv")
@@ -218,14 +340,42 @@ def build_module_workbook(
                 ])
             _write_table(ws, "15 Proses Hattı Boru Boyutlandırma", headers, rows)
 
-    # 8. Warnings
-    warnings = []
+    # 8. Warnings (design + validation + module warnings, deduplicated)
+    collected_warnings: List[str] = []
+    seen_warnings: set[str] = set()
+
+    def _add_warn(item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, dict):
+            msg = item.get("message") or str(item)
+            field = item.get("field")
+            txt = f"[{field}] {msg}" if field else str(msg)
+        else:
+            txt = str(item)
+        txt = txt.strip()
+        if txt and txt not in seen_warnings:
+            seen_warnings.add(txt)
+            collected_warnings.append(txt)
+
+    for w in (warnings or []):
+        _add_warn(w)
+    for w in (results.get("validation_warnings") or []):
+        _add_warn(w)
+    for w in (results.get("warnings") or []):
+        _add_warn(w)
     for module in modules.values():
         if isinstance(module, dict):
-            warnings.extend(module.get("warnings") or [])
-    if warnings:
+            for w in (module.get("warnings") or []):
+                _add_warn(w)
+    if collected_warnings:
         ws = wb.create_sheet("Uyarılar")
-        _write_table(ws, "Modül Uyarıları", ["#", "Uyarı"], [[i + 1, w] for i, w in enumerate(warnings)])
+        _write_table(
+            ws,
+            "Tasarım ve Modül Uyarıları",
+            ["#", "Uyarı"],
+            [[i + 1, w] for i, w in enumerate(collected_warnings)],
+        )
 
     output = BytesIO()
     wb.save(output)

@@ -68,12 +68,40 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
         return default
 
 
+def _resolve_solver_context(
+    inputs: Dict[str, Any],
+    results: Dict[str, Any],
+    engine: Optional[ThermoEngine] = None,
+):
+    """Best-effort EOS solver context for chart state evaluation; never raises."""
+    raw_comp = inputs.get("gas_comp") or inputs.get("gas_composition")
+    if not isinstance(raw_comp, dict) or not raw_comp:
+        return None, None, "pr"
+    eos = str(
+        results.get("effective_eos")
+        or results.get("_effective_eos")
+        or inputs.get("eos")
+        or inputs.get("eos_method")
+        or "pr"
+    ).strip().lower()
+    try:
+        eng = engine or ThermoEngine()
+        custom_kij = inputs.get("custom_kij") if isinstance(inputs.get("custom_kij"), dict) else None
+        gas_obj = eng._create_gas_object(raw_comp, eos, custom_kij=custom_kij)
+        return eng.thermo_solver, gas_obj, eos
+    except Exception:
+        return None, None, eos
+
+
 def build_ts_chart_data(inputs: Optional[Dict[str, Any]] = None, results: Optional[Dict[str, Any]] = None, engine: Optional[ThermoEngine] = None) -> Dict[str, Any]:
     """Generate numerical points for T-s (Temperature-Entropy) diagram."""
     inputs = inputs or {}
     results = results or {}
     engine = engine or ThermoEngine()
     stages = results.get("stages", []) or []
+    in_props = results.get("inlet_properties") or {}
+    out_props = results.get("outlet_properties") or {}
+    solver, gas_obj, eos = _resolve_solver_context(inputs, results, engine)
 
     actual_s: List[float] = []
     actual_t_c: List[float] = []
@@ -81,6 +109,18 @@ def build_ts_chart_data(inputs: Optional[Dict[str, Any]] = None, results: Option
 
     isen_s: List[float] = []
     isen_t_c: List[float] = []
+
+    s_in_global = None
+    if results.get("s_in") is not None:
+        s_in_global = _safe_float(results.get("s_in")) / 1000.0
+    elif in_props.get("S") is not None:
+        s_in_global = _safe_float(in_props.get("S")) / 1000.0
+
+    s_out_global = None
+    if results.get("s_out") is not None:
+        s_out_global = _safe_float(results.get("s_out")) / 1000.0
+    elif out_props.get("S") is not None:
+        s_out_global = _safe_float(out_props.get("S")) / 1000.0
 
     # If stage-by-stage results exist
     if stages:
@@ -91,32 +131,67 @@ def build_ts_chart_data(inputs: Optional[Dict[str, Any]] = None, results: Option
             t1_c = _stage_celsius(stage.get("t_in", 20.0))
             t2_c = _stage_celsius(stage.get("t_out", 60.0))
 
-            # Approximate entropy progression (s increases with polytropic irreversibility)
-            base_s = 5.0 + idx * 0.15
-            s_in = base_s
-            s_out = s_in + _safe_float(stage.get("delta_s"), 0.05)
+            s1_kj = None
+            s2_kj = None
+            t2_isen_c = None
+            if solver is not None and gas_obj is not None and p1_bar > 0.0 and p2_bar > 0.0:
+                try:
+                    st1 = solver.get_properties(p1_bar * 1e5, t1_c + 273.15, gas_obj, eos)
+                    st2 = solver.get_properties(p2_bar * 1e5, t2_c + 273.15, gas_obj, eos)
+                    s1_kj = float(st1.S) / 1000.0
+                    s2_kj = float(st2.S) / 1000.0
+                    from kasp.core.aerodynamics import CompressorAerodynamics
+                    t2s_k = CompressorAerodynamics.calculate_isentropic_outlet_temp(
+                        st1, p2_bar * 1e5, solver, gas_obj, eos
+                    )
+                    if math.isfinite(t2s_k) and t2s_k > 0.0:
+                        t2_isen_c = t2s_k - 273.15
+                except Exception:
+                    pass
 
-            actual_s.extend([round(s_in, 4), round(s_out, 4)])
+            if s1_kj is None:
+                if idx == 0 and s_in_global is not None and s_in_global != 0.0:
+                    s1_kj = s_in_global
+                else:
+                    s1_kj = (actual_s[-1] - 0.12) if actual_s else (5.0 + idx * 0.15)
+            if s2_kj is None:
+                if idx == len(stages) - 1 and s_out_global is not None and s_out_global != 0.0:
+                    s2_kj = s_out_global
+                else:
+                    dh_kj = _safe_float(stage.get("delta_h_kj_kg"), 0.0)
+                    hd_kj = _safe_float(stage.get("head_kj_kg"), 0.0)
+                    t_avg_k = max(200.0, 0.5 * ((t1_c + 273.15) + (t2_c + 273.15)))
+                    irr_ds = max(0.01, (dh_kj - hd_kj) / t_avg_k) if dh_kj > hd_kj > 0 else _safe_float(stage.get("delta_s"), 0.05)
+                    s2_kj = s1_kj + irr_ds
+
+            if t2_isen_c is None:
+                eff_stg = _safe_float(stage.get("poly_eff_diagnostic"), 0.82)
+                if eff_stg > 1.0:
+                    eff_stg /= 100.0
+                eff_stg = max(0.3, min(0.99, eff_stg))
+                t2_isen_c = t1_c + (t2_c - t1_c) * eff_stg
+
+            actual_s.extend([round(s1_kj, 4), round(s2_kj, 4)])
             actual_t_c.extend([round(t1_c, 2), round(t2_c, 2)])
             actual_p_bar.extend([round(p1_bar, 2), round(p2_bar, 2)])
 
-            # Isentropic reference (vertical line s = const)
-            isen_s.extend([round(s_in, 4), round(s_in, 4)])
-            isen_t_isen = t1_c + (t2_c - t1_c) * 0.82
-            isen_t_c.extend([round(t1_c, 2), round(isen_t_isen, 2)])
+            isen_s.extend([round(s1_kj, 4), round(s1_kj, 4)])
+            isen_t_c.extend([round(t1_c, 2), round(t2_isen_c, 2)])
     else:
         # Single stage or total fallback
         p1 = _pressure_to_bar(inputs.get("p_in", 1.0), inputs.get("p_in_unit", "bar(a)"))
         p2 = _pressure_to_bar(inputs.get("p_out", 2.5), inputs.get("p_out_unit", "bar(a)"))
         t1 = _temperature_to_c(inputs.get("t_in", 20.0), inputs.get("t_in_unit", "°C"))
-        t2 = _safe_float(results.get("t_out"), t1 + 45.0)
+        t2 = _safe_float(results.get("t_out_c") if results.get("t_out_c") is not None else results.get("t_out"), t1 + 45.0)
 
-        actual_s = [5.20, 5.32]
-        actual_t_c = [t1, t2]
-        actual_p_bar = [p1, p2]
+        s1_fb = s_in_global if (s_in_global is not None and s_in_global != 0.0) else 5.20
+        s2_fb = s_out_global if (s_out_global is not None and s_out_global != 0.0) else (s1_fb + 0.12)
+        actual_s = [round(s1_fb, 4), round(s2_fb, 4)]
+        actual_t_c = [round(t1, 2), round(t2, 2)]
+        actual_p_bar = [round(p1, 2), round(p2, 2)]
 
-        isen_s = [5.20, 5.20]
-        isen_t_c = [t1, t1 + (t2 - t1) * 0.85]
+        isen_s = [round(s1_fb, 4), round(s1_fb, 4)]
+        isen_t_c = [round(t1, 2), round(t1 + (t2 - t1) * 0.85, 2)]
 
     return {
         "title": "T-s (Sıcaklık - Entropi) Diyagramı",
@@ -144,30 +219,59 @@ def build_pv_chart_data(inputs: Optional[Dict[str, Any]] = None, results: Option
     """Generate numerical points for P-v (Pressure - Specific Volume) diagram."""
     inputs = inputs or {}
     results = results or {}
+    in_props = results.get("inlet_properties") or {}
+    out_props = results.get("outlet_properties") or {}
 
-    p_in_bar = max(0.01, _pressure_to_bar(inputs.get("p_in", 1.0), inputs.get("p_in_unit", "bar(a)")))
-    p_out_bar = max(p_in_bar * 1.05, _pressure_to_bar(inputs.get("p_out", 3.0), inputs.get("p_out_unit", "bar(a)")))
+    p_in_cand = results.get("p_in_bar")
+    if p_in_cand is None:
+        p_in_cand = _pressure_to_bar(inputs.get("p_in", 1.0), inputs.get("p_in_unit", "bar(a)"))
+    p_in_bar = max(0.01, _safe_float(p_in_cand, 1.0))
 
-    # Calculate 25 interpolation points along polytropic curve P * v^n = const
-    v_in = 0.85  # m^3/kg approx
+    p_out_cand = results.get("p_out_bar")
+    if p_out_cand is None:
+        p_out_cand = _pressure_to_bar(inputs.get("p_out", 3.0), inputs.get("p_out_unit", "bar(a)"))
+    p_out_bar = max(p_in_bar * 1.05, _safe_float(p_out_cand, p_in_bar * 3.0))
+
+    v_in = _safe_float(results.get("v_in"), 0.0)
+    if v_in <= 0.0:
+        rho_in = _safe_float(results.get("rho_in") or in_props.get("rho"), 0.0)
+        v_in = (1.0 / rho_in) if rho_in > 0.0 else 0.85
+
+    v_out = _safe_float(results.get("v_out"), 0.0)
+    if v_out <= 0.0:
+        rho_out = _safe_float(results.get("rho_out") or out_props.get("rho"), 0.0)
+        if rho_out > 0.0:
+            v_out = 1.0 / rho_out
+
     poly_n = 1.35
+    if 0.0 < v_out < v_in and p_out_bar > p_in_bar:
+        ln_vr = math.log(v_in / v_out)
+        if ln_vr > 1e-9:
+            n_est = math.log(p_out_bar / p_in_bar) / ln_vr
+            if math.isfinite(n_est) and 0.5 < n_est < 5.0:
+                poly_n = n_est
+
+    isen_k = _safe_float(results.get("k_s_in") or in_props.get("k_s") or results.get("k_in") or in_props.get("k"), 1.30)
+    if isen_k <= 1.01 or isen_k > 4.0:
+        isen_k = 1.30
+
     c_poly = p_in_bar * (v_in ** poly_n)
+    c_isen = p_in_bar * (v_in ** isen_k)
+    v_digits = 5 if v_in < 0.1 else 4
 
     steps = 25
     p_points = []
     v_poly = []
     v_isen = []
 
-    c_isen = p_in_bar * (v_in ** 1.30)
-
     for i in range(steps + 1):
         frac = i / steps
         p = max(0.001, p_in_bar + (p_out_bar - p_in_bar) * frac)
         p_points.append(round(p, 3))
         v_p = (c_poly / p) ** (1.0 / poly_n)
-        v_i = (c_isen / p) ** (1.0 / 1.30)
-        v_poly.append(round(v_p, 4))
-        v_isen.append(round(v_i, 4))
+        v_i = (c_isen / p) ** (1.0 / isen_k)
+        v_poly.append(round(v_p, v_digits))
+        v_isen.append(round(v_i, v_digits))
 
     return {
         "title": "P-v (Basınç - Özgül Hacim) Diyagramı",
@@ -187,14 +291,34 @@ def build_hs_chart_data(inputs: Optional[Dict[str, Any]] = None, results: Option
     out_props = results.get("outlet_properties") or {}
 
     h_in = results.get("h_in_kj_kg")
+    if h_in is None and results.get("h_in") is not None:
+        h_in = _safe_float(results.get("h_in")) / 1000.0
     if h_in is None and in_props.get("H") is not None:
         h_in = _safe_float(in_props["H"]) / 1000.0
     h_in = _safe_float(h_in, 450.0)
 
     h_out = results.get("h_out_kj_kg")
+    if h_out is None and results.get("h_out") is not None:
+        h_out = _safe_float(results.get("h_out")) / 1000.0
     if h_out is None and out_props.get("H") is not None:
         h_out = _safe_float(out_props["H"]) / 1000.0
     h_out = _safe_float(h_out, h_in + 120.0)
+
+    s_in = None
+    if results.get("s_in") is not None:
+        s_in = _safe_float(results.get("s_in")) / 1000.0
+    elif in_props.get("S") is not None:
+        s_in = _safe_float(in_props.get("S")) / 1000.0
+    if s_in is None or s_in == 0.0:
+        s_in = 5.20
+
+    s_out = None
+    if results.get("s_out") is not None:
+        s_out = _safe_float(results.get("s_out")) / 1000.0
+    elif out_props.get("S") is not None:
+        s_out = _safe_float(out_props.get("S")) / 1000.0
+    if s_out is None or s_out == 0.0:
+        s_out = s_in + 0.14
 
     head = _safe_float(
         results.get("head_total_kj_kg") or results.get("poly_head_total_kj_kg") or results.get("head_kj_kg"),
@@ -206,14 +330,14 @@ def build_hs_chart_data(inputs: Optional[Dict[str, Any]] = None, results: Option
         "x_label": "Entropi s [kJ/kg·K]",
         "y_label": "Entalpi h [kJ/kg]",
         "actual_path": {
-            "s": [5.20, 5.34],
+            "s": [round(s_in, 4), round(s_out, 4)],
             "h": [round(h_in, 1), round(h_out, 1)],
             "name": "Gerçek Entalpi Artışı (Δh_act)"
         },
         "isentropic_path": {
-            "s": [5.20, 5.20],
+            "s": [round(s_in, 4), round(s_in, 4)],
             "h": [round(h_in, 1), round(h_in + head, 1)],
-            "name": "İzentropik Yük (Head)"
+            "name": "Politropik Yük (Head)"
         },
         "metrics": {
             "delta_h_actual_kj_kg": round(h_out - h_in, 1),
@@ -227,14 +351,51 @@ def build_power_sankey_data(inputs: Optional[Dict[str, Any]] = None, results: Op
     inputs = inputs or {}
     results = results or {}
 
-    shaft_pwr = _safe_float(results.get("power_shaft_total_kw") or results.get("power_total_kw"), 5000.0)
-    gas_pwr = _safe_float(results.get("power_gas_total_kw"), shaft_pwr * 0.98)
+    shaft_pwr = _safe_float(
+        results.get("power_shaft_total_kw")
+        or results.get("power_shaft_per_unit_kw")
+        or results.get("power_total_kw"),
+        5000.0,
+    )
+    gas_pwr = _safe_float(
+        results.get("power_gas_total_kw") or results.get("power_gas_per_unit_kw"),
+        shaft_pwr * 0.98,
+    )
     mech_losses = max(0.0, shaft_pwr - gas_pwr)
 
-    poly_head_pwr = gas_pwr * (_safe_float(inputs.get("poly_eff"), 80.0) / 100.0)
+    act_poly_eff = _safe_float(results.get("actual_poly_efficiency"), 0.0)
+    if act_poly_eff > 1.0:
+        act_poly_eff /= 100.0
+    if not (0.05 <= act_poly_eff <= 1.0):
+        raw_in_eff = _safe_float(inputs.get("poly_eff"), 80.0)
+        act_poly_eff = raw_in_eff / 100.0 if raw_in_eff > 1.0 else raw_in_eff
+        act_poly_eff = max(0.10, min(0.99, act_poly_eff))
+
+    poly_head_pwr = gas_pwr * act_poly_eff
     thermo_losses = max(0.0, gas_pwr - poly_head_pwr)
 
-    fuel_input_kw = shaft_pwr / 0.35  # Approx 35% thermal efficiency
+    # Resolve true driver thermal efficiency / fuel energy rate
+    therm_eff_frac = 0.0
+    drv_eff_pct = results.get("driver_thermal_efficiency_pct")
+    if drv_eff_pct is None:
+        drv_eff_pct = inputs.get("driver_thermal_eff_pct") or inputs.get("turbine_thermal_eff_pct")
+    if drv_eff_pct is not None:
+        eff_v = _safe_float(drv_eff_pct, 0.0)
+        therm_eff_frac = eff_v / 100.0 if eff_v > 1.0 else eff_v
+    if therm_eff_frac <= 0.05:
+        hr_kj_kwh = _safe_float(results.get("heat_rate"), 0.0)
+        if hr_kj_kwh > 3600.0:
+            therm_eff_frac = 3600.0 / hr_kj_kwh
+
+    fuel_total_kgh = _safe_float(results.get("fuel_total_kgh"), 0.0)
+    lhv_kj_kg = _safe_float(results.get("lhv"), 0.0)
+    if therm_eff_frac > 0.05:
+        fuel_input_kw = shaft_pwr / min(0.99, therm_eff_frac)
+    elif fuel_total_kgh > 0.0 and lhv_kj_kg > 0.0:
+        fuel_input_kw = (fuel_total_kgh * lhv_kj_kg) / 3600.0
+    else:
+        fuel_input_kw = shaft_pwr / 0.35
+
     thermal_exhaust_kw = max(0.0, fuel_input_kw - shaft_pwr)
 
     nodes = [
@@ -271,24 +432,47 @@ def build_kz_path_data(inputs: Optional[Dict[str, Any]] = None, results: Optiona
     pr_total = _safe_float(results.get("compression_ratio"), 2.5)
     if pr_total <= 0.0:
         pr_total = 2.5
-    steps = 15
-    prs = []
-    z_vals = []
-    k_vals = []
 
     in_props = results.get("inlet_properties") or {}
     out_props = results.get("outlet_properties") or {}
     z_in = _safe_float(results.get("z_in") or in_props.get("Z"), 0.96)
     z_out = _safe_float(results.get("z_out") or out_props.get("Z"), 0.92)
-    k_in = _safe_float(results.get("k_in") or in_props.get("k"), 1.31)
-    k_out = _safe_float(results.get("k_out") or out_props.get("k"), 1.28)
+    k_in = _safe_float(results.get("k_s_in") or in_props.get("k_s") or results.get("k_in") or in_props.get("k"), 1.31)
+    k_out = _safe_float(results.get("k_s_out") or out_props.get("k_s") or results.get("k_out") or out_props.get("k"), 1.28)
 
-    for i in range(steps + 1):
-        frac = i / steps
-        pr = 1.0 + (pr_total - 1.0) * frac
-        prs.append(round(pr, 2))
-        z_vals.append(round(z_in + (z_out - z_in) * frac, 4))
-        k_vals.append(round(k_in + (k_out - k_in) * frac, 4))
+    prs: List[float] = []
+    z_vals: List[float] = []
+    k_vals: List[float] = []
+
+    # Try sampling real EOS states along geometric pressure path when gas_comp is available
+    solver, gas_obj, eos = _resolve_solver_context(inputs, results)
+    if solver is not None and gas_obj is not None and pr_total > 1.01:
+        p1_bar = max(0.01, _safe_float(results.get("p_in_bar") or _pressure_to_bar(inputs.get("p_in", 1.0), inputs.get("p_in_unit", "bar(a)")), 1.0))
+        t1_c = _safe_float(results.get("t_in_c") if results.get("t_in_c") is not None else _temperature_to_c(inputs.get("t_in", 25.0), inputs.get("t_in_unit", "°C")), 25.0)
+        t2_c = _safe_float(results.get("t_out_c") if results.get("t_out_c") is not None else results.get("t_out"), t1_c + 40.0)
+        steps = 15
+        try:
+            for i in range(steps + 1):
+                frac = i / steps
+                pr_i = pr_total ** frac
+                p_pa = p1_bar * pr_i * 1e5
+                t_k = (t1_c + 273.15) * (((t2_c + 273.15) / max(150.0, t1_c + 273.15)) ** frac)
+                st = solver.get_properties(p_pa, t_k, gas_obj, eos)
+                prs.append(round(pr_i, 3))
+                z_vals.append(round(float(st.Z), 4))
+                k_use = float(st.k_s) if (getattr(st, "k_s", 0.0) and st.k_s > 0.5) else float(st.k)
+                k_vals.append(round(k_use, 4))
+        except Exception:
+            prs, z_vals, k_vals = [], [], []
+
+    if len(prs) < 2:
+        steps = 15
+        for i in range(steps + 1):
+            frac = i / steps
+            pr = 1.0 + (pr_total - 1.0) * frac
+            prs.append(round(pr, 2))
+            z_vals.append(round(z_in + (z_out - z_in) * frac, 4))
+            k_vals.append(round(k_in + (k_out - k_in) * frac, 4))
 
     return {
         "title": "Basınç Boyunca Sıkıştırılabilirlik (Z) ve İzentropik Üs (k)",
@@ -356,12 +540,40 @@ def build_turbine_radar_data(selected_units: List[Dict[str, Any]]) -> Dict[str, 
     series = []
 
     for unit in (selected_units or [])[:4]:
-        margin_val = _safe_float(unit.get("power_margin_pct"), 10.0)
-        margin = max(0.0, min(100.0, 100.0 - abs(margin_val - 10.0) * 3))
-        eff_score = 85.0
+        unit = unit or {}
+        raw_margin = unit.get("power_margin_pct")
+        margin_val = _safe_float(raw_margin, 10.0)
+        margin = max(0.0, min(100.0, 100.0 - abs(margin_val - 10.0) * 3.0))
+
+        hr = _safe_float(
+            unit.get("site_heat_rate_kj_kwh")
+            or unit.get("iso_heat_rate_kj_kwh")
+            or unit.get("site_heat_rate")
+            or unit.get("iso_heat_rate"),
+            0.0,
+        )
+        th_eff_pct = _safe_float(
+            unit.get("site_thermal_efficiency_pct") or unit.get("iso_thermal_efficiency_pct"),
+            0.0,
+        )
+        if hr > 0.0:
+            # 8500 kJ/kWh (~42.4% eff) -> 100 pts; 15000 kJ/kWh (~24% eff) -> 0 pts
+            eff_score = max(0.0, min(100.0, ((15000.0 - hr) / (15000.0 - 8500.0)) * 100.0))
+        elif th_eff_pct > 0.0:
+            eff_score = max(0.0, min(100.0, ((th_eff_pct - 22.0) / (42.0 - 22.0)) * 100.0))
+        else:
+            eff_score = 85.0
+
         surge_val = _safe_float(unit.get("surge_margin_pct"), 15.0)
-        surge = min(100.0, max(0.0, surge_val * 5))
-        load_score = 90.0
+        surge = min(100.0, max(0.0, surge_val * 5.0))
+
+        if raw_margin is not None:
+            # Optimal turbine continuous loading is ~88% (margin ~13.6%)
+            load_pct = 100.0 / max(0.25, 1.0 + margin_val / 100.0)
+            load_score = max(0.0, min(100.0, 100.0 - abs(load_pct - 88.0) * 2.0))
+        else:
+            load_score = 90.0
+
         total_score = _safe_float(unit.get("selection_score"), 85.0)
 
         series.append({

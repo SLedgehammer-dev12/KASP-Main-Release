@@ -10,9 +10,13 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
-from kasp.api.auth import get_current_user, get_db, require_permission
+from kasp.api.auth import get_current_user, get_current_user_optional, get_db, require_permission
 from kasp.data.database import UnitDatabase
-from kasp.utils.project_manager import ProjectManager, sanitize_json_payload
+from kasp.utils.project_manager import (
+    ProjectManager,
+    normalize_project_inputs_cross_platform,
+    sanitize_json_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +25,66 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 MAX_KASP_FILE_SIZE = 2 * 1024 * 1024  # 2 MB güvenlik sınırı
 
 
-def _merge_module_payload(results, modules, station_data):
-    """Attach integration module/station results to the persisted result payload."""
+def _merge_module_payload(
+    results,
+    modules,
+    station_data,
+    selected_units=None,
+    charts=None,
+    warnings=None,
+):
+    """Attach integration module, station, turbine, chart, and warning payloads to results."""
     payload = dict(results or {})
     if modules:
         payload["module_results"] = modules
     if station_data:
         payload["station_data"] = station_data
+    if selected_units is not None:
+        payload["selected_units"] = selected_units
+    if charts is not None:
+        payload["charts"] = charts
+    if warnings is not None:
+        payload["warnings"] = warnings
     return payload or None
+
+
+def _hydrate_project_record(record: dict) -> dict:
+    """Parse JSON columns and expose top-level selected_units, charts, warnings, modules, station_data."""
+    item = dict(record)
+    if isinstance(item.get("inputs_json"), str):
+        try:
+            raw_inputs = json.loads(item["inputs_json"])
+            item["inputs"] = normalize_project_inputs_cross_platform(raw_inputs)
+        except Exception:
+            item["inputs"] = {}
+    elif isinstance(item.get("inputs"), dict):
+        item["inputs"] = normalize_project_inputs_cross_platform(item["inputs"])
+
+    if isinstance(item.get("results_json"), str):
+        try:
+            item["results"] = json.loads(item["results_json"])
+        except Exception:
+            item["results"] = None
+
+    res_dict = item.get("results") if isinstance(item.get("results"), dict) else {}
+    item["modules"] = item.get("modules") or res_dict.get("module_results") or {}
+    item["station_data"] = item.get("station_data") or res_dict.get("station_data") or None
+    item["selected_units"] = (
+        item["selected_units"]
+        if item.get("selected_units") is not None
+        else (res_dict.get("selected_units") or [])
+    )
+    item["charts"] = (
+        item["charts"]
+        if item.get("charts") is not None
+        else res_dict.get("charts")
+    )
+    item["warnings"] = (
+        item["warnings"]
+        if item.get("warnings") is not None
+        else (res_dict.get("warnings") or [])
+    )
+    return item
 
 
 class SaveProjectRequest(BaseModel):
@@ -36,6 +92,9 @@ class SaveProjectRequest(BaseModel):
     calculation_type: str = "Design"
     inputs: Dict[str, Any]
     results: Optional[Dict[str, Any]] = None
+    selected_units: Optional[list] = None
+    charts: Optional[Dict[str, Any]] = None
+    warnings: Optional[list] = None
     modules: Optional[Dict[str, Any]] = None
     station_data: Optional[Dict[str, Any]] = None
     notes: str = ""
@@ -45,6 +104,9 @@ class ExportKaspRequest(BaseModel):
     project_name: str = "kasp_project"
     inputs: Dict[str, Any]
     results: Optional[Dict[str, Any]] = None
+    selected_units: Optional[list] = None
+    charts: Optional[Dict[str, Any]] = None
+    warnings: Optional[list] = None
     modules: Optional[Dict[str, Any]] = None
     station_data: Optional[Dict[str, Any]] = None
 
@@ -70,22 +132,7 @@ async def list_projects(
     """
     user_id = None if user.get("role") == "admin" else user.get("id")
     history = db.get_calculation_history(limit=limit, user_id=user_id)
-    # Parse json strings for client
-    parsed = []
-    for h in history:
-        item = dict(h)
-        if isinstance(item.get("inputs_json"), str):
-            try:
-                item["inputs"] = json.loads(item["inputs_json"])
-            except Exception:
-                item["inputs"] = {}
-        if isinstance(item.get("results_json"), str):
-            try:
-                item["results"] = json.loads(item["results_json"])
-            except Exception:
-                item["results"] = None
-        parsed.append(item)
-    return parsed
+    return [_hydrate_project_record(h) for h in history]
 
 
 @router.get("/{project_id}")
@@ -99,19 +146,7 @@ async def get_project(
     record = db.get_calculation_history_by_id(project_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Proje kaydı bulunamadı.")
-    
-    item = dict(record)
-    if isinstance(item.get("inputs_json"), str):
-        try:
-            item["inputs"] = json.loads(item["inputs_json"])
-        except Exception:
-            item["inputs"] = {}
-    if isinstance(item.get("results_json"), str):
-        try:
-            item["results"] = json.loads(item["results_json"])
-        except Exception:
-            item["results"] = None
-    return item
+    return _hydrate_project_record(record)
 
 
 @router.post("")
@@ -121,11 +156,19 @@ async def save_project(
     user: dict = Depends(require_permission("write")),
 ):
     """Hesaplama sonucunu veritabanı geçmişine kaydeder."""
+    normalized_inputs = normalize_project_inputs_cross_platform(req.inputs)
     history_id = db.save_calculation_history(
         project_name=req.project_name,
         calculation_type=req.calculation_type,
-        inputs=req.inputs,
-        results=_merge_module_payload(req.results, req.modules, req.station_data),
+        inputs=normalized_inputs,
+        results=_merge_module_payload(
+            req.results,
+            req.modules,
+            req.station_data,
+            selected_units=req.selected_units,
+            charts=req.charts,
+            warnings=req.warnings,
+        ),
         notes=req.notes,
         user_id=user.get("id"),
     )
@@ -151,16 +194,20 @@ async def delete_project(
 @router.post("/export-kasp")
 async def export_kasp(
     req: ExportKaspRequest,
-    user: dict = Depends(get_current_user),
+    user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Mevcut girdi ve sonuçları .kasp dosya formatında dışa aktarır."""
     import datetime
     pm = ProjectManager()
+    normalized_inputs = normalize_project_inputs_cross_platform(req.inputs)
     project_data = {
         "schema_version": pm.VERSION,
         "timestamp": datetime.datetime.now().isoformat(),
-        "inputs": req.inputs,
+        "inputs": normalized_inputs,
         "results": req.results,
+        "selected_units": req.selected_units,
+        "charts": req.charts,
+        "warnings": req.warnings,
         "modules": req.modules or {},
         "station_data": req.station_data,
     }
@@ -180,7 +227,7 @@ async def export_kasp(
 @router.post("/export-results-json")
 async def export_results_json(
     req: ExportResultsJsonRequest,
-    user: dict = Depends(get_current_user),
+    user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Hesaplama sonuçlarını salt _Sonuclar.json formatında dışa aktarır."""
     import datetime
@@ -211,7 +258,7 @@ async def export_results_json(
 @router.post("/import-kasp")
 async def import_kasp(
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
+    user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """Yüklenen .kasp dosyasını doğrular, şema migrasyonunu yapar ve girdi/sonuçları döner."""
     contents = await file.read()
@@ -234,6 +281,7 @@ async def import_kasp(
 
     pm = ProjectManager()
     migrated_data = pm._migrate_project_schema(data)
+    res_dict = migrated_data.get("results") if isinstance(migrated_data.get("results"), dict) else {}
 
     return {
         "success": True,
@@ -241,6 +289,21 @@ async def import_kasp(
         "timestamp": migrated_data.get("timestamp"),
         "inputs": migrated_data.get("inputs", {}),
         "results": migrated_data.get("results"),
-        "modules": migrated_data.get("modules", {}),
-        "station_data": migrated_data.get("station_data"),
+        "selected_units": (
+            migrated_data["selected_units"]
+            if migrated_data.get("selected_units") is not None
+            else (res_dict.get("selected_units") or [])
+        ),
+        "charts": (
+            migrated_data["charts"]
+            if migrated_data.get("charts") is not None
+            else res_dict.get("charts")
+        ),
+        "warnings": (
+            migrated_data["warnings"]
+            if migrated_data.get("warnings") is not None
+            else (res_dict.get("warnings") or [])
+        ),
+        "modules": migrated_data.get("modules") or res_dict.get("module_results") or {},
+        "station_data": migrated_data.get("station_data") or res_dict.get("station_data"),
     }
