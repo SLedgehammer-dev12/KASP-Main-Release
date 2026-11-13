@@ -161,10 +161,17 @@ export function convertFlowWithMW(val, fromU, toU, gasComp) {
   const rhoUs = computeStandardGasDensityKgm3(gasComp, "us_field");
 
   const fU = String(fromU || "kg/s").trim();
+  const tU = String(toU || "kg/s").trim();
+  // m³/h / ACMH is actual inlet volume and cannot be converted without inlet P/T.
+  // Never silently alias it to standard (ISO) volume.
+  const fActual = fU === "m³/h" || fU === "m3/h" || fU.toUpperCase() === "ACMH";
+  const tActual = tU === "m³/h" || tU === "m3/h" || tU.toUpperCase() === "ACMH";
+  if (fActual || tActual) return NaN;
+
   let kgs = num;
   if (fU === "kg/h") kgs = num / 3600.0;
   else if (fU === "t/h" || fU === "ton/h") kgs = (num * 1000.0) / 3600.0;
-  else if (fU === "Sm³/h" || fU === "Sm3/h" || fU === "m3/h" || fU === "m³/h") {
+  else if (fU === "Sm³/h" || fU === "Sm3/h") {
     kgs = (num * rhoIso) / 3600.0;
   } else if (fU === "Nm³/h" || fU === "Nm3/h") {
     kgs = (num * rhoNormal) / 3600.0;
@@ -176,11 +183,10 @@ export function convertFlowWithMW(val, fromU, toU, gasComp) {
     kgs = (num * mwGmol) / 3600.0;
   }
 
-  const tU = String(toU || "kg/s").trim();
   let res = kgs;
   if (tU === "kg/h") res = kgs * 3600.0;
   else if (tU === "t/h" || tU === "ton/h") res = (kgs * 3600.0) / 1000.0;
-  else if (tU === "Sm³/h" || tU === "Sm3/h" || tU === "m3/h" || tU === "m³/h") {
+  else if (tU === "Sm³/h" || tU === "Sm3/h") {
     res = rhoIso > 0 ? (kgs * 3600.0) / rhoIso : 0;
   } else if (tU === "Nm³/h" || tU === "Nm3/h") {
     res = rhoNormal > 0 ? (kgs * 3600.0) / rhoNormal : 0;
@@ -241,35 +247,45 @@ export function scheduleRecommendationsRefresh(delayMs = 250) {
   }, delayMs);
 }
 
+// Single source for the web sidebar's initial form values. Keep these equal to
+// the PyQt desktop startup form (kasp/ui/design_left_panel_builders.py) so an
+// untouched project yields the same design calculation on both clients.
 export const DEFAULT_DESIGN_INPUTS = {
   project_name: "Yeni Kompresör Projesi",
-  p_in: 20.0,
-  p_in_unit: "bar(a)",
-  p_out: 60.0,
+  notes: "",
+  p_in: 49.65,
+  p_in_unit: "bar(g)",
+  p_out: 75.0,
   p_out_unit: "bar(a)",
-  t_in: 25.0,
+  t_in: 19.0,
   t_in_unit: "°C",
-  flow: 12.0,
-  flow_unit: "kg/s",
+  flow: 1985000.0,
+  flow_unit: "Sm³/h",
   gas_comp: {
-    METHANE: 88.0,
+    METHANE: 85.0,
     ETHANE: 7.0,
-    PROPANE: 3.0,
-    NITROGEN: 1.0,
-    CARBONDIOXIDE: 1.0,
+    PROPANE: 4.0,
+    NITROGEN: 2.0,
+    CARBONDIOXIDE: 2.0,
   },
-  eos_model: "pr",
-  calc_method: "Metot 6: Schultz 3-Üslü Gerçek Gaz",
-  poly_eff: 82.0,
+  eos_model: "coolprop",
+  calc_method: "Metot 5: Huntington-RK45 Diferansiyel",
+  poly_eff: 90.0,
   mech_eff: 98.0,
   therm_eff: 35.0,
   num_units: 1,
-  num_stages: 2,
-  intercooler_t: 35.0,
+  num_stages: 1,
+  intercooler_t: 40.0,
   intercooler_dp_pct: 2.0,
-  ambient_temp: 19.0,
+  ambient_temp: 15.0,
+  ambient_pressure: 101.325,
   altitude: 0,
   humidity: 60,
+  solver_method: "aj_nr",
+  lhv_source: "kasp",
+  use_consistency_iteration: false,
+  max_consistency_iter: 20,
+  consistency_tolerance: 0.1,
   custom_kij: {},
 };
 
@@ -303,6 +319,37 @@ export function sanitizeActiveGasComp(rawComp, fallbackComp = DEFAULT_DESIGN_INP
     cleaned[key] = Math.round(((cleaned[key] || 0) + val) * 10000) / 10000;
   }
   return Object.keys(cleaned).length > 0 ? cleaned : { ...fallbackComp };
+}
+
+export function computeInputsSignature(inputs) {
+  if (!inputs || typeof inputs !== "object") return "";
+  const canonical = {};
+  Object.keys(inputs)
+    .filter((k) => k !== "project_name")
+    .sort()
+    .forEach((k) => {
+      const val = inputs[k];
+      if (val && typeof val === "object" && !Array.isArray(val)) {
+        const sortedSub = {};
+        Object.keys(val)
+          .sort()
+          .forEach((sk) => {
+            sortedSub[sk] = val[sk];
+          });
+        canonical[k] = sortedSub;
+      } else {
+        canonical[k] = val;
+      }
+    });
+  return JSON.stringify(canonical);
+}
+
+function deriveStaleState(nextInputs, state) {
+  return Boolean(
+    state?.results &&
+      state?.lastCalculatedSignature &&
+      computeInputsSignature(nextInputs) !== state.lastCalculatedSignature
+  );
 }
 
 export function hydrateProjectSnapshot(snapshot) {
@@ -357,6 +404,9 @@ export function hydrateProjectSnapshot(snapshot) {
     warnings: loadedWarnings,
     modules: loadedModules,
     stationData: loadedStation,
+    lastCalculatedSignature: resObj ? computeInputsSignature(mergedInputs) : null,
+    isResultsStale: false,
+    hasUnsavedChanges: false,
     error: null,
   });
   recalculateGasTotal();
@@ -371,15 +421,49 @@ export const projectStore = createStore({
   selectedUnits: [],
   charts: null,
   isCalculating: false,
+  lastCalculatedSignature: null,
+  isResultsStale: false,
+  hasUnsavedChanges: false,
   error: null,
   recommendations: null,
   kijMatrixData: null,
-  liveMetrics: { pr: 3.0, delta_p_bar: 40.0, valid: true },
+  liveMetrics: (() => {
+    // Derive the initial PR from DEFAULT_DESIGN_INPUTS instead of a stale literal.
+    const pInBar = convertPressureToBarA(DEFAULT_DESIGN_INPUTS.p_in, DEFAULT_DESIGN_INPUTS.p_in_unit);
+    const pOutBar = convertPressureToBarA(DEFAULT_DESIGN_INPUTS.p_out, DEFAULT_DESIGN_INPUTS.p_out_unit);
+    return {
+      pr: pInBar > 0 && pOutBar > 0 ? Math.round((pOutBar / pInBar) * 1000) / 1000 : 1.0,
+      delta_p_bar: Math.round((pOutBar - pInBar) * 100) / 100,
+      valid: pOutBar > pInBar,
+    };
+  })(),
   gasTotal: 100.0,
   presets: [],
   modules: {},
   stationData: null,
 });
+
+export function markProjectSaved() {
+  projectStore.setState({ hasUnsavedChanges: false });
+}
+
+export function resetDesignInputs() {
+  const nextInputs = {
+    ...DEFAULT_DESIGN_INPUTS,
+    gas_comp: { ...DEFAULT_DESIGN_INPUTS.gas_comp },
+    custom_kij: {},
+  };
+  projectStore.setState((s) => ({
+    inputs: nextInputs,
+    modules: withoutAirCoolerModule(s.modules),
+    isResultsStale: deriveStaleState(nextInputs, s),
+    hasUnsavedChanges: false,
+    error: null,
+  }));
+  recalculateGasTotal();
+  recalculateLiveMetrics();
+  scheduleRecommendationsRefresh(50);
+}
 
 export function invalidateAirCoolerCache() {
   projectStore.setState((s) => ({
@@ -394,6 +478,8 @@ export function updateInput(field, value) {
     return {
       inputs: nextInputs,
       modules: shouldClearCooler ? withoutAirCoolerModule(s.modules) : s.modules,
+      isResultsStale: deriveStaleState(nextInputs, s),
+      hasUnsavedChanges: true,
     };
   });
   recalculateLiveMetrics();
@@ -409,9 +495,12 @@ export function updateGasComponent(component, percentage) {
   const safeVal = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
   projectStore.setState((s) => {
     const nextComp = { ...s.inputs.gas_comp, [key]: safeVal };
+    const nextInputs = { ...s.inputs, gas_comp: nextComp };
     return {
-      inputs: { ...s.inputs, gas_comp: nextComp },
+      inputs: nextInputs,
       modules: withoutAirCoolerModule(s.modules),
+      isResultsStale: deriveStaleState(nextInputs, s),
+      hasUnsavedChanges: true,
     };
   });
   recalculateGasTotal();
@@ -434,9 +523,12 @@ export function addGasComponent(component, initialPct = null) {
           ? Math.max(0, Math.round((100.0 - currentTotal) * 100) / 100)
           : 0;
     const nextComp = { ...currentComp, [key]: suggested };
+    const nextInputs = { ...s.inputs, gas_comp: nextComp };
     return {
-      inputs: { ...s.inputs, gas_comp: nextComp },
+      inputs: nextInputs,
       modules: withoutAirCoolerModule(s.modules),
+      isResultsStale: deriveStaleState(nextInputs, s),
+      hasUnsavedChanges: true,
     };
   });
   recalculateGasTotal();
@@ -449,9 +541,12 @@ export function removeGasComponent(component) {
   projectStore.setState((s) => {
     const nextComp = { ...(s.inputs.gas_comp || {}) };
     delete nextComp[key];
+    const nextInputs = { ...s.inputs, gas_comp: nextComp };
     return {
-      inputs: { ...s.inputs, gas_comp: nextComp },
+      inputs: nextInputs,
       modules: withoutAirCoolerModule(s.modules),
+      isResultsStale: deriveStaleState(nextInputs, s),
+      hasUnsavedChanges: true,
     };
   });
   recalculateGasTotal();
@@ -479,6 +574,35 @@ export function balanceGasComponent(component) {
   fetchRecommendations();
 }
 
+export function normalizeGasComposition() {
+  projectStore.setState((s) => {
+    const currentComp = s.inputs.gas_comp || {};
+    const entries = Object.entries(currentComp).map(([k, v]) => [k, Math.max(0, parseFloat(v) || 0)]);
+    const total = entries.reduce((acc, [, v]) => acc + v, 0);
+    if (total <= 0) return {};
+    const nextComp = {};
+    let running = 0;
+    entries.forEach(([k, v], idx) => {
+      if (idx === entries.length - 1) {
+        nextComp[k] = Math.max(0, Math.round((100.0 - running) * 100) / 100);
+      } else {
+        const scaled = Math.round(((v / total) * 100.0) * 100) / 100;
+        nextComp[k] = scaled;
+        running += scaled;
+      }
+    });
+    const nextInputs = { ...s.inputs, gas_comp: nextComp };
+    return {
+      inputs: nextInputs,
+      modules: withoutAirCoolerModule(s.modules),
+      isResultsStale: deriveStaleState(nextInputs, s),
+      hasUnsavedChanges: true,
+    };
+  });
+  recalculateGasTotal();
+  scheduleRecommendationsRefresh();
+}
+
 export function setCustomKijOverride(pair, value) {
   projectStore.setState((s) => {
     const nextKij = { ...s.inputs.custom_kij, [pair]: parseFloat(value) };
@@ -490,10 +614,15 @@ export function setCustomKijOverride(pair, value) {
 }
 
 export function clearCustomKijOverrides() {
-  projectStore.setState((s) => ({
-    inputs: { ...s.inputs, custom_kij: {} },
-    modules: withoutAirCoolerModule(s.modules),
-  }));
+  projectStore.setState((s) => {
+    const nextInputs = { ...s.inputs, custom_kij: {} };
+    return {
+      inputs: nextInputs,
+      modules: withoutAirCoolerModule(s.modules),
+      isResultsStale: deriveStaleState(nextInputs, s),
+      hasUnsavedChanges: true,
+    };
+  });
 }
 
 export function recalculateGasTotal() {
@@ -534,14 +663,19 @@ export function applyPreset(presetId) {
     const cleanGasComp = preset.inputs.gas_comp
       ? sanitizeActiveGasComp(preset.inputs.gas_comp, DEFAULT_DESIGN_INPUTS.gas_comp)
       : undefined;
-    projectStore.setState((s) => ({
-      inputs: {
+    projectStore.setState((s) => {
+      const nextInputs = {
         ...s.inputs,
         ...preset.inputs,
         ...(cleanGasComp ? { gas_comp: cleanGasComp } : {}),
-      },
-      modules: withoutAirCoolerModule(s.modules),
-    }));
+      };
+      return {
+        inputs: nextInputs,
+        modules: withoutAirCoolerModule(s.modules),
+        isResultsStale: deriveStaleState(nextInputs, s),
+        hasUnsavedChanges: true,
+      };
+    });
     recalculateGasTotal();
     recalculateLiveMetrics();
     fetchRecommendations();
@@ -549,7 +683,12 @@ export function applyPreset(presetId) {
   }
 }
 
+let recommendationsRequestSeq = 0;
+let kijRequestSeq = 0;
+let designRequestSeq = 0;
+
 export async function fetchRecommendations() {
+  const requestId = ++recommendationsRequestSeq;
   const { inputs, liveMetrics } = projectStore.getState();
   try {
     const recs = await api.post("/api/v1/thermo/recommendations", {
@@ -557,20 +696,25 @@ export async function fetchRecommendations() {
       pressure_ratio: liveMetrics.pr || 1.0,
       calc_method: inputs.calc_method,
     });
+    // Ignore a stale response that a newer request has already superseded.
+    if (requestId !== recommendationsRequestSeq) return;
     projectStore.setState({ recommendations: recs });
   } catch (_) {}
 }
 
 export async function fetchKijMatrix() {
+  const requestId = ++kijRequestSeq;
   const { inputs } = projectStore.getState();
   try {
     const matrixData = await api.post("/api/v1/thermo/kij-matrix", {
       gas_comp: inputs.gas_comp,
       custom_kij: inputs.custom_kij,
     });
+    if (requestId !== kijRequestSeq) return undefined;
     projectStore.setState({ kijMatrixData: matrixData });
     return matrixData;
   } catch (err) {
+    if (requestId !== kijRequestSeq) return undefined;
     showToast("k_ij matrisi alınamadı: " + err.message, "danger");
   }
 }
@@ -594,22 +738,27 @@ export function loadModulePayload(modules, stationData) {
 }
 
 export async function runDesignCalculation() {
+  const requestId = ++designRequestSeq;
   projectStore.setState({ isCalculating: true, error: null, warnings: [] });
   const { inputs } = projectStore.getState();
 
   try {
     const res = await api.post("/api/v1/calculations/design", inputs);
+    if (requestId !== designRequestSeq) return res;
     projectStore.setState((s) => ({
       results: res.results,
       warnings: Array.isArray(res.warnings) ? res.warnings : [],
       selectedUnits: res.selected_units || [],
       charts: res.charts,
       modules: withoutAirCoolerModule(s.modules),
+      lastCalculatedSignature: computeInputsSignature(inputs),
+      isResultsStale: false,
       isCalculating: false,
     }));
     showToast("Tasarım hesaplaması başarıyla tamamlandı!");
     return res;
   } catch (err) {
+    if (requestId !== designRequestSeq) throw err;
     projectStore.setState({ isCalculating: false, error: err.message });
     showToast("Hesaplama hatası: " + err.message, "danger");
     throw err;

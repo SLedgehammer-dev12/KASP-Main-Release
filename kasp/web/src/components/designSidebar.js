@@ -9,6 +9,8 @@ import {
   projectStore,
   updateInput,
   applyPreset,
+  balanceGasComponent,
+  resetDesignInputs,
   runDesignCalculation,
   convertFlowWithMW,
   convertPressureUnit,
@@ -39,6 +41,33 @@ function resolveRecommendedMethodValue(recMethod) {
     if (raw.includes(item.key)) return item.value;
   }
   return "Metot 6: Schultz 3-Üslü Gerçek Gaz";
+}
+
+function computeValidationError(proj, lang) {
+  const inp = proj?.inputs || {};
+  if (!proj?.liveMetrics?.valid) {
+    return {
+      type: "pressure",
+      message: t("validation_pout_gt_pin", lang),
+      canBalanceGas: false,
+    };
+  }
+  if (!(Number(inp.flow) > 0)) {
+    return {
+      type: "flow",
+      message: t("validation_flow_gt_zero", lang),
+      canBalanceGas: false,
+    };
+  }
+  const gasTotal = Number(proj?.gasTotal ?? 100);
+  if (Math.abs(gasTotal - 100) > 0.5) {
+    return {
+      type: "gas",
+      message: t("validation_gas_sum", lang).replace("{pct}", gasTotal.toFixed(2)),
+      canBalanceGas: true,
+    };
+  }
+  return null;
 }
 
 function buildModelRecHtml(rec, inp) {
@@ -197,14 +226,32 @@ export function renderDesignSidebar(container) {
         siteLabel.textContent = `${inp.ambient_temp ?? 19}°C • ${inp.altitude ?? 0} m`;
       }
 
-      // 3. Calculate button state
+      // 3. Calculate button, validation alert & stale state
+      const valErr = computeValidationError(proj, ui.lang);
       const calcBtn = container.querySelector("#btn-run-calculation");
       if (calcBtn) {
-        calcBtn.disabled = !!proj.isCalculating;
-        const span = calcBtn.querySelector("span");
+        calcBtn.disabled = !!proj.isCalculating || !!valErr;
+        calcBtn.classList.toggle("is-stale", !!proj.isResultsStale);
+        const span = calcBtn.querySelector(".calc-btn-label");
         if (span) {
           span.textContent = proj.isCalculating ? t("btn_calculating", ui.lang) : t("btn_calculate", ui.lang);
         }
+      }
+      const valBox = container.querySelector("#sidebar-validation-alert");
+      const valMsg = container.querySelector("#sidebar-validation-msg");
+      const balBtn = container.querySelector("#btn-footer-balance-gas");
+      if (valBox) {
+        valBox.style.display = valErr ? "flex" : "none";
+      }
+      if (valMsg) {
+        valMsg.textContent = valErr ? valErr.message : "";
+      }
+      if (balBtn) {
+        balBtn.style.display = valErr?.canBalanceGas ? "inline-flex" : "none";
+      }
+      const stalePill = container.querySelector("#sidebar-stale-pill");
+      if (stalePill) {
+        stalePill.style.display = proj.isResultsStale ? "flex" : "none";
       }
 
       applyValidity();
@@ -221,14 +268,36 @@ export function renderDesignSidebar(container) {
       return;
     }
 
+    const allStepsOpen = [1, 2, 3, 4, 5, 6].every((n) => !!openSteps[n]);
+    const valErr = computeValidationError(proj, ui.lang);
+
     container.innerHTML = `
-      <!-- Presets Bar -->
-      <div style="padding: 10px 14px; background: var(--color-bg); border-bottom: 1px solid var(--color-border); display: flex; align-items: center; gap: 6px; overflow-x: auto;">
-        <span style="font-size: 11px; font-weight: 600; color: var(--color-text-secondary); white-space: nowrap;">Önayarlar:</span>
-        <button class="btn btn-sm btn-preset" data-preset="natural_gas" title="Doğalgaz Boru Hattı">⚡ Doğalgaz</button>
-        <button class="btn btn-sm btn-preset" data-preset="lng_boiloff" title="LNG Boil-Off Kriyojenik">❄️ LNG</button>
-        <button class="btn btn-sm btn-preset" data-preset="co2_injection" title="CO2 Enjeksiyon">🌿 CO₂</button>
-        <button class="btn btn-sm btn-preset" data-preset="hydrogen_blend" title="Hidrojen Karışımı">⚡ H₂</button>
+      <!-- Presets & Accordion Quick-Control Bar -->
+      <div style="padding: 8px 12px; background: var(--color-bg); border-bottom: 1px solid var(--color-border); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px;">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0;">
+          <span style="font-size: 11px; font-weight: 600; color: var(--color-text-secondary); white-space: nowrap;">Önayarlar:</span>
+          <button class="btn btn-sm btn-preset" data-preset="natural_gas" title="Doğalgaz Boru Hattı">⚡ Doğalgaz</button>
+          <button class="btn btn-sm btn-preset" data-preset="lng_boiloff" title="LNG Boil-Off Kriyojenik">❄️ LNG</button>
+          <button class="btn btn-sm btn-preset" data-preset="co2_injection" title="CO2 Enjeksiyon">🌿 CO₂</button>
+          <button class="btn btn-sm btn-preset" data-preset="hydrogen_blend" title="Hidrojen Karışımı">⚡ H₂</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+          <button
+            type="button"
+            id="btn-reset-inputs"
+            class="btn btn-sm"
+            title="${escapeHtml(t("btn_reset_defaults", ui.lang))}"
+            style="white-space: nowrap; font-size: 10px; padding: 2px 7px;"
+          >${escapeHtml(t("btn_reset_defaults", ui.lang))}</button>
+          <button
+            type="button"
+            id="btn-toggle-all-steps"
+            class="btn btn-sm"
+            aria-pressed="${allStepsOpen ? "true" : "false"}"
+            title="${escapeHtml(allStepsOpen ? t("steps_collapse_all", ui.lang) : t("steps_expand_all", ui.lang))}"
+            style="white-space: nowrap; font-size: 10px; padding: 2px 7px;"
+          >${escapeHtml(allStepsOpen ? t("steps_collapse_all", ui.lang) : t("steps_expand_all", ui.lang))}</button>
+        </div>
       </div>
 
       <div style="flex: 1; overflow-y: auto;">
@@ -545,17 +614,54 @@ export function renderDesignSidebar(container) {
         </div>
       </div>
 
-      <!-- Calculate Primary Button -->
-      <div style="padding: 12px 16px; background: var(--color-surface); border-top: 1px solid var(--color-border);">
-        <button id="btn-run-calculation" class="btn btn-primary" style="width: 100%; height: 36px; font-size: 13px;" ${proj.isCalculating ? "disabled" : ""}>
+      <!-- Sticky Calculate Primary Action Bar -->
+      <div style="position: sticky; bottom: 0; z-index: 5; padding: 10px 14px; background: var(--color-surface); border-top: 1px solid var(--color-border); box-shadow: 0 -4px 12px rgba(0,0,0,0.06);">
+        <div id="sidebar-validation-alert" role="alert" style="display: ${valErr ? "flex" : "none"}; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; padding: 5px 8px; border-radius: var(--radius-sm); background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); color: #dc2626; font-size: 10.5px; font-weight: 600;">
+          <span id="sidebar-validation-msg">${valErr ? escapeHtml(valErr.message) : ""}</span>
+          <button type="button" id="btn-footer-balance-gas" class="btn btn-sm" style="display: ${valErr?.canBalanceGas ? "inline-flex" : "none"}; padding: 2px 6px; font-size: 10px; flex-shrink: 0;">${escapeHtml(t("btn_balance_100", ui.lang))}</button>
+        </div>
+        <div id="sidebar-stale-pill" style="display: ${proj.isResultsStale ? "flex" : "none"}; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; padding: 4px 8px; border-radius: var(--radius-sm); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #d97706; font-size: 10.5px; font-weight: 600;">
+          <span>⚠️ Girdiler değişti — yeniden hesaplayın</span>
+        </div>
+        <button id="btn-run-calculation" class="btn btn-primary ${proj.isResultsStale ? "is-stale" : ""}" style="width: 100%; height: 36px; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 8px;" ${proj.isCalculating || valErr ? "disabled" : ""}>
           ${icon("zap", 16)}
-          <span>${proj.isCalculating ? t("btn_calculating", ui.lang) : t("btn_calculate", ui.lang)}</span>
+          <span class="calc-btn-label">${proj.isCalculating ? t("btn_calculating", ui.lang) : t("btn_calculate", ui.lang)}</span>
+          <kbd style="font-size: 9.5px; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.28); font-family: var(--font-mono);">⌘/Ctrl+Enter</kbd>
         </button>
       </div>
     `;
 
     isBuilt = true;
     applyValidity();
+
+    const resetBtn = container.querySelector("#btn-reset-inputs");
+    if (resetBtn) {
+      resetBtn.addEventListener("click", () => {
+        resetDesignInputs();
+        showToast("Tasarım girdileri varsayılan değerlere sıfırlandı.");
+      });
+    }
+
+    const footerBalanceBtn = container.querySelector("#btn-footer-balance-gas");
+    if (footerBalanceBtn) {
+      footerBalanceBtn.addEventListener("click", () => {
+        const comp = projectStore.getState().inputs?.gas_comp || {};
+        const target = Object.keys(comp).find((k) => k === "CH4" || k === "METHANE") || Object.keys(comp)[0];
+        if (target) {
+          balanceGasComponent(target);
+        }
+      });
+    }
+
+    // Expand / Collapse All Accordion Steps
+    const toggleAllBtn = container.querySelector("#btn-toggle-all-steps");
+    if (toggleAllBtn) {
+      toggleAllBtn.addEventListener("click", () => {
+        const nextOpen = ![1, 2, 3, 4, 5, 6].every((n) => !!openSteps[n]);
+        for (let s = 1; s <= 6; s++) openSteps[s] = nextOpen;
+        render(true);
+      });
+    }
 
     // Bind accordion toggles
     container.querySelectorAll(".step-header").forEach(hdr => {

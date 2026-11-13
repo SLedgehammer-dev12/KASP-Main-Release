@@ -14,6 +14,7 @@ import {
   balanceGasComponent,
   recalculateGasTotal,
   fetchRecommendations,
+  invalidateAirCoolerCache,
   normalizeGasKey,
   escapeHtml,
 } from "../store/projectStore.js";
@@ -443,6 +444,9 @@ export function renderGasTable(container) {
           <span id="gas-total-badge" role="status" aria-live="polite" class="badge ${totalBadgeClass}">${escapeHtml(totalBadgeText)}</span>
         </div>
         <div style="display: flex; align-items: center; gap: 4px;">
+          <button type="button" id="btn-gas-copy" class="btn btn-sm" title="Gaz Kompozisyonunu Panoya Kopyala">
+            <span aria-hidden="true">${icon("copy", 12)}</span>
+          </button>
           <button type="button" id="btn-normalize-gas" class="btn btn-sm">
             <span aria-hidden="true">${icon("refreshCw", 12)}</span>
             <span>${escapeHtml(trGas("gas_normalize_short", lang))}</span>
@@ -578,6 +582,19 @@ export function renderGasTable(container) {
       });
     });
 
+    // Bind Copy Gas Composition button
+    container.querySelector("#btn-gas-copy")?.addEventListener("click", async () => {
+      const gasComp = projectStore.getState().inputs?.gas_comp || {};
+      const lines = Object.entries(gasComp)
+        .filter(([, v]) => Number(v) > 0)
+        .map(([k, v]) => `${k}: ${Number(v).toFixed(2)}%`);
+      const text = lines.join("\n");
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        showToast("Gaz kompozisyonu panoya kopyalandı.", "success");
+      } catch (_) {}
+    });
+
     // Bind %100 Normalize button
     const normBtn = container.querySelector("#btn-normalize-gas");
     if (normBtn) {
@@ -614,6 +631,8 @@ export function renderGasTable(container) {
         projectStore.setState((s) => ({
           inputs: { ...s.inputs, gas_comp: nextComp },
         }));
+        // A changed composition invalidates the cached air-cooler sizing.
+        invalidateAirCoolerCache();
         recalculateGasTotal();
         fetchRecommendations();
       });

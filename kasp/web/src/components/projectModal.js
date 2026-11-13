@@ -42,6 +42,16 @@ export async function renderProjectModal(container) {
           </div>
 
           <div class="modal-body">
+            <div style="margin-bottom: 10px;">
+              <input
+                type="search"
+                id="project-history-search"
+                class="form-input"
+                placeholder="Proje adı veya tarih ara..."
+                aria-label="Kayıtlı projelerde ara"
+                style="width: 100%; height: 32px; font-size: 12px;"
+              />
+            </div>
             <div style="max-height: 400px; overflow-y: auto;">
               <table class="kasp-table">
                 <thead>
@@ -89,15 +99,28 @@ export async function renderProjectModal(container) {
 
     container.querySelector("#btn-close-proj-modal")?.addEventListener("click", closeModal);
 
+    container.querySelector("#project-history-search")?.addEventListener("input", (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      container.querySelectorAll("tbody tr").forEach((tr) => {
+        const text = (tr.textContent || "").toLowerCase();
+        tr.style.display = !q || text.includes(q) ? "" : "none";
+      });
+    });
+
     // Load handlers
     container.querySelectorAll(".btn-load-proj").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const id = btn.getAttribute("data-id");
-        const p = projects.find(x => x.id == id);
-        if (p && p.inputs) {
-          hydrateProjectSnapshot(p);
-          showToast(`'${p.project_name}' çalışma alanına yüklendi.`);
-          closeModal();
+        try {
+          // List responses omit the heavy results payload; fetch the full record.
+          const project = await api.get(`/api/v1/projects/${id}`);
+          if (project && project.inputs) {
+            hydrateProjectSnapshot(project);
+            showToast(`'${project.project_name}' çalışma alanına yüklendi.`);
+            closeModal();
+          }
+        } catch (err) {
+          showToast("Proje yüklenemedi: " + err.message, "danger");
         }
       });
     });

@@ -23,7 +23,7 @@ _PERF_EOS_ALIASES = {
     "heos": "coolprop",
     "pr": "pr",
     "peng-robinson": "pr",
-    "bwrs": "pr",
+    "bwrs": "gerg2008",
     "srk": "srk",
     "rk": "srk",
     "gerg2008": "gerg2008",
@@ -84,6 +84,46 @@ def _to_percent(val: Any, fallback_pct: float) -> float:
     return v * 100.0 if v <= 1.0 else v
 
 
+def _stage_temperature_c(stage: Dict[str, Any], key_c: str, key_plain: str) -> Optional[float]:
+    """Read a stage temperature in °C from the enriched or core stage contract."""
+    for key in (key_c, key_plain):
+        if key not in stage:
+            continue
+        try:
+            value = float(stage[key])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            return value
+    return None
+
+
+def _resolve_stage_index(raw_index: Any, stages: Any) -> Optional[int]:
+    """Return a valid 0-based stage index or None when no explicit section is selected."""
+    if raw_index is None or raw_index == "" or not isinstance(stages, list) or not stages:
+        return None
+    try:
+        idx = int(raw_index)
+    except (TypeError, ValueError):
+        return None
+    return idx if 0 <= idx < len(stages) else None
+
+
+def _is_intercooled_train(stages: Any) -> bool:
+    """Detect intercooled multi-section trains (stage N inlet colder than N-1 outlet)."""
+    if not isinstance(stages, list) or len(stages) < 2:
+        return False
+    previous_outlet: Optional[float] = None
+    for stage in stages:
+        if not isinstance(stage, dict):
+            return False
+        inlet = _stage_temperature_c(stage, "t_in_c", "t_in")
+        if previous_outlet is not None and inlet is not None and inlet < previous_outlet - 0.5:
+            return True
+        previous_outlet = _stage_temperature_c(stage, "t_out_c", "t_out")
+    return False
+
+
 def evaluate_field_performance(
     field_data: Dict[str, Any],
     design_reference: Optional[Dict[str, Any]] = None,
@@ -105,6 +145,18 @@ def evaluate_field_performance(
     """
     engine = engine or ThermoEngine()
     design_reference = design_reference or {}
+
+    # ASME PTC-10 evaluates an uncooled compressor section. A multi-stage train with
+    # intercooling cannot be collapsed into one polytropic section: doing so compares a
+    # single-section head/power against the whole-train design and falsely reports a
+    # critical deviation. Require an explicit stage_index in that case.
+    stages_list = design_reference.get("stages")
+    if _is_intercooled_train(stages_list) and _resolve_stage_index(field_data.get("stage_index"), stages_list) is None:
+        raise ValueError(
+            "Ara soğutuculu çok kademeli kompresör treni tek bir politropik kesit olarak "
+            "değerlendirilemez. ASME PTC-10 gereği her soğutulmuş bölüm ayrı doğrulanmalıdır; "
+            "lütfen stage_index ile ilgili kademeyi seçin (0..N-1)."
+        )
 
     p_in_u = str(field_data.get("p_in_unit", "bar(a)"))
     p_out_u = str(field_data.get("p_out_unit", "bar(a)"))

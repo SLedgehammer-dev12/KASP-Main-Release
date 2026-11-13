@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import datetime
 import math
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
 from kasp.core.contracts import normalize_design_inputs
 from kasp.core.thermo import ThermoEngine

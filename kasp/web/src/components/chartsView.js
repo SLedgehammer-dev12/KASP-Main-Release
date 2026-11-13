@@ -37,15 +37,41 @@ export function renderChartsView(container) {
       renderFrameId = null;
     }
 
+    container.querySelector("#btn-charts-reset-zoom")?.addEventListener("click", () => {
+      if (!window.Plotly) return;
+      ["chart-envelope", "chart-turbine-derate", "chart-ts", "chart-pv", "chart-hs", "chart-kz", "chart-stage"].forEach((id) => {
+        const el = container.querySelector(`#${id}`);
+        if (el && el.data) {
+          try {
+            window.Plotly.relayout(el, { "xaxis.autorange": true, "yaxis.autorange": true });
+          } catch (_) {}
+        }
+      });
+    });
+
+    container.querySelector("#btn-charts-download-png")?.addEventListener("click", () => {
+      if (!window.Plotly) return;
+      const el = container.querySelector("#chart-envelope");
+      if (el && el.data) {
+        try {
+          window.Plotly.downloadImage(el, { format: "png", width: 1200, height: 700, filename: "kasp_operating_envelope" });
+        } catch (_) {}
+      }
+    });
+
     container.innerHTML = `
       <div class="card" style="margin-top: 16px;">
-        <div class="card-header">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
           <div class="card-title">
             ${icon("barChart", 16, "text-primary")}
             <span>Termodinamik Grafikler ve Mimari Analiz</span>
           </div>
-          <div style="font-size: 11px; color: var(--color-text-secondary);">
-            Plotly.js Etkileşimli Zoom & Pan Aktif
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <span style="font-size: 11px; color: var(--color-text-secondary);">
+              Plotly.js Etkileşimli Zoom &amp; Pan Aktif
+            </span>
+            <button type="button" id="btn-charts-reset-zoom" class="btn btn-sm" title="Tüm grafiklerin yakınlaştırmasını sıfırla">Zoom Sıfırla</button>
+            <button type="button" id="btn-charts-download-png" class="btn btn-sm" title="Çalışma Zarfı grafiğini PNG olarak indir">PNG İndir</button>
           </div>
         </div>
 
@@ -356,7 +382,7 @@ export function renderChartsView(container) {
       paper_bgcolor: bg,
       plot_bgcolor: bg,
       font: { color: text, family: "Inter, sans-serif", size: 10 },
-      margin: { l: 45, r: 20, t: 30, b: 40 },
+      margin: { l: 50, r: 20, t: 52, b: 44 },
       autosize: true,
       xaxis: { gridcolor: grid, zerolinecolor: grid },
       yaxis: { gridcolor: grid, zerolinecolor: grid },
@@ -365,6 +391,8 @@ export function renderChartsView(container) {
     const mergedLayout = {
       ...baseLayout,
       ...customLayout,
+      title: undefined,
+      margin: customLayout.margin ? { ...baseLayout.margin, ...customLayout.margin, t: Math.max(52, customLayout.margin.t || 0) } : baseLayout.margin,
       paper_bgcolor: bg,
       plot_bgcolor: bg,
     };

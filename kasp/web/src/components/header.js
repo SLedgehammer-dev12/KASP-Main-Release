@@ -9,6 +9,7 @@ import {
   projectStore,
   updateInput,
   hydrateProjectSnapshot,
+  markProjectSaved,
 } from "../store/projectStore.js";
 import { t } from "../i18n/locales.js";
 import { api } from "../api/client.js";
@@ -43,11 +44,19 @@ export function renderHeader(container) {
           value="${escapeAttr(proj.inputs.project_name || 'Yeni Proje')}" 
           title="Proje Adı"
         />
+        <span
+          id="unsaved-indicator"
+          class="badge"
+          title="${t("unsaved_changes", ui.lang)}"
+          style="display: ${proj.hasUnsavedChanges ? "inline-flex" : "none"}; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--warning-bg, rgba(245, 158, 11, 0.16)); color: var(--warning, #f59e0b); border: 1px solid rgba(245, 158, 11, 0.4); white-space: nowrap;"
+        >
+          ● ${t("unsaved_changes", ui.lang)}
+        </span>
       </div>
 
       <div class="kasp-header-actions">
         <!-- Project Actions -->
-        <button id="btn-save-project" class="btn btn-sm" title="Projeyi Veritabanına Kaydet">
+        <button id="btn-save-project" class="btn btn-sm ${proj.hasUnsavedChanges ? 'btn-warning' : ''}" title="Projeyi Veritabanına Kaydet (Ctrl/Cmd+S)">
           ${icon("database", 14)}
           <span>${t("btn_save", ui.lang)}</span>
         </button>
@@ -113,6 +122,11 @@ export function renderHeader(container) {
         <!-- Language Switcher -->
         <button id="btn-toggle-lang" class="btn btn-sm" style="padding: 0 6px; font-size: 11px; font-weight: 700;">
           ${ui.lang.toUpperCase()}
+        </button>
+
+        <!-- Keyboard Shortcuts Help -->
+        <button type="button" id="btn-shortcuts-help" class="btn btn-sm" title="Klavye Kısayolları (?)" aria-label="Klavye Kısayolları" style="padding: 0 7px; font-size: 11px; font-weight: 700;">
+          ?
         </button>
 
         <div style="width: 1px; height: 18px; background: var(--color-border); margin: 0 4px;"></div>
@@ -196,6 +210,7 @@ export function renderHeader(container) {
             station_data: stationData,
             notes: "Web arayüzünden kaydedildi.",
           });
+          markProjectSaved();
           showToast("Proje başarıyla geçmişe kaydedildi.", "success");
         } catch (err) {
           showToast("Kayıt hatası: " + err.message, "danger");
@@ -223,6 +238,7 @@ export function renderHeader(container) {
             },
             filename
           );
+          markProjectSaved();
           showToast(".kasp proje dosyası başarıyla indirildi.", "success");
         } catch (err) {
           showToast("Proje indirme hatası: " + err.message, "danger");
@@ -325,6 +341,10 @@ export function renderHeader(container) {
         }
       });
     }
+
+    container.querySelector("#btn-shortcuts-help")?.addEventListener("click", () => {
+      window.dispatchEvent(new CustomEvent("kasp:open-shortcuts-help"));
+    });
   }
 
   uiStore.subscribe(update);

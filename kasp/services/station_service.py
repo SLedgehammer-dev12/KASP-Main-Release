@@ -28,7 +28,7 @@ _STATION_EOS_ALIASES = {
     "heos": "coolprop",
     "pr": "pr",
     "peng-robinson": "pr",
-    "bwrs": "pr",
+    "bwrs": "gerg2008",
     "srk": "srk",
     "rk": "srk",
     "gerg2008": "gerg2008",
@@ -55,10 +55,13 @@ def _canonical_flow_unit(raw_unit: Any) -> str:
         return "kg/s"
     if u_low in ("kg/h", "kgh"):
         return "kg/h"
-    if u_low in ("sm³/h", "sm3/h", "smâ³/h", "m3/h", "m³/h"):
+    if u_low in ("sm³/h", "sm3/h", "smâ³/h"):
         return "Sm³/h"
     if u_low in ("nm³/h", "nm3/h", "nmâ³/h"):
         return "Nm³/h"
+    if u_low in ("m³/h", "m3/h", "acmh"):
+        # Actual (inlet) volumetric flow — requires inlet P/T, never a standard-volume alias.
+        return "m³/h"
     if u_low == "mmscfd":
         return "MMSCFD"
     if u_low == "mmscmd":
@@ -66,6 +69,44 @@ def _canonical_flow_unit(raw_unit: Any) -> str:
     if u_low in ("kmol/h", "kgmol/h"):
         return "kmol/h"
     return u
+
+
+def _actual_m3h_to_kgs(
+    raw_flow: float,
+    inputs: Dict[str, Any],
+    engine: ThermoEngine,
+    gas_obj: Any,
+    eos_key: str,
+    mw_g_mol: float,
+) -> float:
+    """Convert actual inlet m³/h (ACMH) to kg/s using real inlet density at test P/T."""
+    try:
+        p_bara = UnitSystem.convert_pressure(
+            float(inputs.get("p_in", 25.0) or 25.0),
+            str(inputs.get("p_in_unit", "bar(a)")),
+            "bar(a)",
+        )
+    except (TypeError, ValueError):
+        p_bara = 25.0
+    try:
+        t_k = UnitSystem.convert_temperature(
+            float(inputs.get("t_in", 20.0) or 20.0),
+            str(inputs.get("t_in_unit", "°C")),
+            "K",
+        )
+    except (TypeError, ValueError):
+        t_k = 293.15
+    rho_in = 0.0
+    if gas_obj is not None:
+        try:
+            state = engine.thermo_solver.get_properties(p_bara * 1e5, t_k, gas_obj, eos_key)
+            rho_in = float(getattr(state, "density", 0.0) or 0.0)
+        except Exception:
+            rho_in = 0.0
+    if rho_in <= 0 or not math.isfinite(rho_in):
+        mw_kg = max(1e-3, mw_g_mol / 1000.0)
+        rho_in = (p_bara * 1e5 * mw_kg) / (R_UNIVERSAL_J_MOL_K * max(t_k, 1.0))
+    return (raw_flow / 3600.0) * rho_in
 
 
 def _fallback_convert_flow_with_mw(raw_flow: float, flow_unit: str, mw_g_mol: float) -> float:
@@ -90,6 +131,111 @@ def _fallback_convert_flow_with_mw(raw_flow: float, flow_unit: str, mw_g_mol: fl
     if canon == "kmol/h":
         return (raw_flow * mw_g_mol) / 3600.0
     return raw_flow
+
+
+_STANDARD_DN_MM = [50, 80, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1050, 1200]
+
+_API526_FLANGE_SIZES = {
+    "D": ("1\"", "2\""),
+    "E": ("1\"", "2\""),
+    "F": ("1.5\"", "2\""),
+    "G": ("1.5\"", "3\""),
+    "H": ("2\"", "3\""),
+    "J": ("3\"", "4\""),
+    "K": ("3\"", "4\""),
+    "L": ("4\"", "6\""),
+    "M": ("4\"", "6\""),
+    "N": ("4\"", "6\""),
+    "P": ("4\"", "6\""),
+    "Q": ("6\"", "8\""),
+    "R": ("6\"", "10\""),
+    "T": ("8\"", "10\""),
+}
+
+
+def _next_standard_dn(dn_mm: float) -> float:
+    for nominal in _STANDARD_DN_MM:
+        if nominal >= dn_mm:
+            return float(nominal)
+    return float(dn_mm)
+
+
+def _size_esd_valve(
+    path: str,
+    mass_flow_kgs: float,
+    p_in_bar: float,
+    t_c: float,
+    line_size_in: float,
+    composition: Dict[str, Any],
+    eos_model: str,
+    allowable_dp_bar: float,
+    valve_type: str,
+    duty_count: int = 1,
+) -> tuple[Optional[Dict[str, Any]], List[str]]:
+    """Size an ESD / BDV valve bank with IEC 60534 gas Cv.
+
+    Calculates both the aerodynamic Cv-based diameter per parallel duty valve
+    and the full-bore header isolation diameter.
+    """
+    try:
+        from kasp.integrations.control_valve.adapter import ControlValveAdapter
+
+        duty = max(1, int(duty_count or 1))
+        flow_per_valve = max(0.001, float(mass_flow_kgs) / duty)
+        p_in_val = max(0.5, float(p_in_bar))
+        dp = max(0.05, min(float(allowable_dp_bar), p_in_val * 0.25))
+        p_out_val = max(0.1, p_in_val - dp)
+        line_dn_mm = max(25.0, float(line_size_in) * 25.4)
+        # Do not pass target_dn_mm so the IEC 60534 solver returns the true
+        # aerodynamic DN required for flow_per_valve at allowable_dp_bar.
+        res = ControlValveAdapter().calculate(
+            {
+                "service": "gas",
+                "composition": composition,
+                "eos_model": eos_model,
+                "mass_flow_kgs": flow_per_valve,
+                "p_in_bar": p_in_val,
+                "p_out_bar": p_out_val,
+                "t_c": max(-50.0, float(t_c)),
+                "pipe_inlet_diameter_mm": line_dn_mm,
+                "pipe_outlet_diameter_mm": line_dn_mm,
+                "path": path,
+            }
+        )
+        results = dict(res.get("results") or {})
+        warnings = list(res.get("warnings", []) or [])
+        calculated_dn = float(results.get("valve_dn_mm") or 0.0)
+        calculated_size_in = round(calculated_dn / 25.4, 2) if calculated_dn > 0 else round(float(line_size_in), 2)
+        selected_dn = _next_standard_dn(max(line_dn_mm, calculated_dn))
+        required_cv_per_valve = float(results.get("required_cv") or 0.0)
+        required_cv_total = round(required_cv_per_valve * duty, 1)
+        # Recommend parallel valve count if single-valve aerodynamic DN exceeds 900 mm (36")
+        recommended_duty_count = max(1, math.ceil((calculated_dn * math.sqrt(duty)) / 600.0)) if calculated_dn > 0 else 1
+        return (
+            {
+                "path": path,
+                "valve_type": valve_type,
+                "duty_count": duty,
+                "flow_per_valve_kgs": round(flow_per_valve, 2),
+                "line_size_in": round(float(line_size_in), 2),
+                "line_dn_mm": round(line_dn_mm, 1),
+                "allowable_dp_bar": round(dp, 3),
+                "required_cv": round(required_cv_per_valve, 1),
+                "required_cv_total": required_cv_total,
+                "calculated_dn_mm": round(calculated_dn, 1) if calculated_dn > 0 else None,
+                "calculated_size_in": calculated_size_in,
+                "selected_dn_mm": round(selected_dn, 1),
+                "selected_size_in": round(selected_dn / 25.4, 2),
+                "recommended_duty_count": recommended_duty_count,
+                "opening_percent": results.get("opening_percent"),
+                "is_choked": results.get("is_choked"),
+                "standard": (res.get("provenance") or {}).get("standard"),
+                "warnings": warnings,
+            },
+            warnings,
+        )
+    except BaseException as exc:
+        return None, [f"{path} ESD vana boyutlandırma hatası: {exc}"]
 
 
 def calculate_station_process_model(
@@ -165,6 +311,8 @@ def calculate_station_process_model(
             mass_flow_kgs = raw_flow
         elif canon_unit == "kg/h":
             mass_flow_kgs = raw_flow / 3600.0
+        elif canon_unit == "m³/h":
+            mass_flow_kgs = _actual_m3h_to_kgs(raw_flow, inputs, engine, gas_obj, eos_key, mw)
         elif gas_obj is not None and canon_unit in ("Sm³/h", "Nm³/h", "MMSCFD", "MMSCMD", "kmol/h"):
             try:
                 mass_flow_kgs = engine.convert_flow_to_kgs(raw_flow, canon_unit, gas_obj, eos_key)
@@ -548,9 +696,9 @@ def calculate_station_process_model(
             else:
                 cp_real = (k_in_real * R_gas / max(0.05, k_in_real - 1.0)) / 1000.0
             delta_h_kj_kg = cp_real * (t_discharge_hot - t_target_pipeline)
-        heat_duty_mw = round(max(0.05, (mass_flow_kgs * delta_h_kj_kg) / 1000.0), 2)
+        heat_duty_mw = round(max(0.0, (mass_flow_kgs * delta_h_kj_kg) / 1000.0), 3)
     else:
-        heat_duty_mw = 0.05
+        heat_duty_mw = 0.0
 
     cooler_bay_capacity_mw = 3.2
     user_cooler_bays = inputs.get("cooler_bays_count")
@@ -590,28 +738,57 @@ def calculate_station_process_model(
     tcv_sizing, tcv_warnings = _size_control_valve(
         "TCV", mass_flow_kgs * 0.35, p_out, p_post_cooler, t_discharge_hot
     )
-    cooler_bypass_valve_size_in = 16 if mass_flow_kgs < 60.0 else 24
-
     # 7. Safety & Depressurization (PSV & Blowdown) with Real EOS Z, MW, k
-    psv_set_pressure_bar = round(p_out * 1.10, 1)
-    psv_count = 2
-    bdv_depressurization_time_min = 15.0
+    # User overrides are optional; derived defaults keep the station model usable
+    # out of the box and are surfaced as an explicit input contract.
+    def _safety_float(key: str, default: float) -> float:
+        try:
+            value = float(inputs.get(key))
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) else default
+
+    psv_set_pressure_bar = round(
+        _safety_float("psv_set_pressure_bar", p_out * 1.10), 2
+    )
+    if psv_set_pressure_bar <= p_out:
+        psv_set_pressure_bar = round(p_out * 1.10, 2)
+    psv_overpressure_pct = min(25.0, max(1.0, _safety_float("psv_overpressure_pct", 10.0)))
+    psv_back_pressure_bar = max(0.5, _safety_float("psv_back_pressure_bar", 1.01325))
+    psv_valve_type = str(inputs.get("psv_valve_type") or "conventional").strip().lower()
+    if psv_valve_type not in ("conventional", "balanced_bellows", "pilot"):
+        psv_valve_type = "conventional"
+    psv_count = max(1, min(4, int(_safety_float("psv_count", 2.0))))
+    psv_duty_count = max(1, min(psv_count, int(_safety_float("psv_duty_count", 1.0))))
+    bdv_depressurization_time_min = max(1.0, _safety_float("bdv_depressurization_time_min", 15.0))
+
+    psv_input_contract = [
+        {"key": "psv_set_pressure_bar", "label": "PSV ayar basıncı (bar(g))", "value": psv_set_pressure_bar, "source": "user" if inputs.get("psv_set_pressure_bar") not in (None, "") else "derived"},
+        {"key": "psv_overpressure_pct", "label": "PSV aşırı basınç oranı (%)", "value": psv_overpressure_pct, "source": "user" if inputs.get("psv_overpressure_pct") not in (None, "") else "derived"},
+        {"key": "psv_back_pressure_bar", "label": "PSV karşı basınç (bar(a))", "value": psv_back_pressure_bar, "source": "user" if inputs.get("psv_back_pressure_bar") not in (None, "") else "derived"},
+        {"key": "psv_valve_type", "label": "PSV tipi", "value": psv_valve_type, "source": "user" if inputs.get("psv_valve_type") not in (None, "") else "derived"},
+        {"key": "psv_count", "label": "PSV adedi (duty + standby)", "value": psv_count, "source": "user" if inputs.get("psv_count") not in (None, "") else "derived"},
+        {"key": "psv_duty_count", "label": "Eşzamanlı (duty) PSV adedi", "value": psv_duty_count, "source": "user" if inputs.get("psv_duty_count") not in (None, "") else "derived"},
+    ]
+    psv_missing_inputs = [item["key"] for item in psv_input_contract if item["source"] != "user"]
 
     psv_sizing = None
     psv_sizing_warnings = []
     try:
         from kasp.integrations.psv.adapter import PSVAdapter
 
-        p_relieve_bar = psv_set_pressure_bar * 1.10
+        p_relieve_bar = psv_set_pressure_bar * (1.0 + psv_overpressure_pct / 100.0)
         relieve_state = _safe_eos_state(p_relieve_bar, t_discharge_hot) or hot_state
         psv_payload: Dict[str, Any] = {
             "service": "gas",
             "p1_bar": p_relieve_bar,
-            "p2_bar": 1.01325,
+            "p2_bar": psv_back_pressure_bar,
+            "set_pressure_bar": psv_set_pressure_bar,
+            "overpressure_pct": psv_overpressure_pct,
             "t_c": t_discharge_hot,
             "mass_flow_kgs": mass_flow_kgs,
-            "valve_type": "conventional",
-            "num_valves": 1,
+            "valve_type": psv_valve_type,
+            "num_valves": psv_duty_count,
         }
         has_full_eos_props = False
         if relieve_state is not None:
@@ -636,10 +813,24 @@ def calculate_station_process_model(
             if multi_msg not in psv_sizing_warnings:
                 psv_sizing_warnings.append(multi_msg)
         if psv_sizing.get("Required_Area_sqin") is not None:
+            required_area = float(psv_sizing.get("Required_Area_sqin") or 0.0)
+            selected_area = float(psv_sizing.get("Selected_Orifice_Area_sqin") or 0.0)
+            orifice_letter = str(psv_sizing.get("Selected_Orifice_Letter") or "-")
+            inlet_flange, outlet_flange = _API526_FLANGE_SIZES.get(orifice_letter, ("8\"", "10\""))
+            total_required_area = required_area * max(1, psv_duty_count)
+            # API 526 largest standard orifice T has 26.0 in² area
+            recommended_duty_count = max(1, math.ceil(total_required_area / 26.0))
             psv_sizing = {
-                "required_area_sqin": psv_sizing.get("Required_Area_sqin"),
-                "selected_orifice": psv_sizing.get("Selected_Orifice_Letter"),
-                "selected_orifice_area_sqin": psv_sizing.get("Selected_Orifice_Area_sqin"),
+                "required_area_sqin": required_area,
+                "required_area_total_sqin": round(total_required_area, 3),
+                "required_diameter_in": round(math.sqrt(4.0 * max(0.0, required_area) / math.pi), 3),
+                "selected_orifice": orifice_letter,
+                "selected_orifice_area_sqin": selected_area,
+                "selected_orifice_diameter_in": round(math.sqrt(4.0 * max(0.0, selected_area) / math.pi), 3),
+                "inlet_flange_in": inlet_flange,
+                "outlet_flange_in": outlet_flange,
+                "recommended_duty_count": recommended_duty_count,
+                "recommended_total_count": recommended_duty_count + 1,
                 "orifice_loading_pct": psv_sizing.get("Orifice_Loading_Pct"),
                 "flow_type": psv_sizing.get("Flow_Type"),
                 "z_used": psv_payload.get("z"),
@@ -650,6 +841,17 @@ def calculate_station_process_model(
             }
     except BaseException as exc:
         psv_sizing_warnings.append(f"PSV ön boyutlandırma yapılamadı: {exc}")
+
+    psv_auto_inputs = {
+        "gas_comp": gas_comp,
+        "eos_model": eos_key,
+        "mw": round(mw, 3),
+        "z": psv_sizing.get("z_used") if isinstance(psv_sizing, dict) else round(z_in_real, 4),
+        "k": psv_sizing.get("k_used") if isinstance(psv_sizing, dict) else round(k_in_real, 4),
+        "p_upstream_bar": round(p_out, 2),
+        "t_relieving_c": round(t_discharge_hot, 1),
+        "mass_flow_total_kgs": round(mass_flow_kgs, 2),
+    }
 
     # 8. Condensate Drain Collection (BOTAŞ PFD Note 14 & 15)
     liquid_condensate_rate_m3h = round(0.008 * mass_flow_kgs, 3)
@@ -770,6 +972,86 @@ def calculate_station_process_model(
     )
     p_lines = station_piping["lines"]
 
+    # 10b. Emergency Shutdown (ESD) isolation valves: gas sizing at the actual
+    # suction/discharge header sizes with a user-defined allowable pressure drop.
+    def _line_size_in(key: str, fallback: float) -> float:
+        raw = (p_lines.get(key) or {}).get("nominal_size_in")
+        try:
+            return float(str(raw).replace('"', "").strip())
+        except (TypeError, ValueError):
+            return fallback
+
+    esd_allowable_dp_bar = max(0.05, _safety_float("esd_allowable_dp_bar", 0.5))
+    esd_valve_type = str(inputs.get("esd_valve_type") or "full_bore_ball").strip().lower()
+    if esd_valve_type not in ("full_bore_ball", "ball", "butterfly", "gate"):
+        esd_valve_type = "full_bore_ball"
+    esd_count = max(1, min(6, int(_safety_float("esd_count", 2.0))))
+    esd_duty_count = max(1, min(esd_count, int(_safety_float("esd_duty_count", 1.0))))
+    esd_suction_line_in = _line_size_in("suction_header", float(mainline_nps))
+    esd_discharge_line_in = _line_size_in("discharge_header", float(mainline_nps))
+
+    esd_suction, esd_suction_warnings = _size_esd_valve(
+        "ESD-SUCTION", mass_flow_kgs, p_in, t_in, esd_suction_line_in,
+        gas_comp, eos_key, esd_allowable_dp_bar, esd_valve_type, duty_count=esd_duty_count,
+    )
+    esd_discharge, esd_discharge_warnings = _size_esd_valve(
+        "ESD-DISCHARGE", mass_flow_kgs, p_post_cooler, t_target_pipeline, esd_discharge_line_in,
+        gas_comp, eos_key, esd_allowable_dp_bar, esd_valve_type, duty_count=esd_duty_count,
+    )
+    esd_warnings = list(esd_suction_warnings) + list(esd_discharge_warnings)
+    esd_input_contract = [
+        {"key": "esd_count", "label": "ESD vana adedi (toplam)", "value": esd_count, "source": "user" if inputs.get("esd_count") not in (None, "") else "derived"},
+        {"key": "esd_duty_count", "label": "Eşzamanlı aktif ESD adedi", "value": esd_duty_count, "source": "user" if inputs.get("esd_duty_count") not in (None, "") else "derived"},
+        {"key": "esd_allowable_dp_bar", "label": "ESD izin verilen basınç kaybı (bar)", "value": esd_allowable_dp_bar, "source": "user" if inputs.get("esd_allowable_dp_bar") not in (None, "") else "derived"},
+        {"key": "esd_valve_type", "label": "ESD vana tipi", "value": esd_valve_type, "source": "user" if inputs.get("esd_valve_type") not in (None, "") else "derived"},
+        {"key": "esd_suction_line_size_in", "label": "Emiş ESD hat çapı (inç)", "value": esd_suction_line_in, "source": "calculated"},
+        {"key": "esd_discharge_line_size_in", "label": "Basma ESD hat çapı (inç)", "value": esd_discharge_line_in, "source": "calculated"},
+    ]
+    esd_missing_inputs = [item["key"] for item in esd_input_contract if item["source"] == "derived"]
+    esd_auto_inputs = {
+        "gas_comp": gas_comp,
+        "eos_model": eos_key,
+        "mw": round(mw, 3),
+        "suction_p_in_bar": round(p_in, 2),
+        "suction_t_c": round(t_in, 1),
+        "suction_line_size_in": esd_suction_line_in,
+        "discharge_p_in_bar": round(p_post_cooler, 2),
+        "discharge_t_c": round(t_target_pipeline, 1),
+        "discharge_line_size_in": esd_discharge_line_in,
+        "mass_flow_total_kgs": round(mass_flow_kgs, 2),
+    }
+
+    # 10c. Ultrasonic Gas Flow Meter (USM - FT-401) on Station Discharge Header
+    rho_cooled = (
+        float(cooled_state.density)
+        if (cooled_state is not None and getattr(cooled_state, "density", None) and cooled_state.density > 0)
+        else max(1.0, (p_post_cooler * 1e5) / (max(0.1, z_in_real) * R_gas * (t_target_pipeline + 273.15)))
+    )
+    sos_cooled = (
+        float(cooled_state.speed_of_sound)
+        if (cooled_state is not None and getattr(cooled_state, "speed_of_sound", None) and cooled_state.speed_of_sound > 0)
+        else math.sqrt(max(1.1, k_in_real) * max(0.1, z_in_real) * R_gas * (t_target_pipeline + 273.15))
+    )
+    usm_actual_flow_m3h = round((mass_flow_kgs / max(0.1, rho_cooled)) * 3600.0, 1)
+    usm_velocity_ms = float(p_lines["discharge_header"].get("actual_velocity_ms") or 12.0)
+    ultrasonic_meter_sizing = {
+        "tag": "FT-401",
+        "meter_type": "8-Path Chordal Ultrasonic Gas Flow Meter (AGA Report No. 9 / ISO 17089)",
+        "nominal_size_in": p_lines["discharge_header"]["nominal_size_in"],
+        "od_mm": p_lines["discharge_header"].get("od_mm", 1016.0),
+        "pressure_bar_a": round(p_post_cooler, 2),
+        "temperature_c": round(t_target_pipeline, 1),
+        "mass_flow_kgs": round(mass_flow_kgs, 2),
+        "actual_volumetric_flow_m3h": usm_actual_flow_m3h,
+        "standard_flow_mmscmd": round(vol_flow_mmscmd, 2),
+        "gas_velocity_ms": round(usm_velocity_ms, 2),
+        "max_recommended_velocity_ms": 25.0,
+        "speed_of_sound_ms": round(sos_cooled, 1),
+        "gas_density_kgm3": round(rho_cooled, 2),
+        "accuracy_class": "±0.15% (Custody Transfer / Fiscal Metering)",
+        "straight_run_requirement": "10D Giriş (Flow Conditioner ile) / 5D Çıkış",
+    }
+
     # Aggregate unique station-wide engineering warnings across thermo, valves, cooler, PSV, and piping
     station_warnings: List[str] = []
 
@@ -788,6 +1070,7 @@ def calculate_station_process_model(
     _add_warnings("TCV", tcv_warnings)
     _add_warnings("Hava Soğutucu", air_cooler_warnings)
     _add_warnings("PSV", psv_sizing_warnings)
+    _add_warnings("ESD", esd_warnings)
     _add_warnings("Boru Ağı", station_piping.get("warnings", []))
 
     # 11. Pipe Flow Vectors (Dynamic speed factors scaled by actual flow velocities)
@@ -963,14 +1246,35 @@ def calculate_station_process_model(
             },
             "safety_relief_and_blowdown": {
                 "psv_count": psv_count,
+                "psv_duty_count": psv_duty_count,
                 "psv_set_pressure_bar": psv_set_pressure_bar,
+                "psv_overpressure_pct": psv_overpressure_pct,
+                "psv_back_pressure_bar": psv_back_pressure_bar,
+                "psv_valve_type": psv_valve_type,
                 "relief_capacity_pct": 100.0,
-                "bdv_valves_count": 2,
+                "bdv_valves_count": esd_count,
                 "depressurization_time_min": bdv_depressurization_time_min,
                 "flare_vent_stack_height_m": 35.0,
                 "psv_sizing": psv_sizing,
                 "psv_sizing_warnings": psv_sizing_warnings,
+                "auto_inputs": psv_auto_inputs,
+                "input_contract": psv_input_contract,
+                "missing_inputs": psv_missing_inputs,
             },
+            "esd_sizing": {
+                "esd_count": esd_count,
+                "esd_duty_count": esd_duty_count,
+                "valve_type": esd_valve_type,
+                "allowable_dp_bar": esd_allowable_dp_bar,
+                "depressurization_time_min": bdv_depressurization_time_min,
+                "suction": esd_suction,
+                "discharge": esd_discharge,
+                "auto_inputs": esd_auto_inputs,
+                "input_contract": esd_input_contract,
+                "missing_inputs": esd_missing_inputs,
+                "warnings": esd_warnings,
+            },
+            "ultrasonic_meter": ultrasonic_meter_sizing,
             "pigging": {
                 "mainline_nps": p_lines["mainline_inlet"]["nominal_size_in"],
                 "receiver": pig_receiver_size,

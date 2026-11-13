@@ -15,6 +15,22 @@ import {
 import { showToast } from "../store/uiStore.js";
 import { api } from "../api/client.js";
 
+function buildPtc10SummaryText(evalResults, perfInputs) {
+  if (!evalResults) return "";
+  const st = evalResults.overall_status?.status || evalResults.overall_status || "-";
+  const dev = evalResults.deviations || {};
+  const lines = [
+    `KASP ASME PTC-10 Saha Doğrulama Özeti`,
+    `Durum: ${st}`,
+    `P_in: ${perfInputs?.p_in ?? "-"} ${perfInputs?.p_in_unit || "bar(a)"} → P_out: ${perfInputs?.p_out ?? "-"} ${perfInputs?.p_out_unit || "bar(a)"}`,
+    `T_in: ${perfInputs?.t_in ?? "-"} °C → T_out: ${perfInputs?.t_out ?? "-"} °C | Debi: ${perfInputs?.flow ?? "-"} ${perfInputs?.flow_unit || "kg/s"}`,
+  ];
+  if (dev.polytropic_head_pct !== undefined) lines.push(`Politropik Yük Sapması: ${Number(dev.polytropic_head_pct).toFixed(2)}%`);
+  if (dev.polytropic_efficiency_pct !== undefined) lines.push(`Politropik Verim Sapması: ${Number(dev.polytropic_efficiency_pct).toFixed(2)}%`);
+  if (dev.shaft_power_pct !== undefined) lines.push(`Şaft Gücü Sapması: ${Number(dev.shaft_power_pct).toFixed(2)}%`);
+  return lines.join("\n");
+}
+
 function linkFieldError(el, shown) {
   if (!el) return;
   const errorId = el.dataset.error;
@@ -63,12 +79,18 @@ export function renderPerformanceTab(container) {
     const tOutC = validStage
       ? Number(validStage.t_out_c ?? 85.0)
       : (res?.t_out_c !== undefined ? Number(res.t_out_c) : 138.5);
-    const flowKgs = convertFlowWithMW(
-      inp.flow ?? 11.8,
-      inp.flow_unit || "kg/s",
-      "kg/s",
-      inp.gas_comp
-    ) || 11.8;
+    const flowRaw = Number(inp.flow ?? 11.8);
+    const flowUnitRaw = String(inp.flow_unit || "kg/s");
+    const isActualFlow = flowUnitRaw === "m³/h" || flowUnitRaw === "m3/h" || flowUnitRaw.toUpperCase() === "ACMH";
+    let flowKgs;
+    if (isActualFlow) {
+      // ACMH (actual m³/h) → kg/s using an ideal-gas inlet density estimate at P_in/T_in.
+      const mwKg = computeGasMixtureMW(inp.gas_comp) / 1000.0;
+      const rhoIn = ((pInBarA * 1e5) * mwKg) / (8.314462618 * Math.max(tInC + 273.15, 1.0));
+      flowKgs = (Number.isFinite(flowRaw) && flowRaw > 0 && rhoIn > 0) ? (flowRaw * rhoIn) / 3600.0 : 11.8;
+    } else {
+      flowKgs = convertFlowWithMW(flowRaw, flowUnitRaw, "kg/s", inp.gas_comp) || 11.8;
+    }
 
     return {
       p_in: Math.round(pInBarA * 100) / 100,
@@ -94,11 +116,35 @@ export function renderPerformanceTab(container) {
     return list;
   }
 
+  function capturePerfInputsFromDom() {
+    const pIn = container.querySelector("#perf-p-in");
+    if (!pIn || !perfInputs) return;
+    const num = (sel, fallback) => {
+      const v = parseFloat(container.querySelector(sel)?.value);
+      return Number.isFinite(v) ? v : fallback;
+    };
+    const str = (sel, fallback) => container.querySelector(sel)?.value || fallback;
+    perfInputs = {
+      ...perfInputs,
+      p_in: num("#perf-p-in", perfInputs.p_in),
+      p_in_unit: str("#perf-p-in-unit", perfInputs.p_in_unit),
+      p_out: num("#perf-p-out", perfInputs.p_out),
+      p_out_unit: str("#perf-p-out-unit", perfInputs.p_out_unit),
+      t_in: num("#perf-t-in", perfInputs.t_in),
+      t_out: num("#perf-t-out", perfInputs.t_out),
+      flow: num("#perf-flow", perfInputs.flow),
+      flow_unit: str("#perf-flow-unit", perfInputs.flow_unit),
+      fuel_flow_kgh: container.querySelector("#perf-fuel-kgh")?.value ?? "",
+    };
+  }
+
   function render() {
     const proj = projectStore.getState();
     const inp = proj.inputs || {};
     const hasDesign = !!proj.results;
 
+    // Preserve in-progress field edits across store-driven re-renders.
+    if (perfInputs && userEdited) capturePerfInputsFromDom();
     if (!perfInputs || !userEdited) {
       perfInputs = buildDefaultsFromStore();
     }
@@ -138,6 +184,9 @@ export function renderPerformanceTab(container) {
               }
               <button type="button" id="btn-sync-from-design" class="btn btn-sm" title="Tasarım sekmesindeki güncel basınç, sıcaklık ve debiyi saha formuna aktar">
                 Tasarım Noktasından Doldur
+              </button>
+              <button type="button" id="btn-reset-ptc10-form" class="btn btn-sm" title="Saha formunu varsayılanlara sıfırla">
+                Sıfırla
               </button>
             </div>
           </div>
@@ -298,10 +347,16 @@ export function renderPerformanceTab(container) {
                   <span>6-Metrik ASME PTC-10 Tolerans ve Sapma Matrisi</span>
                   <span class="badge ${overallBadgeClass}" style="margin-left: 6px;">Genel Karar: ${escapeHtml(overallStatusStr)}</span>
                 </div>
-                <button id="btn-perf-pdf-export" class="btn btn-sm" title="ASME PTC-10 PDF Raporu İndir">
-                  ${icon("fileText", 14)}
-                  <span>Performans PDF İndir</span>
-                </button>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <button type="button" id="btn-copy-ptc10-summary" class="btn btn-sm" title="ASME PTC-10 özetini panoya kopyala">
+                    ${icon("copy", 14)}
+                    <span>Özeti Kopyala</span>
+                  </button>
+                  <button id="btn-perf-pdf-export" class="btn btn-sm" title="ASME PTC-10 PDF Raporu İndir">
+                    ${icon("fileText", 14)}
+                    <span>Performans PDF İndir</span>
+                  </button>
+                </div>
               </div>
 
               ${
@@ -529,6 +584,23 @@ export function renderPerformanceTab(container) {
         isEvaluating = false;
         render();
       }
+    });
+
+    container.querySelector("#btn-reset-ptc10-form")?.addEventListener("click", () => {
+      userEdited = false;
+      perfInputs = buildDefaultsFromStore();
+      evalResults = null;
+      render();
+      showToast("ASME PTC-10 saha formu sıfırlandı.", "info");
+    });
+
+    container.querySelector("#btn-copy-ptc10-summary")?.addEventListener("click", async () => {
+      if (!evalResults) return;
+      const summary = buildPtc10SummaryText(evalResults, perfInputs);
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(summary);
+        showToast("ASME PTC-10 özeti panoya kopyalandı.", "success");
+      } catch (_) {}
     });
 
     // Bind PDF export button (sends actual field test inputs, NOT design inputs)

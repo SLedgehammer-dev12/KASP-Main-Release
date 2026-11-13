@@ -54,7 +54,7 @@ _EOS_ALIASES = {
     "heos": "coolprop",
     "pr": "pr",
     "peng-robinson": "pr",
-    "bwrs": "pr",
+    "bwrs": "gerg2008",
     "srk": "srk",
     "rk": "srk",
     "gerg2008": "gerg2008",

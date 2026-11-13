@@ -25,7 +25,7 @@ _PIPE_EOS_ALIASES = {
     "heos": "coolprop",
     "pr": "pr",
     "peng-robinson": "pr",
-    "bwrs": "pr",
+    "bwrs": "gerg2008",
     "srk": "srk",
     "rk": "srk",
     "gerg2008": "gerg2008",
@@ -206,6 +206,7 @@ class PipeSizingService:
             "pressure_bar": p_in_bar,
             "temp_c": t_in_c,
             "max_vel_target": 16.0,
+            "note": "PIG-R aksında 22.5° çift hot bend (S-offset) ile 90° dirsek olmadan toprak altı kottan istasyon girişine bağlanır.",
             **_size_line(mass_flow_kgs, p_in_bar, t_in_c, 16.0),
         }
 
@@ -461,6 +462,7 @@ class PipeSizingService:
             "pressure_bar": p_cooled,
             "temp_c": t_cooled_c,
             "max_vel_target": 16.0,
+            "note": "PIG-L aksında 22.5° çift hot bend (S-offset) ile 90° dirsek olmadan toprak altı kottan ana iletim hattına devam eder.",
             **_size_line(mass_flow_kgs, p_cooled, t_cooled_c, 16.0),
         }
 

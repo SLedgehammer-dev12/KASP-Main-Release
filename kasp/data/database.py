@@ -751,13 +751,26 @@ class UnitDatabase:
             return False
     
     def save_calculation_history(self, project_name, calculation_type, inputs, results, notes="", user_id=None):
-        """Hesaplama geçmişini kaydet"""
+        """Hesaplama geçmişini kaydet (NaN/Inf ve numpy tipleri JSON-güvenli hale getirilir)."""
         try:
+            # Local import avoids a module-level cycle between persistence and project utils.
+            from kasp.utils.project_manager import sanitize_json_payload
+
             cursor = self.get_cursor()
-            
-            inputs_json = json.dumps(inputs) if isinstance(inputs, dict) else str(inputs)
-            results_json = json.dumps(results) if isinstance(results, dict) else str(results)
-            
+
+            safe_inputs = sanitize_json_payload(inputs) if not isinstance(inputs, str) else inputs
+            safe_results = sanitize_json_payload(results) if not isinstance(results, str) else results
+            inputs_json = (
+                json.dumps(safe_inputs, ensure_ascii=False, allow_nan=False, default=str)
+                if isinstance(safe_inputs, (dict, list))
+                else str(safe_inputs)
+            )
+            results_json = (
+                json.dumps(safe_results, ensure_ascii=False, allow_nan=False, default=str)
+                if isinstance(safe_results, (dict, list))
+                else str(safe_results)
+            )
+
             cursor.execute("""
                 INSERT INTO CalculationHistory (project_name, calculation_type, inputs_json, results_json, user_notes, user_id)
                 VALUES (?, ?, ?, ?, ?, ?)

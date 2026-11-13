@@ -222,9 +222,87 @@ async function initApp() {
     main.setAttribute("aria-busy", st.isCalculating ? "true" : "false");
   });
 
-  // Modal ergonomisi: ESC ile kapat, açılışta ilk alana odak, role=dialog
+  function toggleShortcutsHelp(forceOpen = null) {
+    const existing = document.getElementById("shortcuts-help-overlay");
+    if (existing) {
+      if (forceOpen === true) return;
+      existing.remove();
+      return;
+    }
+    if (forceOpen === false) return;
+    const overlay = document.createElement("div");
+    overlay.id = "shortcuts-help-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,0.65);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:16px;";
+    overlay.innerHTML = `
+      <div class="card" style="max-width:460px;width:100%;padding:18px 20px;box-shadow:0 20px 48px rgba(0,0,0,0.4);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;font-size:15px;font-weight:700;">⌨️ KASP Klavye Kısayolları</h3>
+          <button type="button" id="btn-close-shortcuts-help" class="btn btn-sm">✕</button>
+        </div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 14px;font-size:12px;align-items:center;">
+          <kbd>Ctrl/Cmd + Enter</kbd><span>Aktif tasarım / istasyon hesabını başlat</span>
+          <kbd>Ctrl/Cmd + S</kbd><span>Projeyi veritabanına kaydet</span>
+          <kbd>?</kbd><span>Bu kısayol rehberini aç / kapat</span>
+          <kbd>1 – 8 / R</kbd><span>3D kamera önayarları / ISO sıfırla</span>
+          <kbd>F / Esc</kbd><span>3D tam ekranı aç / kapat</span>
+          <kbd>+ / − / 0</kbd><span>2D P&amp;ID yakınlaştır / uzaklaştır / sıfırla</span>
+        </div>
+      </div>
+    `;
+    overlay.addEventListener("click", (ev) => {
+      if (ev.target === overlay || ev.target.id === "btn-close-shortcuts-help") overlay.remove();
+    });
+    document.body.appendChild(overlay);
+  }
+  window.addEventListener("kasp:open-shortcuts-help", () => toggleShortcutsHelp());
+
+  // Modal & workflow keyboard shortcuts: ESC closes modal, Ctrl/Cmd+Enter runs calculation, Ctrl/Cmd+S saves project
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && uiStore.getState().activeModal) closeModal();
+    if (e.key === "Escape") {
+      if (document.getElementById("shortcuts-help-overlay")) {
+        toggleShortcutsHelp(false);
+        return;
+      }
+      if (uiStore.getState().activeModal) {
+        closeModal();
+        return;
+      }
+    }
+    const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+    const isTyping = tag === "input" || tag === "textarea" || tag === "select" || e.target?.isContentEditable;
+    if (e.key === "?" && !isTyping && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      toggleShortcutsHelp();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && !uiStore.getState().activeModal) {
+      if (e.key === "Enter") {
+        const activeTab = uiStore.getState().activeTab || "design";
+        const targetBtn =
+          activeTab === "station"
+            ? document.getElementById("btn-size-station-pipes")
+            : document.getElementById("btn-run-calculation");
+        if (targetBtn && !targetBtn.disabled) {
+          e.preventDefault();
+          targetBtn.click();
+        }
+      } else if (e.key.toLowerCase() === "s") {
+        const saveBtn = document.getElementById("btn-save-project");
+        if (saveBtn) {
+          e.preventDefault();
+          saveBtn.click();
+        }
+      }
+    }
+  });
+
+  window.addEventListener("beforeunload", (e) => {
+    if (projectStore.getState().hasUnsavedChanges) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
   });
   new MutationObserver(() => {
     const mm = document.getElementById("modals-mount");

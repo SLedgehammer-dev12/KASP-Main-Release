@@ -573,6 +573,7 @@ export function openEquipmentTeardown(key, context = {}) {
       }
     });
     renderer.dispose();
+    renderer.forceContextLoss?.();
     overlay.remove();
   };
 

@@ -545,14 +545,18 @@ export function renderShootoutTab(container) {
           rankedResults.length > 0 || isRunning
             ? `
             <div class="card" id="shootout-results-card">
-              <div class="card-header" style="flex-wrap: wrap; gap: 8px;">
+              <div class="card-header" style="flex-wrap: wrap; gap: 8px; justify-content: space-between;">
                 <h3 class="card-title" id="shootout-ranking-heading" style="margin: 0;">
                   ${icon("activity", 16, "text-primary")}
                   <span>Sıralamalı EOS × Metot Kıyaslama Tablosu <span id="shootout-results-count">(${rankedResults.length})</span></span>
                 </h3>
-                <span style="font-size: 11px; color: var(--color-text-secondary);">
-                  Yeşil vurgulanan satır referans doğruluk ve yakınsama kriterine göre <b>#1 En İyi</b> modeldir.
-                </span>
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                  <input type="search" id="shootout-filter-input" class="form-input" placeholder="EOS veya metot ara..." aria-label="EOS veya metot ara" style="width: 170px; height: 28px; font-size: 11px; padding: 2px 8px;" />
+                  <button type="button" id="btn-shootout-export-csv" class="btn btn-sm" title="Kıyaslama tablosunu CSV olarak indir">CSV İndir</button>
+                  <span style="font-size: 11px; color: var(--color-text-secondary);">
+                    Yeşil satır <b>#1 En İyi</b> modeldir.
+                  </span>
+                </div>
               </div>
 
               <div tabindex="0" role="region" aria-labelledby="shootout-ranking-heading" class="shootout-table-wrapper">
@@ -652,6 +656,7 @@ export function renderShootoutTab(container) {
     container.querySelector("#btn-start-shootout")?.addEventListener("click", startShootout);
     container.querySelector("#btn-cancel-shootout")?.addEventListener("click", cancelShootout);
     bindTableApplyButtons();
+    bindShootoutTableTools();
 
     if (rankedResults.some((r) => r.status === "success") && !isRunning) {
       renderPlotlyComparisonChart();
@@ -671,11 +676,58 @@ export function renderShootoutTab(container) {
     if (countEl) countEl.textContent = `(${rankedResults.length})`;
 
     if (tbody) {
-      tbody.innerHTML = rankedResults.map(buildRowHtml).join("");
+      const filterVal = (container.querySelector("#shootout-filter-input")?.value || "").trim().toLowerCase();
+      const visibleRows = filterVal
+        ? rankedResults.filter((r) => `${r.eos} ${r.method} ${r.status}`.toLowerCase().includes(filterVal))
+        : rankedResults;
+      tbody.innerHTML = visibleRows.map(buildRowHtml).join("");
       bindTableApplyButtons();
+    bindShootoutTableTools();
     } else {
       render();
     }
+  }
+
+  function bindShootoutTableTools() {
+    const filterInp = container.querySelector("#shootout-filter-input");
+    filterInp?.addEventListener("input", () => {
+      const tbody = container.querySelector("#shootout-results-tbody");
+      if (!tbody) return;
+      const q = filterInp.value.trim().toLowerCase();
+      const visible = q
+        ? rankedResults.filter((r) => `${r.eos} ${r.method} ${r.status}`.toLowerCase().includes(q))
+        : rankedResults;
+      tbody.innerHTML = visible.map(buildRowHtml).join("");
+      bindTableApplyButtons();
+    bindShootoutTableTools();
+    });
+    container.querySelector("#btn-shootout-export-csv")?.addEventListener("click", () => {
+      if (!rankedResults.length) return;
+      const headers = ["Rank", "EOS", "Method", "Power_kW", "Delta_Power_Pct", "Head_kJ_kg", "T_out_C", "Eff_Pct", "Duration_ms", "Status"];
+      const rows = rankedResults.map((r, i) => [
+        r.rank ?? i + 1,
+        r.eos || "",
+        `"${String(r.method || "").replace(/"/g, '""')}"`,
+        r.power_kw ?? "",
+        r.delta_power_pct ?? "",
+        r.head_kj_kg ?? "",
+        r.t_out_c ?? "",
+        r.poly_eff_pct ?? "",
+        r.duration_ms ?? "",
+        r.status || "",
+      ].join(","));
+      const csv = [headers.join(","), ...rows].join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "kasp_shootout_matrix.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast("Shootout CSV dosyası indirildi.", "success");
+    });
   }
 
   async function syncFinalJobStatus(jobId) {

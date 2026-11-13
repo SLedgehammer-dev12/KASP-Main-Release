@@ -20,6 +20,7 @@ import {
   setStationData,
   convertFlowWithMW,
   convertPressureToBarA,
+  convertPressureUnit,
   convertTempToC,
   escapeHtml,
 } from "../store/projectStore.js";
@@ -27,6 +28,305 @@ import { showToast, uiStore } from "../store/uiStore.js";
 import { t } from "../i18n/locales.js";
 import { api } from "../api/client.js";
 import { createStation3dView } from "./station3dView.js";
+
+// Same unit menus as the design sidebar so station inputs stay familiar.
+const STATION_FLOW_UNITS = ["kg/s", "Sm³/h", "Nm³/h", "kg/h", "MMSCFD", "MMSCMD"];
+const STATION_PRESSURE_UNITS = ["bar(a)", "bar(g)", "kPa", "psi"];
+
+function stationFlowDisplay(kgs, unit, gasComp) {
+  const value = Number(kgs);
+  if (!Number.isFinite(value)) return 0;
+  if (!unit || unit === "kg/s") return value;
+  const converted = convertFlowWithMW(value, "kg/s", unit, gasComp);
+  return Number.isFinite(converted) ? converted : value;
+}
+
+function stationFlowToKgs(displayValue, unit, gasComp) {
+  const value = Number(displayValue);
+  if (!Number.isFinite(value) || value <= 0) return NaN;
+  if (!unit || unit === "kg/s") return value;
+  return convertFlowWithMW(value, unit, "kg/s", gasComp);
+}
+
+function stationPressureDisplay(barA, unit) {
+  const value = Number(barA);
+  if (!Number.isFinite(value)) return 0;
+  return convertPressureUnit(value, "bar(a)", unit || "bar(a)");
+}
+
+function stationPressureToBarA(displayValue, unit) {
+  const value = Number(displayValue);
+  if (!Number.isFinite(value) || value <= 0) return NaN;
+  return convertPressureToBarA(value, unit || "bar(a)");
+}
+
+function roundDisplay(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "";
+  return Math.round(num * 100) / 100;
+}
+
+const STATION_2D_FOCUS_ZONES = {
+  all: { x: 0, y: 0, w: 1180, h: 580, label: "Tüm Tesis" },
+  pig_r: { x: 0, y: 120, w: 320, h: 280, label: "PIG-R Giriş" },
+  filtration: { x: 160, y: 60, w: 300, h: 460, label: "Siklon & Kartuş Filtre" },
+  compressors: { x: 350, y: 70, w: 430, h: 420, label: "Ünite Binası & Kompresörler" },
+  cooler: { x: 730, y: 90, w: 320, h: 360, label: "Hava Soğutucu & Baypas" },
+  psv_bdv: { x: 860, y: 80, w: 320, h: 360, label: "PSV / BDV & PIG-L" },
+};
+
+function renderStation2dViewport(data, lang) {
+  return `
+    <div id="station-2d-viewport" tabindex="0" class="station-canvas-container" style="min-height: 560px; position: relative; overflow: hidden; user-select: none; outline: none;">
+      <style>
+        #station-2d-viewport.station-2d-expanded {
+          position: fixed !important;
+          inset: 0 !important;
+          width: 100vw !important;
+          height: 100vh !important;
+          z-index: 9999 !important;
+          background: var(--color-surface, #0f172a) !important;
+          border-radius: 0 !important;
+          padding: 16px !important;
+        }
+        #station-2d-viewport.station-2d-expanded svg {
+          width: 100% !important;
+          height: 100% !important;
+        }
+        #station-2d-viewport.pid-hide-tags .isa-instrument-group {
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 150ms ease;
+        }
+      </style>
+      <div class="station-2d-toolbar" style="position: absolute; top: 10px; right: 10px; z-index: 15; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(6px); padding: 4px 8px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.16); max-width: calc(100% - 20px);">
+        <select id="select-2d-focus-equip" aria-label="${escapeHtml(t("select_2d_focus", lang))}" style="background: #1e293b; color: #e2e8f0; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; padding: 2px 6px; font-size: 10.5px; cursor: pointer;">
+          <option value="all">${escapeHtml(t("select_2d_focus", lang))}</option>
+          <option value="pig_r">PIG-R Giriş</option>
+          <option value="filtration">Siklon &amp; Kartuş Filtre</option>
+          <option value="compressors">Ünite Binası &amp; Kompresör</option>
+          <option value="cooler">Hava Soğutucu &amp; TCV</option>
+          <option value="psv_bdv">PSV / BDV &amp; PIG-L</option>
+        </select>
+        <span id="pid-zoom-badge" style="font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: #38bdf8; padding: 2px 6px; background: rgba(56,189,248,0.12); border-radius: 8px;">%100</span>
+        <button type="button" id="btn-2d-zoom-in" class="btn btn-sm" title="Yakınlaştır (+)" style="padding: 2px 7px; font-size: 11px; font-weight: 700;">+</button>
+        <button type="button" id="btn-2d-zoom-out" class="btn btn-sm" title="Uzaklaştır (-)" style="padding: 2px 7px; font-size: 11px; font-weight: 700;">−</button>
+        <button type="button" id="btn-2d-zoom-reset" class="btn btn-sm" title="${escapeHtml(t("btn_2d_zoom_reset", lang))} (0)" style="padding: 2px 7px; font-size: 10.5px;">${escapeHtml(t("btn_2d_zoom_reset", lang))}</button>
+        <button type="button" id="btn-2d-toggle-tags" class="btn btn-sm" aria-pressed="true" title="${escapeHtml(t("btn_2d_tags", lang))}" style="padding: 2px 7px; font-size: 10.5px;">🏷️ ${escapeHtml(t("btn_2d_tags", lang))}</button>
+        <button type="button" id="btn-2d-fullscreen" class="btn btn-sm" aria-pressed="false" title="${escapeHtml(t("btn_3d_fullscreen", lang))}" style="padding: 2px 7px; font-size: 10.5px;">⛶ ${escapeHtml(t("btn_3d_fullscreen", lang))}</button>
+        <button type="button" id="btn-2d-export-svg" class="btn btn-sm btn-primary" title="${escapeHtml(t("btn_2d_export_svg", lang))}" style="padding: 2px 8px; font-size: 10.5px;">${escapeHtml(t("btn_2d_export_svg", lang))}</button>
+        <button type="button" id="btn-2d-export-png" class="btn btn-sm" title="${escapeHtml(t("btn_2d_export_png", lang))}" style="padding: 2px 8px; font-size: 10.5px;">${escapeHtml(t("btn_2d_export_png", lang))}</button>
+      </div>
+      ${renderStationSvg(data)}
+    </div>
+  `;
+}
+
+function bindStation2dControls(container, lang) {
+  container._s2dAbort?.abort();
+  const ac = new AbortController();
+  container._s2dAbort = ac;
+  const viewport = container.querySelector("#station-2d-viewport");
+  if (!viewport) return;
+  const svg = viewport.querySelector("svg");
+  if (!svg) return;
+
+  const BASE_W = 1180;
+  const BASE_H = 580;
+  let vb = { x: 0, y: 0, w: BASE_W, h: BASE_H };
+  let isPanning = false;
+  let didDrag = false;
+  let startX = 0;
+  let startY = 0;
+  let startVb = { ...vb };
+
+  const zoomBadge = viewport.querySelector("#pid-zoom-badge");
+
+  function applyViewBox() {
+    svg.setAttribute("viewBox", `${vb.x.toFixed(2)} ${vb.y.toFixed(2)} ${vb.w.toFixed(2)} ${vb.h.toFixed(2)}`);
+    if (zoomBadge) {
+      const pct = Math.round((BASE_W / vb.w) * 100);
+      zoomBadge.textContent = `%${pct}`;
+    }
+  }
+
+  function zoomBy(factor, cx = vb.x + vb.w / 2, cy = vb.y + vb.h / 2) {
+    const nextW = Math.min(BASE_W / 0.35, Math.max(BASE_W / 4.0, vb.w * factor));
+    const ratio = nextW / vb.w;
+    const nextH = vb.h * ratio;
+    vb = {
+      x: cx - (cx - vb.x) * ratio,
+      y: cy - (cy - vb.y) * ratio,
+      w: nextW,
+      h: nextH,
+    };
+    applyViewBox();
+  }
+
+  viewport.querySelector("#btn-2d-zoom-in")?.addEventListener("click", () => zoomBy(0.8));
+  viewport.querySelector("#btn-2d-zoom-out")?.addEventListener("click", () => zoomBy(1.25));
+  viewport.querySelector("#btn-2d-zoom-reset")?.addEventListener("click", () => {
+    vb = { x: 0, y: 0, w: BASE_W, h: BASE_H };
+    const sel = viewport.querySelector("#select-2d-focus-equip");
+    if (sel) sel.value = "all";
+    applyViewBox();
+  });
+
+  viewport.querySelector("#select-2d-focus-equip")?.addEventListener("change", (ev) => {
+    const zone = STATION_2D_FOCUS_ZONES[ev.target.value] || STATION_2D_FOCUS_ZONES.all;
+    vb = { x: zone.x, y: zone.y, w: zone.w, h: zone.h };
+    applyViewBox();
+  });
+
+  const tagsBtn = viewport.querySelector("#btn-2d-toggle-tags");
+  tagsBtn?.addEventListener("click", () => {
+    const hidden = viewport.classList.toggle("pid-hide-tags");
+    tagsBtn.setAttribute("aria-pressed", hidden ? "false" : "true");
+  });
+
+  viewport.addEventListener("keydown", (ev) => {
+    if (ev.key === "+" || ev.key === "=") {
+      ev.preventDefault();
+      zoomBy(0.8);
+    } else if (ev.key === "-" || ev.key === "_") {
+      ev.preventDefault();
+      zoomBy(1.25);
+    } else if (ev.key === "0") {
+      ev.preventDefault();
+      vb = { x: 0, y: 0, w: BASE_W, h: BASE_H };
+      applyViewBox();
+    }
+  });
+
+  const fsBtn = viewport.querySelector("#btn-2d-fullscreen");
+  function set2dFullscreen(expanded) {
+    const isExp = !!expanded;
+    viewport.classList.toggle("station-2d-expanded", isExp);
+    if (fsBtn) {
+      fsBtn.setAttribute("aria-pressed", isExp ? "true" : "false");
+      fsBtn.textContent = isExp
+        ? `⛶ ${t("btn_3d_exit_fullscreen", lang)}`
+        : `⛶ ${t("btn_3d_fullscreen", lang)}`;
+    }
+  }
+  fsBtn?.addEventListener("click", () => {
+    set2dFullscreen(!viewport.classList.contains("station-2d-expanded"));
+  });
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && viewport.classList.contains("station-2d-expanded")) {
+      set2dFullscreen(false);
+    }
+  }, { signal: ac.signal });
+
+  viewport.querySelector("#btn-2d-export-svg")?.addEventListener("click", () => {
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("viewBox", `0 0 ${BASE_W} ${BASE_H}`);
+    const xml = new XMLSerializer().serializeToString(clone);
+    const blob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "kasp_station_pid.svg";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("2D P&ID SVG indirildi.", "success");
+  });
+
+  viewport.querySelector("#btn-2d-export-png")?.addEventListener("click", () => {
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("viewBox", `0 0 ${BASE_W} ${BASE_H}`);
+    clone.setAttribute("width", String(BASE_W * 2));
+    clone.setAttribute("height", String(BASE_H * 2));
+    const xml = new XMLSerializer().serializeToString(clone);
+    const svgBlob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = BASE_W * 2;
+      canvas.height = BASE_H * 2;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#0b1120";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((pngBlob) => {
+        if (!pngBlob) return;
+        const pngUrl = URL.createObjectURL(pngBlob);
+        const a = document.createElement("a");
+        a.href = pngUrl;
+        a.download = "kasp_station_pid.png";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(pngUrl);
+        showToast("2D P&ID PNG (2x HiDPI) indirildi.", "success");
+      }, "image/png");
+    };
+    img.src = url;
+  });
+
+  svg.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const fx = rect.width > 0 ? (ev.clientX - rect.left) / rect.width : 0.5;
+    const fy = rect.height > 0 ? (ev.clientY - rect.top) / rect.height : 0.5;
+    zoomBy(ev.deltaY < 0 ? 0.88 : 1.14, vb.x + fx * vb.w, vb.y + fy * vb.h);
+  }, { passive: false });
+
+  svg.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || ev.target.closest(".station-2d-toolbar")) return;
+    isPanning = true;
+    didDrag = false;
+    startX = ev.clientX;
+    startY = ev.clientY;
+    startVb = { ...vb };
+  });
+
+  window.addEventListener("pointermove", (ev) => {
+    if (!isPanning) return;
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    if (!didDrag && Math.hypot(dx, dy) > 4) didDrag = true;
+    if (!didDrag) return;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    vb = {
+      ...startVb,
+      x: startVb.x - (dx / rect.width) * startVb.w,
+      y: startVb.y - (dy / rect.height) * startVb.h,
+    };
+    applyViewBox();
+  }, { signal: ac.signal });
+
+  window.addEventListener("pointerup", () => {
+    isPanning = false;
+  }, { signal: ac.signal });
+
+  svg.addEventListener("click", (ev) => {
+    if (didDrag) {
+      ev.stopPropagation();
+      didDrag = false;
+    }
+  }, true);
+}
+
+function stationProcessSignature(inputs) {
+  return JSON.stringify({
+    flow: inputs?.flow ?? inputs?.mass_flow,
+    flow_unit: inputs?.flow_unit,
+    p_in: inputs?.p_in,
+    p_in_unit: inputs?.p_in_unit,
+    p_out: inputs?.p_out,
+    p_out_unit: inputs?.p_out_unit,
+    t_in: inputs?.t_in,
+    t_in_unit: inputs?.t_in_unit,
+    num_units: inputs?.num_units,
+    gas_comp: inputs?.gas_comp,
+  });
+}
 
 function normalizeWarningItem(w, prefix = "") {
   let msg = "";
@@ -128,10 +428,21 @@ export function renderStationTab(container) {
   const initPout = convertPressureToBarA(projState?.inputs?.p_out ?? 75.0, projState?.inputs?.p_out_unit || "bar(a)") || 75.0;
   const initTin = convertTempToC(projState?.inputs?.t_in ?? 25.0, projState?.inputs?.t_in_unit || "°C");
 
+  const projectFlowUnit = String(projState?.inputs?.flow_unit || "kg/s");
+  const projectPinUnit = String(projState?.inputs?.p_in_unit || "bar(a)");
+  const projectPoutUnit = String(projState?.inputs?.p_out_unit || "bar(a)");
+  // Station panel shows discharge pressure in bar(g) by default (design keeps bar(a)).
+  const initialPoutUnit =
+    STATION_PRESSURE_UNITS.includes(projectPoutUnit) && projectPoutUnit !== "bar(a)"
+      ? projectPoutUnit
+      : "bar(g)";
   let stationInputs = {
-    mass_flow: Math.round(Number(initFlow) * 100) / 100,
-    p_in: Math.round(Number(initPin) * 100) / 100,
-    p_out: Math.round(Number(initPout) * 100) / 100,
+    mass_flow: Math.round(Number(initFlow) * 1e6) / 1e6,
+    mass_flow_unit: STATION_FLOW_UNITS.includes(projectFlowUnit) ? projectFlowUnit : "kg/s",
+    p_in: Math.round(Number(initPin) * 10000) / 10000,
+    p_in_unit: STATION_PRESSURE_UNITS.includes(projectPinUnit) ? projectPinUnit : "bar(a)",
+    p_out: Math.round(Number(initPout) * 10000) / 10000,
+    p_out_unit: initialPoutUnit,
     t_in: Math.round(Number(initTin) * 10) / 10,
     comp_op_count: Number(projState?.inputs?.num_units || 0),
     cyclone_op_count: 0,
@@ -141,6 +452,18 @@ export function renderStationTab(container) {
     design_factor_F: 0.50,
     pipe_standard: "BOTAŞ",
     psl_level: "PSL2",
+    // Safety valve sizing overrides; empty strings let the engine derive values.
+    psv_set_pressure_bar: "",
+    psv_overpressure_pct: 10,
+    psv_back_pressure_bar: 1.01325,
+    psv_valve_type: "conventional",
+    psv_count: 2,
+    psv_duty_count: 1,
+    esd_count: 2,
+    esd_duty_count: 1,
+    esd_allowable_dp_bar: 0.5,
+    esd_valve_type: "full_bore_ball",
+    bdv_depressurization_time_min: 15,
   };
 
   let last3dState = null;
@@ -174,7 +497,20 @@ export function renderStationTab(container) {
         design_factor_F: stationInputs.design_factor_F,
         pipe_standard: stationInputs.pipe_standard,
         psl_level: stationInputs.psl_level,
+        psv_overpressure_pct: stationInputs.psv_overpressure_pct,
+        psv_back_pressure_bar: stationInputs.psv_back_pressure_bar,
+        psv_valve_type: stationInputs.psv_valve_type,
+        psv_count: stationInputs.psv_count,
+        psv_duty_count: stationInputs.psv_duty_count,
+        esd_count: stationInputs.esd_count,
+        esd_duty_count: stationInputs.esd_duty_count,
+        esd_allowable_dp_bar: stationInputs.esd_allowable_dp_bar,
+        esd_valve_type: stationInputs.esd_valve_type,
+        bdv_depressurization_time_min: stationInputs.bdv_depressurization_time_min,
       };
+      if (stationInputs.psv_set_pressure_bar !== "" && stationInputs.psv_set_pressure_bar != null) {
+        mergedInputs.psv_set_pressure_bar = Number(stationInputs.psv_set_pressure_bar);
+      }
       if (stationInputs.comp_op_count > 0) mergedInputs.comp_op_count = stationInputs.comp_op_count;
       else delete mergedInputs.comp_op_count;
 
@@ -219,44 +555,62 @@ export function renderStationTab(container) {
     calc_method: projState?.inputs?.calc_method,
     poly_eff: projState?.inputs?.poly_eff,
   });
+  let lastProcessSig = stationProcessSignature(projState?.inputs || {});
+  let lastDesignFlowUnit = projectFlowUnit;
+  let lastDesignPinUnit = projectPinUnit;
+  let lastDesignPoutUnit = projectPoutUnit;
   const unsubscribeStore = projectStore.subscribe(() => {
     const s = projectStore.getState();
     if (s?.inputs && !isLoading) {
-      const rawF = Number(s.inputs.flow || s.inputs.mass_flow || 0);
-      const fKgs = Math.round(toKgs(rawF, s.inputs.flow_unit || "kg/s", s.inputs.gas_comp) * 100) / 100;
+      let changed = false;
 
-      const pin = Math.round(convertPressureToBarA(s.inputs.p_in || 0, s.inputs.p_in_unit || "bar(a)") * 100) / 100;
-      const pout = Math.round(convertPressureToBarA(s.inputs.p_out || 0, s.inputs.p_out_unit || "bar(a)") * 100) / 100;
-      const tin = Math.round(convertTempToC(s.inputs.t_in ?? 25.0, s.inputs.t_in_unit || "°C") * 10) / 10;
+      // Sync from design inputs only when the process data itself changed.
+      // Station-local overrides must survive stationData/module/store updates.
+      const nextProcessSig = stationProcessSignature(s.inputs);
+      if (nextProcessSig !== lastProcessSig) {
+        lastProcessSig = nextProcessSig;
+        const rawF = Number(s.inputs.flow || s.inputs.mass_flow || 0);
+        const fKgs = Math.round(toKgs(rawF, s.inputs.flow_unit || "kg/s", s.inputs.gas_comp) * 1e6) / 1e6;
+        const pin = Math.round(convertPressureToBarA(s.inputs.p_in || 0, s.inputs.p_in_unit || "bar(a)") * 10000) / 10000;
+        const pout = Math.round(convertPressureToBarA(s.inputs.p_out || 0, s.inputs.p_out_unit || "bar(a)") * 10000) / 10000;
+        const tin = Math.round(convertTempToC(s.inputs.t_in ?? 25.0, s.inputs.t_in_unit || "°C") * 10) / 10;
+
+        if (fKgs > 0) stationInputs.mass_flow = fKgs;
+        if (pin > 0) stationInputs.p_in = pin;
+        if (pout > 0) stationInputs.p_out = pout;
+        if (Number.isFinite(tin)) stationInputs.t_in = tin;
+
+        // Follow design unit changes, but do not overwrite a local unit choice
+        // when only design values change.
+        const flowUnit = String(s.inputs.flow_unit || "kg/s");
+        const pinUnit = String(s.inputs.p_in_unit || "bar(a)");
+        const poutUnit = String(s.inputs.p_out_unit || "bar(a)");
+        if (flowUnit !== lastDesignFlowUnit) {
+          lastDesignFlowUnit = flowUnit;
+          if (STATION_FLOW_UNITS.includes(flowUnit)) stationInputs.mass_flow_unit = flowUnit;
+        }
+        if (pinUnit !== lastDesignPinUnit) {
+          lastDesignPinUnit = pinUnit;
+          if (STATION_PRESSURE_UNITS.includes(pinUnit)) stationInputs.p_in_unit = pinUnit;
+        }
+        if (poutUnit !== lastDesignPoutUnit) {
+          lastDesignPoutUnit = poutUnit;
+          if (STATION_PRESSURE_UNITS.includes(poutUnit)) {
+            stationInputs.p_out_unit = poutUnit === "bar(a)" ? "bar(g)" : poutUnit;
+          }
+        }
+
+        const nUnits = Number(s.inputs.num_units || 0);
+        if (nUnits > 0) stationInputs.comp_op_count = nUnits;
+        changed = true;
+      }
+
       const nextSig = JSON.stringify({
         gas_comp: s.inputs.gas_comp,
         eos_model: s.inputs.eos_model,
         calc_method: s.inputs.calc_method,
         poly_eff: s.inputs.poly_eff,
       });
-
-      let changed = false;
-      if (fKgs > 0 && Math.abs(fKgs - stationInputs.mass_flow) > 0.05) {
-        stationInputs.mass_flow = fKgs;
-        changed = true;
-      }
-      if (pin > 0 && Math.abs(pin - stationInputs.p_in) > 0.05) {
-        stationInputs.p_in = pin;
-        changed = true;
-      }
-      if (pout > 0 && Math.abs(pout - stationInputs.p_out) > 0.05) {
-        stationInputs.p_out = pout;
-        changed = true;
-      }
-      if (Number.isFinite(tin) && Math.abs(tin - stationInputs.t_in) > 0.1) {
-        stationInputs.t_in = tin;
-        changed = true;
-      }
-      const nUnits = Number(s.inputs.num_units || 0);
-      if (nUnits > 0 && nUnits !== stationInputs.comp_op_count) {
-        stationInputs.comp_op_count = nUnits;
-        changed = true;
-      }
       if (nextSig !== lastThermoSig) {
         lastThermoSig = nextSig;
         changed = true;
@@ -357,11 +711,22 @@ export function renderStationTab(container) {
     const previousState = last3dState;
     destroy3d();
     try {
-      active3dInstance = createStation3dView(mount, stationData, (equipKey) => {
-        selectedEquip = equipKey;
-        highlightSvgEquipment(equipKey);
-        updateInspectorDrawer();
-      }, { initialState: previousState || last3dState });
+      active3dInstance = createStation3dView(
+        mount,
+        stationData,
+        (equipKey) => {
+          selectedEquip = equipKey;
+          highlightSvgEquipment(equipKey);
+          updateInspectorDrawer();
+        },
+        {
+          initialState: previousState || last3dState,
+          onUpdateSafetyInputs: (updates) => {
+            Object.assign(stationInputs, updates || {});
+            fetchStationData();
+          },
+        }
+      );
     } catch (err) {
       console.error("3D sahne oluşturulamadı:", err);
       active3dInstance = null;
@@ -416,10 +781,19 @@ export function renderStationTab(container) {
     const { station_summary: sm, equipment_sizing: eq, nodes } = stationData;
     const activeGasComp = projectStore.getState().inputs?.gas_comp;
     const stationWarnings = collectStationWarnings(stationData);
+    const currentDesignSig = stationProcessSignature(projectStore.getState().inputs || {});
+    const isStationStale = !!lastProcessSig && lastProcessSig !== currentDesignSig;
 
     container.innerHTML = `
       <div style="flex: 1; padding: 16px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;">
-        
+        ${
+          isStationStale
+            ? `<div id="station-stale-banner" role="status" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: var(--radius-md); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #d97706; font-size: 12px; font-weight: 600;">
+                <span>⚠️ Tasarım sekmesindeki proses şartları değişti — istasyon modeli güncel değil.</span>
+                <button type="button" id="btn-station-sync-recalc" class="btn btn-sm btn-primary">Güncel Tasarımla Yeniden Boyutlandır</button>
+              </div>`
+            : ""
+        }
         <!-- Top Summary Cards -->
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px;">
           <div class="card" style="padding: 10px 14px;">
@@ -442,7 +816,7 @@ export function renderStationTab(container) {
               ${sm.pressure_ratio} : 1
             </div>
             <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
-              ${sm.suction_pressure_bar} → ${sm.discharge_pressure_bar} bar(a) • T_in: ${stationInputs.t_in.toFixed(1)}°C
+              ${stationPressureDisplay(sm.suction_pressure_bar, stationInputs.p_in_unit)} ${escapeHtml(stationInputs.p_in_unit)} → ${stationPressureDisplay(sm.discharge_pressure_bar, stationInputs.p_out_unit)} ${escapeHtml(stationInputs.p_out_unit)} • T_in: ${stationInputs.t_in.toFixed(1)}°C
             </div>
           </div>
 
@@ -546,14 +920,10 @@ export function renderStationTab(container) {
             viewMode === "3d"
               ? `<div id="station-3d-mount" style="width: 100%; height: clamp(440px, 74vh, 780px); border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--color-border); background: #7aa0dc;"></div>`
               : viewMode === "2d"
-              ? `<div class="station-canvas-container" style="min-height: 560px; position: relative;">
-                   ${renderStationSvg(stationData)}
-                 </div>`
+              ? renderStation2dViewport(stationData, uiStore.getState().lang)
               : `<div class="station-split-grid">
                    <div id="station-3d-mount" style="height: 100%; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--color-border); background: #7aa0dc;"></div>
-                   <div class="station-canvas-container" style="height: 100%; overflow: auto; position: relative;">
-                     ${renderStationSvg(stationData)}
-                   </div>
+                   ${renderStation2dViewport(stationData, uiStore.getState().lang)}
                  </div>`
           }
 
@@ -588,13 +958,13 @@ export function renderStationTab(container) {
             <tbody>
               ${nodes.map(n => `
                 <tr>
-                  <td style="font-family: var(--font-mono); font-weight: 700; color: ${n.color};">${n.id}</td>
-                  <td style="font-weight: 600;">${n.name}</td>
-                  <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">${n.pressure_bar.toFixed(2)}</td>
-                  <td style="text-align: right; font-family: var(--font-mono);">${n.temp_c.toFixed(1)}</td>
-                  <td style="text-align: right; font-family: var(--font-mono);">${n.flow_kgs.toFixed(1)}</td>
-                  <td><span class="badge badge-neutral" style="font-size: 10px;">${n.phase}</span></td>
-                  <td style="color: var(--color-text-secondary); font-size: 11px;">${n.state_desc}</td>
+                  <td style="font-family: var(--font-mono); font-weight: 700; color: ${escapeHtml(n.color)};">${escapeHtml(n.id)}</td>
+                  <td style="font-weight: 600;">${escapeHtml(n.name)}</td>
+                  <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">${Number(n.pressure_bar || 0).toFixed(2)}</td>
+                  <td style="text-align: right; font-family: var(--font-mono);">${Number(n.temp_c || 0).toFixed(1)}</td>
+                  <td style="text-align: right; font-family: var(--font-mono);">${Number(n.flow_kgs || 0).toFixed(1)}</td>
+                  <td><span class="badge badge-neutral" style="font-size: 10px;">${escapeHtml(n.phase)}</span></td>
+                  <td style="color: var(--color-text-secondary); font-size: 11px;">${escapeHtml(n.state_desc)}</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -609,6 +979,11 @@ export function renderStationTab(container) {
 
       </div>
     `;
+
+    container.querySelector("#btn-station-sync-recalc")?.addEventListener("click", () => {
+      syncStationInputsFromDesign();
+      fetchStationData();
+    });
 
     // Mode switching handlers
     container.querySelector("#btn-mode-3d")?.addEventListener("click", () => {
@@ -636,6 +1011,9 @@ export function renderStationTab(container) {
     if (viewMode === "3d" || viewMode === "split") {
       mount3dView();
     }
+    if (viewMode === "2d" || viewMode === "split") {
+      bindStation2dControls(container, uiStore.getState().lang);
+    }
 
     // Inspector Close handler
     container.querySelector("#btn-close-inspector")?.addEventListener("click", () => {
@@ -660,66 +1038,119 @@ export function renderStationTab(container) {
       render();
     });
 
+    const activeGas = projectStore.getState().inputs?.gas_comp;
+
     const flowSlider = container.querySelector("#slider-param-flow");
     const flowInput = container.querySelector("#input-param-flow");
     flowSlider?.addEventListener("input", (e) => {
-      const val = Number(e.target.value);
-      stationInputs.mass_flow = val;
-      if (flowInput) flowInput.value = val;
+      const kgs = Number(e.target.value);
+      stationInputs.mass_flow = kgs;
+      if (flowInput) {
+        flowInput.value = roundDisplay(stationFlowDisplay(kgs, stationInputs.mass_flow_unit, activeGas));
+      }
       triggerLiveUpdateDebounced();
     });
     flowInput?.addEventListener("change", (e) => {
-      const val = Number(e.target.value);
-      stationInputs.mass_flow = val;
-      if (flowSlider) flowSlider.value = val;
+      const kgs = stationFlowToKgs(e.target.value, stationInputs.mass_flow_unit, activeGas);
+      if (!Number.isFinite(kgs) || kgs <= 0) return;
+      stationInputs.mass_flow = Math.round(kgs * 1e6) / 1e6;
+      if (flowSlider) {
+        flowSlider.value = Math.min(Number(flowSlider.max), Math.max(Number(flowSlider.min), stationInputs.mass_flow));
+      }
       triggerLiveUpdateDebounced();
+    });
+
+    container.querySelector("#select-param-flow-unit")?.addEventListener("change", (e) => {
+      const typed = parseFloat(flowInput?.value);
+      const oldUnit = stationInputs.mass_flow_unit || "kg/s";
+      const shown = roundDisplay(stationFlowDisplay(stationInputs.mass_flow, oldUnit, activeGas));
+      // Only use the field value when it differs from the displayed canonical value;
+      // otherwise keep full precision to avoid unit round-trip drift.
+      if (Number.isFinite(typed) && typed > 0 && Math.abs(typed - Number(shown)) > 1e-6) {
+        const kgs = stationFlowToKgs(typed, oldUnit, activeGas);
+        if (Number.isFinite(kgs) && kgs > 0) stationInputs.mass_flow = Math.round(kgs * 1e6) / 1e6;
+      }
+      stationInputs.mass_flow_unit = e.target.value;
+      render();
     });
 
     const pinSlider = container.querySelector("#slider-param-pin");
     const pinInput = container.querySelector("#input-param-pin");
     pinSlider?.addEventListener("input", (e) => {
-      const val = Number(e.target.value);
-      stationInputs.p_in = val;
-      if (pinInput) pinInput.value = val;
-      if (stationInputs.p_out <= val) {
-        stationInputs.p_out = Math.round(val * 1.5);
+      const barA = Number(e.target.value);
+      stationInputs.p_in = barA;
+      if (pinInput) pinInput.value = stationPressureDisplay(barA, stationInputs.p_in_unit);
+      if (stationInputs.p_out <= barA) {
+        stationInputs.p_out = Math.round(barA * 1.5);
         const poutInput = container.querySelector("#input-param-pout");
         const poutSlider = container.querySelector("#slider-param-pout");
-        if (poutInput) poutInput.value = stationInputs.p_out;
+        if (poutInput) poutInput.value = stationPressureDisplay(stationInputs.p_out, stationInputs.p_out_unit);
         if (poutSlider) poutSlider.value = stationInputs.p_out;
       }
       triggerLiveUpdateDebounced();
     });
     pinInput?.addEventListener("change", (e) => {
-      const val = Number(e.target.value);
-      stationInputs.p_in = val;
-      if (pinSlider) pinSlider.value = val;
+      const barA = stationPressureToBarA(e.target.value, stationInputs.p_in_unit);
+      if (!Number.isFinite(barA) || barA <= 0) return;
+      stationInputs.p_in = Math.round(barA * 10000) / 10000;
+      if (stationInputs.p_out <= stationInputs.p_in) {
+        stationInputs.p_out = Math.round(stationInputs.p_in * 1.5 * 10000) / 10000;
+        const poutInput = container.querySelector("#input-param-pout");
+        const poutSlider = container.querySelector("#slider-param-pout");
+        if (poutInput) poutInput.value = stationPressureDisplay(stationInputs.p_out, stationInputs.p_out_unit);
+        if (poutSlider) poutSlider.value = stationInputs.p_out;
+      }
+      if (pinSlider) {
+        pinSlider.value = Math.min(Number(pinSlider.max), Math.max(Number(pinSlider.min), stationInputs.p_in));
+      }
       triggerLiveUpdateDebounced();
+    });
+
+    container.querySelector("#select-param-pin-unit")?.addEventListener("change", (e) => {
+      const typed = parseFloat(pinInput?.value);
+      const oldUnit = stationInputs.p_in_unit || "bar(a)";
+      const shown = Number(stationPressureDisplay(stationInputs.p_in, oldUnit));
+      if (Number.isFinite(typed) && typed > 0 && Math.abs(typed - shown) > 1e-6) {
+        const barA = stationPressureToBarA(typed, oldUnit);
+        if (Number.isFinite(barA) && barA > 0) stationInputs.p_in = Math.round(barA * 10000) / 10000;
+      }
+      stationInputs.p_in_unit = e.target.value;
+      render();
     });
 
     const poutSlider = container.querySelector("#slider-param-pout");
     const poutInput = container.querySelector("#input-param-pout");
     poutSlider?.addEventListener("input", (e) => {
-      const val = Number(e.target.value);
-      stationInputs.p_out = val;
-      if (poutInput) poutInput.value = val;
+      const barA = Number(e.target.value);
+      stationInputs.p_out = barA;
+      if (poutInput) poutInput.value = stationPressureDisplay(barA, stationInputs.p_out_unit);
       triggerLiveUpdateDebounced();
     });
     poutInput?.addEventListener("change", (e) => {
-      const val = Number(e.target.value);
-      stationInputs.p_out = val;
-      if (poutSlider) poutSlider.value = val;
+      const barA = stationPressureToBarA(e.target.value, stationInputs.p_out_unit);
+      if (!Number.isFinite(barA) || barA <= 0) return;
+      stationInputs.p_out = Math.round(barA * 10000) / 10000;
+      if (poutSlider) {
+        poutSlider.value = Math.min(Number(poutSlider.max), Math.max(Number(poutSlider.min), stationInputs.p_out));
+      }
       triggerLiveUpdateDebounced();
     });
 
-    container.querySelector("#select-param-comps")?.addEventListener("change", (e) => {
-      const v = parseInt(e.target.value, 10);
-      stationInputs.comp_op_count = v;
-      if (v > 0) {
-        projectStore.setState(s => ({
-          inputs: { ...s.inputs, num_units: v }
-        }));
+    container.querySelector("#select-param-pout-unit")?.addEventListener("change", (e) => {
+      const typed = parseFloat(poutInput?.value);
+      const oldUnit = stationInputs.p_out_unit || "bar(a)";
+      const shown = Number(stationPressureDisplay(stationInputs.p_out, oldUnit));
+      if (Number.isFinite(typed) && typed > 0 && Math.abs(typed - shown) > 1e-6) {
+        const barA = stationPressureToBarA(typed, oldUnit);
+        if (Number.isFinite(barA) && barA > 0) stationInputs.p_out = Math.round(barA * 10000) / 10000;
       }
+      stationInputs.p_out_unit = e.target.value;
+      render();
+    });
+
+    container.querySelector("#select-param-comps")?.addEventListener("change", (e) => {
+      // Station-level override; do not rewrite the design-tab num_units field.
+      stationInputs.comp_op_count = parseInt(e.target.value, 10);
       fetchStationData();
     });
 
@@ -750,6 +1181,53 @@ export function renderStationTab(container) {
       fetchStationData();
     });
 
+    // PSV / ESD sizing inputs (empty PSV set pressure = engine-derived)
+    container.querySelector("#input-param-psv-set")?.addEventListener("change", (e) => {
+      const raw = e.target.value.trim();
+      stationInputs.psv_set_pressure_bar = raw === "" ? "" : Number(raw);
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#input-param-psv-overpressure")?.addEventListener("change", (e) => {
+      stationInputs.psv_overpressure_pct = Number(e.target.value);
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#input-param-psv-backpressure")?.addEventListener("change", (e) => {
+      stationInputs.psv_back_pressure_bar = Number(e.target.value);
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#select-param-psv-type")?.addEventListener("change", (e) => {
+      stationInputs.psv_valve_type = e.target.value;
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#select-param-psv-count")?.addEventListener("change", (e) => {
+      stationInputs.psv_count = parseInt(e.target.value, 10);
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#select-param-psv-duty")?.addEventListener("change", (e) => {
+      stationInputs.psv_duty_count = parseInt(e.target.value, 10);
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#select-param-esd-count")?.addEventListener("change", (e) => {
+      stationInputs.esd_count = parseInt(e.target.value, 10);
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#select-param-esd-duty")?.addEventListener("change", (e) => {
+      stationInputs.esd_duty_count = parseInt(e.target.value, 10);
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#input-param-esd-dp")?.addEventListener("change", (e) => {
+      stationInputs.esd_allowable_dp_bar = Number(e.target.value);
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#select-param-esd-type")?.addEventListener("change", (e) => {
+      stationInputs.esd_valve_type = e.target.value;
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#input-param-esd-bdv-time")?.addEventListener("change", (e) => {
+      stationInputs.bdv_depressurization_time_min = Number(e.target.value);
+      triggerLiveUpdateDebounced();
+    });
+
     container.querySelector("#btn-apply-station-params")?.addEventListener("click", () => {
       fetchStationData();
     });
@@ -758,8 +1236,11 @@ export function renderStationTab(container) {
       const cur = projectStore.getState().inputs || {};
       stationInputs = {
         mass_flow: 120.0,
+        mass_flow_unit: stationInputs.mass_flow_unit || "kg/s",
         p_in: 45.0,
+        p_in_unit: stationInputs.p_in_unit || "bar(a)",
         p_out: 75.0,
+        p_out_unit: stationInputs.p_out_unit || "bar(a)",
         t_in: Math.round(convertTempToC(cur.t_in ?? 25.0, cur.t_in_unit || "°C") * 10) / 10,
         comp_op_count: 0,
         cyclone_op_count: 0,
@@ -769,6 +1250,17 @@ export function renderStationTab(container) {
         design_factor_F: 0.50,
         pipe_standard: "BOTAŞ",
         psl_level: "PSL2",
+        psv_set_pressure_bar: "",
+        psv_overpressure_pct: 10,
+        psv_back_pressure_bar: 1.01325,
+        psv_valve_type: "conventional",
+        psv_count: 2,
+        psv_duty_count: 1,
+        esd_count: 2,
+        esd_duty_count: 1,
+        esd_allowable_dp_bar: 0.5,
+        esd_valve_type: "full_bore_ball",
+        bdv_depressurization_time_min: 15,
       };
       fetchStationData();
     });
@@ -1020,7 +1512,7 @@ function renderStationSvg(data) {
       <!-- ══════════════════ 4. 48" DISCHARGE HEADER (X: 750 - 775) ══════════════════ -->
       <!-- Common Discharge Header Manifold -->
       <rect x="750" y="130" width="16" height="300" rx="6" fill="#b91c1c" stroke="#f87171" stroke-width="2" />
-      <text x="758" y="118" fill="#ef4444" font-size="9" font-weight="700" text-anchor="middle">${dischargeNps}" DISCHARGE HEADER</text>
+      <text x="758" y="108" fill="#ef4444" font-size="9" font-weight="700" text-anchor="middle">${dischargeNps}" DISCHARGE HEADER</text>
       <text x="758" y="445" fill="#ef4444" font-size="9" text-anchor="middle">${sm.discharge_pressure_bar} bar</text>
 
       <!-- Discharge Header Transmitters -->
@@ -1107,7 +1599,7 @@ function renderStationSvg(data) {
         <!-- Mainline Out -->
         <line x1="1110" y1="260" x2="1170" y2="260" stroke="#10b981" stroke-width="8" stroke-linecap="round" />
         <line x1="1110" y1="260" x2="1170" y2="260" stroke="#ecfdf5" stroke-width="3" class="station-flow-fast" />
-        <text x="1165" y="245" fill="#10b981" font-size="10" font-weight="700" text-anchor="end">${dischargeNps}" ANA HAT BASMA</text>
+        <text x="1165" y="232" fill="#10b981" font-size="10" font-weight="700" text-anchor="end">${dischargeNps}" ANA HAT BASMA</text>
         <text x="1165" y="280" fill="var(--color-text-secondary)" font-size="9" text-anchor="end">${eq.air_coolers.outlet_temp_c}°C • ${n8Pres} bar</text>
       </g>
 
@@ -1158,7 +1650,7 @@ function renderDynamicCyclonesSvg(count, info) {
     `;
   }
   svg += `
-    <text x="237" y="115" fill="#0ea5e9" font-size="8" font-weight="700" text-anchor="middle">SİKLON SEPERATÖRLER (${count})</text>
+    <text x="237" y="106" fill="#0ea5e9" font-size="8" font-weight="700" text-anchor="middle">SİKLON SEPERATÖRLER (${count})</text>
   </g>`;
   return svg;
 }
@@ -1198,7 +1690,7 @@ function renderDynamicFiltersSvg(count, info) {
     `;
   }
   svg += `
-    <text x="322" y="125" fill="#2563eb" font-size="8" font-weight="700" text-anchor="middle">KARTUŞ FİLTRELER (${count})</text>
+    <text x="322" y="106" fill="#2563eb" font-size="8" font-weight="700" text-anchor="middle">KARTUŞ FİLTRELER (${count})</text>
   </g>`;
   return svg;
 }
@@ -1488,25 +1980,58 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
       </div>
     `;
   } else if (key === "safety_relief") {
+    const psv = eq.safety_relief_and_blowdown || {};
+    const psvSizing = psv.psv_sizing || null;
     const psvWarn = [
-      ...(eq.safety_relief_and_blowdown.psv_sizing_warnings || []),
-      ...(eq.safety_relief_and_blowdown.psv_sizing?.warnings || []),
+      ...(psv.psv_sizing_warnings || []),
+      ...(psvSizing?.warnings || []),
     ];
-    title = "Emniyet Tahliye ve Acil Boşaltma (PSV & BDV)";
+    title = `PSV Emniyet Tahliye Vanaları (PSV-101..10${psv.psv_count || 2} • API 520 / 526)`;
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
-        <p><b>İşlev:</b> Aşırı basınçta (PSV) ve acil durdurma (ESD) senaryolarında istasyonu < 15 dakikada güvenle tahliye eder.</p>
+        <p><b>İşlev:</b> Gaz soğutucu çıkışı basma kollektörü üzerinde dikey yükselen (riser) API 520/526 emniyet tahliye vanaları.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
-          <tr><td>PSV Ayar Basıncı</td><td>${eq.safety_relief_and_blowdown.psv_set_pressure_bar} bar (1 Duty + 1 Standby)</td></tr>
-          ${eq.safety_relief_and_blowdown.psv_sizing ? `
-          <tr><td>API 520 Ön Boyutlandırma</td><td>${Number(eq.safety_relief_and_blowdown.psv_sizing.required_area_sqin).toFixed(3)} in² • Orifis ${escapeHtml(eq.safety_relief_and_blowdown.psv_sizing.selected_orifice || '-')} (${Number(eq.safety_relief_and_blowdown.psv_sizing.selected_orifice_area_sqin || 0).toFixed(3)} in²)</td></tr>
-          <tr><td>Orifis Yükü</td><td>%${Number(eq.safety_relief_and_blowdown.psv_sizing.orifice_loading_pct || 0).toFixed(1)} • ${escapeHtml(eq.safety_relief_and_blowdown.psv_sizing.flow_type || 'Gas')}</td></tr>
+          <tr><td>PSV Ayar Basıncı</td><td>${psv.psv_set_pressure_bar} bar(g) (%${psv.psv_overpressure_pct || 10} aşırı basınç)</td></tr>
+          <tr><td>Kurulu / Eşzamanlı PSV Sayısı</td><td>${psv.psv_count || 2} Adet (${psv.psv_duty_count || 1} Duty + ${Math.max(0, (psv.psv_count || 2) - (psv.psv_duty_count || 1))} Standby)</td></tr>
+          ${psvSizing ? `
+          <tr><td>Gerekli Alan (Toplam / Vana Başına)</td><td>${Number(psvSizing.required_area_total_sqin || psvSizing.required_area_sqin).toFixed(3)} in² / ${Number(psvSizing.required_area_sqin).toFixed(3)} in² (Ø${Number(psvSizing.required_diameter_in || 0).toFixed(2)}")</td></tr>
+          <tr><td>Seçilen API 526 Orifis &amp; Flanş</td><td>${escapeHtml(psvSizing.selected_orifice || '-')} (${Number(psvSizing.selected_orifice_area_sqin || 0).toFixed(3)} in² • ${escapeHtml(psvSizing.inlet_flange_in || '8"')} × ${escapeHtml(psvSizing.outlet_flange_in || '10"')})</td></tr>
+          <tr><td>Önerilen Min. PSV Sayısı</td><td>${psvSizing.recommended_duty_count || 1} Duty (Toplam ${psvSizing.recommended_total_count || 2})</td></tr>
           ` : ''}
-          <tr><td>Tahliye Kapasitesi</td><td>%${eq.safety_relief_and_blowdown.relief_capacity_pct} İstasyon Maks. Debisi</td></tr>
-          <tr><td>BDV Acil Boşaltma</td><td>${eq.safety_relief_and_blowdown.depressurization_time_min} Dakika (API 521 Standart)</td></tr>
-          <tr><td>Baca Tipi</td><td>Emergency Vent at Safe Height / Flame Arrester</td></tr>
         </table>
         ${renderDrawerWarnings(psvWarn)}
+      </div>
+    `;
+  } else if (key === "esd_valves") {
+    const esd = eq.esd_sizing || {};
+    const suct = esd.suction || {};
+    const disch = esd.discharge || {};
+    const esdWarn = esd.warnings || [];
+    title = `ESD / BDV Acil Kapatma ve Boşaltma Vanaları (ESD-101..10${esd.esd_count || 2} • IEC 60534)`;
+    content = `
+      <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
+        <p><b>İşlev:</b> Basma kollektörü üzerinde dikey yükselen acil boşaltma (BDV) ve ana hat acil kapatma (ESDV) vanaları.</p>
+        <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
+          <tr><td>Kurulu / Aktif ESD Sayısı</td><td>${esd.esd_count || 2} Adet (${esd.esd_duty_count || 1} Aktif) • İzin Verilen ΔP: ${esd.allowable_dp_bar || 0.5} bar</td></tr>
+          <tr><td>Basma ESD Aerodinamik / Hat Çapı</td><td>${disch.calculated_size_in || '-'}" (DN${disch.calculated_dn_mm || '-'}) / Hat: ${disch.selected_size_in || '-'}" • Cv ${Number(disch.required_cv || 0).toFixed(0)}</td></tr>
+          <tr><td>Emiş ESD Aerodinamik / Hat Çapı</td><td>${suct.calculated_size_in || '-'}" (DN${suct.calculated_dn_mm || '-'}) / Hat: ${suct.selected_size_in || '-'}" • Cv ${Number(suct.required_cv || 0).toFixed(0)}</td></tr>
+          <tr><td>Önerilen Paralel ESD Sayısı</td><td>${disch.recommended_duty_count || 1} Aktif Vana</td></tr>
+        </table>
+        ${renderDrawerWarnings(esdWarn)}
+      </div>
+    `;
+  } else if (key === "ultrasonic_meter") {
+    const usm = eq.ultrasonic_meter || {};
+    title = `${usm.tag || "FT-401"} • Ultrasonic Gas Flow Meter (AGA Report No. 9)`;
+    content = `
+      <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
+        <p><b>İşlev:</b> Gaz soğutucu ve emniyet manifoldu sonrasında istasyon çıkış gaz debisini 8-path chordal ultrasonik teknolojiyle ölçer.</p>
+        <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
+          <tr><td>Sayaç Çapı &amp; Tipi</td><td>${escapeHtml(usm.nominal_size_in || '40"')} • ${escapeHtml(usm.meter_type || '8-Path Chordal AGA-9')}</td></tr>
+          <tr><td>Kütlesel / Gerçek Hacimsel Debi</td><td>${usm.mass_flow_kgs || sm.total_mass_flow_kgs} kg/s • ${usm.actual_volumetric_flow_m3h || '-'} m³/h (ACMH)</td></tr>
+          <tr><td>Gaz Hızı &amp; Ses Hızı</td><td>${usm.gas_velocity_ms || '-'} m/s • Ses Hızı: ${usm.speed_of_sound_ms || '-'} m/s</td></tr>
+          <tr><td>Doğruluk &amp; Düz Boru Mesafesi</td><td>${escapeHtml(usm.accuracy_class || '±0.15%')} • ${escapeHtml(usm.straight_run_requirement || '10D / 5D')}</td></tr>
+        </table>
       </div>
     `;
   } else if (key === "pig_launcher") {
@@ -1666,6 +2191,12 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp) {
   const mmscmdEst = convertFlowWithMW(inputs.mass_flow, "kg/s", "MMSCMD", gasComp).toFixed(2);
   const mmscmdMin = convertFlowWithMW(20, "kg/s", "MMSCMD", gasComp).toFixed(1);
   const mmscmdMax = convertFlowWithMW(300, "kg/s", "MMSCMD", gasComp).toFixed(1);
+  const flowUnit = inputs.mass_flow_unit || "kg/s";
+  const pinUnit = inputs.p_in_unit || "bar(a)";
+  const poutUnit = inputs.p_out_unit || "bar(a)";
+  const flowDisplay = roundDisplay(stationFlowDisplay(inputs.mass_flow, flowUnit, gasComp));
+  const pinDisplay = stationPressureDisplay(inputs.p_in, pinUnit);
+  const poutDisplay = stationPressureDisplay(inputs.p_out, poutUnit);
   return `
     <div class="card" style="padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md);">
       
@@ -1681,13 +2212,13 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp) {
 
         <div style="display: flex; align-items: center; gap: 12px; font-size: 11px;">
           <div style="color: var(--color-text-secondary);">
-            Debi: <strong style="color: #38bdf8; font-family: var(--font-mono);">${inputs.mass_flow.toFixed(1)} kg/s</strong> <span style="opacity: 0.7;">(~${mmscmdEst} MMSCMD)</span>
+            Debi: <strong style="color: #38bdf8; font-family: var(--font-mono);">${flowDisplay} ${escapeHtml(flowUnit)}</strong> <span style="opacity: 0.7;">(~${mmscmdEst} MMSCMD)</span>
           </div>
           <div style="color: var(--color-text-secondary);">
-            Emiş: <strong style="color: #34d399; font-family: var(--font-mono);">${inputs.p_in.toFixed(1)} bar(a)</strong>
+            Emiş: <strong style="color: #34d399; font-family: var(--font-mono);">${pinDisplay} ${escapeHtml(pinUnit)}</strong>
           </div>
           <div style="color: var(--color-text-secondary);">
-            Basma: <strong style="color: #f59e0b; font-family: var(--font-mono);">${inputs.p_out.toFixed(1)} bar(a)</strong>
+            Basma: <strong style="color: #f59e0b; font-family: var(--font-mono);">${poutDisplay} ${escapeHtml(poutUnit)}</strong>
           </div>
           <div style="color: var(--color-text-secondary);">
             Çelik: <strong style="color: #a78bfa;">${inputs.pipe_material}</strong>
@@ -1704,43 +2235,61 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp) {
           
           <!-- Mass Flow Controller -->
           <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <label style="font-size: 11px; font-weight: 600; color: var(--color-text);">Kütlesel Debi (kg/s)</label>
-              <input type="number" id="input-param-flow" min="10" max="400" step="1" value="${inputs.mass_flow}" style="width: 65px; font-size: 11px; padding: 2px 4px; text-align: right; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; gap: 6px;">
+              <label style="font-size: 11px; font-weight: 600; color: var(--color-text);">Gaz Debisi</label>
+              <div style="display: flex; gap: 4px; align-items: center;">
+                <input type="number" id="input-param-flow" step="any" value="${flowDisplay}" style="width: 80px; font-size: 11px; padding: 2px 4px; text-align: right; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                <select id="select-param-flow-unit" class="form-select" style="width: 78px; height: 24px; font-size: 10px; padding: 0 4px;" aria-label="Debi birimi">
+                  ${STATION_FLOW_UNITS.map((u) => `<option value="${u}" ${flowUnit === u ? "selected" : ""}>${u}</option>`).join("")}
+                </select>
+              </div>
             </div>
-            <input type="range" id="slider-param-flow" min="20" max="300" step="5" value="${inputs.mass_flow}" style="width: 100%; cursor: pointer;" />
+            <input type="range" id="slider-param-flow" min="20" max="300" step="5" value="${inputs.mass_flow}" style="width: 100%; cursor: pointer;" aria-label="Debi kaydırıcısı (kg/s)" />
             <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--color-text-secondary); margin-top: 2px;">
-              <span>20 kg/s (${mmscmdMin} MMSCMD)</span>
+              <span>20 kg/s</span>
               <span>150 kg/s</span>
-              <span>300 kg/s (${mmscmdMax} MMSCMD)</span>
+              <span>300 kg/s</span>
+            </div>
+            <div style="font-size: 9px; color: var(--color-text-secondary); margin-top: 2px;">
+              Kaydırıcı: kg/s • ${mmscmdMin}–${mmscmdMax} MMSCMD
             </div>
           </div>
 
           <!-- Suction Pressure Controller -->
           <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <label style="font-size: 11px; font-weight: 600; color: var(--color-text);">Emiş Basıncı P_in (bar a)</label>
-              <input type="number" id="input-param-pin" min="20" max="65" step="0.5" value="${inputs.p_in}" style="width: 65px; font-size: 11px; padding: 2px 4px; text-align: right; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; gap: 6px;">
+              <label style="font-size: 11px; font-weight: 600; color: var(--color-text);">Emiş Basıncı P_in</label>
+              <div style="display: flex; gap: 4px; align-items: center;">
+                <input type="number" id="input-param-pin" step="any" value="${pinDisplay}" style="width: 72px; font-size: 11px; padding: 2px 4px; text-align: right; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                <select id="select-param-pin-unit" class="form-select" style="width: 70px; height: 24px; font-size: 10px; padding: 0 4px;" aria-label="Emiş basıncı birimi">
+                  ${STATION_PRESSURE_UNITS.map((u) => `<option value="${u}" ${pinUnit === u ? "selected" : ""}>${u}</option>`).join("")}
+                </select>
+              </div>
             </div>
-            <input type="range" id="slider-param-pin" min="25" max="60" step="1" value="${inputs.p_in}" style="width: 100%; cursor: pointer;" />
+            <input type="range" id="slider-param-pin" min="25" max="60" step="1" value="${inputs.p_in}" style="width: 100%; cursor: pointer;" aria-label="Emiş basıncı kaydırıcısı (bar a)" />
             <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--color-text-secondary); margin-top: 2px;">
-              <span>25 bar</span>
-              <span>45 bar (Standart)</span>
-              <span>60 bar</span>
+              <span>25 bar(a)</span>
+              <span>45 bar(a) (Standart)</span>
+              <span>60 bar(a)</span>
             </div>
           </div>
 
           <!-- Discharge Pressure Controller -->
           <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <label style="font-size: 11px; font-weight: 600; color: var(--color-text);">Basma Basıncı P_out (bar a)</label>
-              <input type="number" id="input-param-pout" min="50" max="95" step="0.5" value="${inputs.p_out}" style="width: 65px; font-size: 11px; padding: 2px 4px; text-align: right; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; gap: 6px;">
+              <label style="font-size: 11px; font-weight: 600; color: var(--color-text);">Basma Basıncı P_out</label>
+              <div style="display: flex; gap: 4px; align-items: center;">
+                <input type="number" id="input-param-pout" step="any" value="${poutDisplay}" style="width: 72px; font-size: 11px; padding: 2px 4px; text-align: right; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                <select id="select-param-pout-unit" class="form-select" style="width: 70px; height: 24px; font-size: 10px; padding: 0 4px;" aria-label="Basma basıncı birimi">
+                  ${STATION_PRESSURE_UNITS.map((u) => `<option value="${u}" ${poutUnit === u ? "selected" : ""}>${u}</option>`).join("")}
+                </select>
+              </div>
             </div>
-            <input type="range" id="slider-param-pout" min="50" max="90" step="1" value="${inputs.p_out}" style="width: 100%; cursor: pointer;" />
+            <input type="range" id="slider-param-pout" min="50" max="90" step="1" value="${inputs.p_out}" style="width: 100%; cursor: pointer;" aria-label="Basma basıncı kaydırıcısı (bar a)" />
             <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--color-text-secondary); margin-top: 2px;">
-              <span>50 bar</span>
-              <span>75 bar (Standart)</span>
-              <span>90 bar</span>
+              <span>50 bar(a)</span>
+              <span>75 bar(a) (Standart)</span>
+              <span>90 bar(a)</span>
             </div>
           </div>
 
@@ -1807,6 +2356,88 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp) {
                 <option value="PSL2" ${inputs.psl_level === "PSL2" ? "selected" : ""}>PSL2</option>
                 <option value="PSL1" ${inputs.psl_level === "PSL1" ? "selected" : ""}>PSL1</option>
               </select>
+            </div>
+          </div>
+
+          <!-- Separate PSV & ESD Safety Valve Sizing Cards -->
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px;">
+            <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <span style="font-size: 11px; font-weight: 700; color: var(--color-text);">🛡️ PSV Sayı &amp; Çap Hesabı</span>
+                <span class="badge badge-info" style="font-size: 9px;">API 520 / 526</span>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  PSV Set (bar g)
+                  <input type="number" id="input-param-psv-set" step="0.1" value="${inputs.psv_set_pressure_bar ?? ""}" placeholder="Oto: ${roundDisplay(inputs.p_out * 1.1)}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Aşırı Basınç (%)
+                  <input type="number" id="input-param-psv-overpressure" step="1" min="1" max="25" value="${inputs.psv_overpressure_pct}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Karşı Basınç (bar a)
+                  <input type="number" id="input-param-psv-backpressure" step="0.01" value="${inputs.psv_back_pressure_bar}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Toplam PSV Adedi
+                  <select id="select-param-psv-count" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);">
+                    ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${Number(inputs.psv_count) === n ? "selected" : ""}>${n} Adet</option>`).join("")}
+                  </select>
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Eşzamanlı Duty PSV
+                  <select id="select-param-psv-duty" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);">
+                    ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${Number(inputs.psv_duty_count) === n ? "selected" : ""}>${n} Duty</option>`).join("")}
+                  </select>
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  PSV Tipi
+                  <select id="select-param-psv-type" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);">
+                    <option value="conventional" ${inputs.psv_valve_type === "conventional" ? "selected" : ""}>Conventional</option>
+                    <option value="balanced_bellows" ${inputs.psv_valve_type === "balanced_bellows" ? "selected" : ""}>Balanced Bellows</option>
+                    <option value="pilot" ${inputs.psv_valve_type === "pilot" ? "selected" : ""}>Pilot Operated</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <span style="font-size: 11px; font-weight: 700; color: var(--color-text);">🚨 ESD / BDV Sayı &amp; Çap Hesabı</span>
+                <span class="badge badge-warning" style="font-size: 9px;">IEC 60534 / API 521</span>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Toplam ESD Adedi
+                  <select id="select-param-esd-count" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);">
+                    ${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${Number(inputs.esd_count || 2) === n ? "selected" : ""}>${n} Adet</option>`).join("")}
+                  </select>
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Aktif Duty ESD
+                  <select id="select-param-esd-duty" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);">
+                    ${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${Number(inputs.esd_duty_count || 1) === n ? "selected" : ""}>${n} Aktif</option>`).join("")}
+                  </select>
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  İzin Verilen ΔP (bar)
+                  <input type="number" id="input-param-esd-dp" step="0.05" min="0.05" value="${inputs.esd_allowable_dp_bar}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  ESD Vana Tipi
+                  <select id="select-param-esd-type" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);">
+                    <option value="full_bore_ball" ${inputs.esd_valve_type === "full_bore_ball" ? "selected" : ""}>Full-Bore Ball</option>
+                    <option value="ball" ${inputs.esd_valve_type === "ball" ? "selected" : ""}>Ball</option>
+                    <option value="butterfly" ${inputs.esd_valve_type === "butterfly" ? "selected" : ""}>Butterfly</option>
+                    <option value="gate" ${inputs.esd_valve_type === "gate" ? "selected" : ""}>Gate</option>
+                  </select>
+                </label>
+                <label style="grid-column: span 2; font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Acil Boşaltma Süresi (dk)
+                  <input type="number" id="input-param-esd-bdv-time" step="1" min="1" max="60" value="${inputs.bdv_depressurization_time_min ?? 15}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+              </div>
             </div>
           </div>
 

@@ -44,7 +44,69 @@ function collectDesignWarnings(proj, res) {
   return items;
 }
 
+export function buildResultsSummaryText(proj) {
+  const inp = proj?.inputs || {};
+  const res = proj?.results || {};
+  const units = Array.isArray(proj?.selectedUnits) ? proj.selectedUnits : [];
+  const top = units[0] || null;
+
+  const pr = Number(res.pressure_ratio || 0);
+  const powerKw = Number(res.total_shaft_power_kw ?? res.shaft_power_kw ?? 0);
+  const headKjKg = Number(res.polytropic_head_kj_kg ?? res.head_kj_kg ?? 0);
+  const tOutC = Number(res.t_out_c ?? 0);
+  const zAvg = Number(res.z_avg ?? 1);
+
+  const lines = [
+    `KASP Mühendislik Özeti — ${inp.project_name || "Yeni Proje"}`,
+    `EOS / Metot: ${String(inp.eos_model || "coolprop").toUpperCase()} | ${inp.calc_method || "-"}`,
+    `Basınç: ${inp.p_in ?? "-"} ${inp.p_in_unit || "bar(a)"} → ${inp.p_out ?? "-"} ${inp.p_out_unit || "bar(a)"} (PR = ${pr.toFixed(3)})`,
+    `Sıcaklık: ${inp.t_in ?? "-"} ${inp.t_in_unit || "°C"} → ${tOutC.toFixed(1)} °C`,
+    `Debi: ${inp.flow ?? "-"} ${inp.flow_unit || "kg/s"} (${inp.num_units || 1} Ünite)`,
+    `Toplam Şaft Gücü: ${powerKw.toFixed(1)} kW | Politropik Yük: ${headKjKg.toFixed(1)} kJ/kg | Z_avg: ${zAvg.toFixed(3)}`,
+  ];
+  if (top) {
+    const mfr = top.manufacturer ? `${top.manufacturer} ` : "";
+    const mdl = top.model || top.name || "-";
+    const siteKw = Number(top.site_power_kw ?? top.available_power_kw ?? top.iso_power_kw ?? 0);
+    const margin = Number(top.power_margin_pct !== undefined ? top.power_margin_pct : (top.power_margin || 0) * 100);
+    lines.push(`Önerilen 1. Türbin: ${mfr}${mdl} (${siteKw.toFixed(0)} kW, Marj: %${margin.toFixed(1)})`);
+  }
+  return lines.join("\n");
+}
+
+export function filterAndSortTurbines(units, { query = "", oem = "ALL", sort = "score_desc" } = {}) {
+  const q = String(query || "").trim().toLowerCase();
+  const filtered = (Array.isArray(units) ? units : []).filter((u) => {
+    const mfr = String(u.manufacturer || "Genel");
+    if (oem !== "ALL" && mfr !== oem) return false;
+    if (!q) return true;
+    const model = String(u.model || u.name || "").toLowerCase();
+    const typ = String(u.type || "").toLowerCase();
+    return model.includes(q) || mfr.toLowerCase().includes(q) || typ.includes(q);
+  });
+  const getEff = (u) => {
+    const hr = Number(u.site_heat_rate_kj_kwh || u.iso_heat_rate_kj_kwh || 0);
+    return Number(u.site_thermal_efficiency_pct || (hr > 0 ? 360000.0 / hr : 0));
+  };
+  const getMargin = (u) =>
+    Number(u.power_margin_pct !== undefined ? u.power_margin_pct : (u.power_margin || 0) * 100);
+  const getSitePower = (u) => Number(u.site_power_kw || u.available_power_kw || u.iso_power_kw || 0);
+  const getScore = (u) => Number(u.selection_score || 85.0);
+
+  return filtered.slice().sort((a, b) => {
+    if (sort === "eff_desc") return getEff(b) - getEff(a);
+    if (sort === "margin_asc") return getMargin(a) - getMargin(b);
+    if (sort === "power_desc") return getSitePower(b) - getSitePower(a);
+    return getScore(b) - getScore(a);
+  });
+}
+
 export function renderResultsView(container) {
+  let turbineQuery = "";
+  let turbineOem = "ALL";
+  let turbineSort = "score_desc";
+  let turbineShowAll = false;
+
   function update() {
     const proj = projectStore.getState();
     const ui = uiStore.getState();
@@ -753,6 +815,22 @@ export function renderResultsView(container) {
 
     container.innerHTML = `
       ${
+        proj.isResultsStale
+          ? `
+          <div id="stale-results-banner" role="status" aria-live="polite" style="margin-bottom: 12px; padding: 9px 14px; border-radius: var(--radius-md); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.45); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div style="font-size: 12px; font-weight: 600; color: var(--color-text); display: flex; align-items: center; gap: 8px;">
+              <span style="color: #d97706;">⚠️</span>
+              <span>${escapeHtml(t("stale_results_title", ui.lang))}</span>
+            </div>
+            <button type="button" id="btn-recalculate-stale" class="btn btn-sm btn-primary" ${proj.isCalculating ? "disabled" : ""}>
+              ${icon("zap", 13)}
+              <span>${escapeHtml(t("stale_results_cta", ui.lang))}</span>
+            </button>
+          </div>
+          `
+          : ""
+      }
+      ${
         showWarningBanner
           ? `
           <div id="results-warnings-banner" role="alert" aria-live="polite" style="margin-bottom: 12px; padding: 10px 14px; border-radius: var(--radius-md); background: ${bannerSeverityDanger ? 'rgba(239, 68, 68, 0.10)' : 'rgba(245, 158, 11, 0.10)'}; border: 1px solid ${bannerSeverityDanger ? 'rgba(239, 68, 68, 0.40)' : 'rgba(245, 158, 11, 0.40)'}; color: var(--color-text);">
@@ -880,10 +958,16 @@ export function renderResultsView(container) {
             </div>
           </div>
         </div>
-        <button id="btn-goto-station-3d" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap;">
-          <span>3D Tesis Modeline Git</span>
-          ${icon("arrowRight", 14)}
-        </button>
+        <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+          <button type="button" id="btn-copy-results-summary" class="btn btn-sm" style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap;">
+            ${icon("copy", 14)}
+            <span>${escapeHtml(t("btn_copy_summary", ui.lang))}</span>
+          </button>
+          <button id="btn-goto-station-3d" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap;">
+            <span>3D Tesis Modeline Git</span>
+            ${icon("arrowRight", 14)}
+          </button>
+        </div>
       </div>
 
       <!-- Detail Analysis Subtabs -->
@@ -921,7 +1005,7 @@ export function renderResultsView(container) {
         <div class="card-header" style="flex-wrap: wrap; gap: 8px;">
           <div class="card-title">
             ${icon("sliders", 16, "text-primary")}
-            <span>${t("turbines_title", ui.lang)} (${units.length} Uygun Model)</span>
+            <span>${t("turbines_title", ui.lang)} (<span id="turbine-count-label">${units.length}</span> Uygun Model)</span>
           </div>
           <div style="font-size: 11px; color: var(--color-text-secondary);">
             ISO 2314 Saha Düzeltmeli & API 617 %4 Güç Marjı Dahil
@@ -939,26 +1023,66 @@ export function renderResultsView(container) {
           </div>
         </div>
 
-        <div style="max-height: 290px; overflow-y: auto;">
+        <!-- Turbine Search, OEM Filter, Sort & Show-All Toolbar -->
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px;">
+          <input
+            type="search"
+            id="turbine-search-input"
+            class="form-input"
+            value="${escapeHtml(turbineQuery)}"
+            placeholder="${escapeHtml(t("turbine_search_placeholder", ui.lang))}"
+            aria-label="${escapeHtml(t("turbine_search_placeholder", ui.lang))}"
+            style="flex: 1 1 200px; min-width: 170px; height: 30px; font-size: 11.5px;"
+          />
+          <select id="turbine-oem-filter" class="form-select" aria-label="${escapeHtml(t("turbine_all_oems", ui.lang))}" style="width: auto; min-width: 140px; height: 30px; font-size: 11.5px;">
+            <option value="ALL">${escapeHtml(t("turbine_all_oems", ui.lang))}</option>
+            ${Array.from(new Set(units.map((u) => String(u.manufacturer || "Genel")))).sort().map((mfr) =>
+              `<option value="${escapeHtml(mfr)}" ${turbineOem === mfr ? "selected" : ""}>${escapeHtml(mfr)}</option>`
+            ).join("")}
+          </select>
+          <select id="turbine-sort-select" class="form-select" aria-label="Sıralama ölçütü" style="width: auto; min-width: 155px; height: 30px; font-size: 11.5px;">
+            <option value="score_desc" ${turbineSort === "score_desc" ? "selected" : ""}>Sırala: Seçim Skoru (↓)</option>
+            <option value="eff_desc" ${turbineSort === "eff_desc" ? "selected" : ""}>Sırala: Isıl Verim ηth (↓)</option>
+            <option value="margin_asc" ${turbineSort === "margin_asc" ? "selected" : ""}>Sırala: API 617 Marjı (↑)</option>
+            <option value="power_desc" ${turbineSort === "power_desc" ? "selected" : ""}>Sırala: Saha Gücü (↓)</option>
+          </select>
+          <button
+            type="button"
+            id="btn-turbine-show-all"
+            class="btn btn-sm"
+            aria-pressed="${turbineShowAll ? "true" : "false"}"
+            style="height: 30px; font-size: 11px; white-space: nowrap; ${units.length <= 20 ? "display: none;" : ""}"
+          >${escapeHtml(turbineShowAll ? t("turbine_show_top20", ui.lang) : `${t("turbine_show_all", ui.lang)} (${units.length})`)}</button>
+          <button
+            type="button"
+            id="btn-turbine-clear-filters"
+            class="btn btn-sm"
+            style="height: 30px; font-size: 11px; display: ${turbineQuery || turbineOem !== "ALL" ? "inline-flex" : "none"};"
+          >✕ Temizle</button>
+        </div>
+
+        <div id="turbine-table-region" tabindex="0" role="region" aria-label="${escapeHtml(t("turbines_title", ui.lang))}" style="max-height: 320px; overflow: auto;">
           <table class="kasp-table">
             <thead>
               <tr>
-                <th>Üretici & Model</th>
-                <th>Tip</th>
-                <th style="text-align: right;">Tek Ünite Saha Gücü</th>
-                <th style="text-align: right;">ISO Gücü</th>
-                <th style="text-align: right;">Gereken Güç / Ünite</th>
-                <th style="text-align: right;">API 617 Marjı</th>
-                <th style="text-align: right;">${numUnits} Tren İstasyon Toplamı</th>
-                <th style="text-align: right;">Isı Tüketimi (Site)</th>
-                <th style="text-align: right;">Yıllık OPEX (Yakıt+CO₂)</th>
-                <th style="text-align: center;">Durum & Skor</th>
+                <th scope="col">Üretici & Model</th>
+                <th scope="col">Tip</th>
+                <th scope="col" style="text-align: right;">Tek Ünite Saha Gücü</th>
+                <th scope="col" style="text-align: right;">ISO Gücü</th>
+                <th scope="col" style="text-align: right;">Gereken Güç / Ünite</th>
+                <th scope="col" style="text-align: right;">API 617 Marjı</th>
+                <th scope="col" style="text-align: right;">${numUnits} Tren İstasyon Toplamı</th>
+                <th scope="col" style="text-align: right;">Isı Tüketimi (Site)</th>
+                <th scope="col" style="text-align: right;">Yıllık OPEX (Yakıt+CO₂)</th>
+                <th scope="col" style="text-align: center;">Durum & Skor</th>
               </tr>
             </thead>
-            <tbody>
-              ${
-                units.length > 0
-                  ? units.slice(0, 20).map(u => {
+            <tbody id="turbine-table-tbody">
+              ${(() => {
+                const ordered = filterAndSortTurbines(units, { query: turbineQuery, oem: turbineOem, sort: turbineSort });
+                const visibleUnits = turbineShowAll ? ordered : ordered.slice(0, 20);
+                return visibleUnits.length > 0
+                  ? visibleUnits.map(u => {
                     const sitePower = Number(u.site_power_kw || u.available_power_kw || u.iso_power_kw || 0);
                     const isoPower = Number(u.iso_power_kw || 0);
                     const marginPct = Number(u.power_margin_pct !== undefined ? u.power_margin_pct : ((u.power_margin || 0) * 100));
@@ -1047,8 +1171,8 @@ export function renderResultsView(container) {
                       </tr>
                     `;
                   }).join("")
-                  : `<tr><td colspan="10" style="text-align: center; color: var(--color-text-secondary); padding: 16px;">Kriterlere uyan türbin bulunamadı.</td></tr>`
-              }
+                  : `<tr><td colspan="10" style="text-align: center; color: var(--color-text-secondary); padding: 16px;">Kriterlere uyan türbin bulunamadı.</td></tr>`;
+              })()}
             </tbody>
           </table>
         </div>
@@ -1076,18 +1200,161 @@ export function renderResultsView(container) {
       });
     });
 
-    // Bind OEM turbine efficiency sync buttons
-    container.querySelectorAll(".turbine-apply-eff-btn").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const effVal = parseFloat(btn.getAttribute("data-eff"));
-        const modelName = btn.getAttribute("data-model") || "Türbin";
-        if (!Number.isFinite(effVal) || effVal <= 0) return;
-        updateInput("therm_eff", effVal);
-        showToast(`${modelName} saha ısıl verimi (%${effVal.toFixed(1)}) uygulandı; yakıt hesabı güncelleniyor...`, "info");
-        try {
-          await runDesignCalculation();
-        } catch (_) {}
+    // Bind OEM turbine efficiency sync buttons & toolbar controls
+    function bindTurbineEffButtons() {
+      container.querySelectorAll(".turbine-apply-eff-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const effVal = parseFloat(btn.getAttribute("data-eff"));
+          const modelName = btn.getAttribute("data-model") || "Türbin";
+          if (!Number.isFinite(effVal) || effVal <= 0) return;
+          updateInput("therm_eff", effVal);
+          showToast(`${modelName} saha ısıl verimi (%${effVal.toFixed(1)}) uygulandı; yakıt hesabı güncelleniyor...`, "info");
+          try {
+            await runDesignCalculation();
+          } catch (_) {}
+        });
       });
+    }
+    bindTurbineEffButtons();
+
+    function refreshTurbineRowsInPlace() {
+      const tbody = container.querySelector("#turbine-table-tbody");
+      const countEl = container.querySelector("#turbine-count-label");
+      const showAllBtn = container.querySelector("#btn-turbine-show-all");
+      const clearBtn = container.querySelector("#btn-turbine-clear-filters");
+      if (!tbody) return;
+      const ordered = filterAndSortTurbines(units, { query: turbineQuery, oem: turbineOem, sort: turbineSort });
+      const visible = turbineShowAll ? ordered : ordered.slice(0, 20);
+      if (countEl) {
+        countEl.textContent = ordered.length === units.length ? String(units.length) : `${ordered.length} / ${units.length}`;
+      }
+      if (showAllBtn) {
+        showAllBtn.style.display = ordered.length > 20 ? "inline-flex" : "none";
+        showAllBtn.setAttribute("aria-pressed", turbineShowAll ? "true" : "false");
+        showAllBtn.textContent = turbineShowAll ? t("turbine_show_top20", ui.lang) : `${t("turbine_show_all", ui.lang)} (${ordered.length})`;
+      }
+      if (clearBtn) {
+        clearBtn.style.display = turbineQuery || turbineOem !== "ALL" ? "inline-flex" : "none";
+      }
+      if (visible.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--color-text-secondary); padding: 16px;">Kriterlere uyan türbin bulunamadı.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = visible.map(u => {
+        const sitePower = Number(u.site_power_kw || u.available_power_kw || u.iso_power_kw || 0);
+        const isoPower = Number(u.iso_power_kw || 0);
+        const marginPct = Number(u.power_margin_pct !== undefined ? u.power_margin_pct : ((u.power_margin || 0) * 100));
+        const stationTotalPwrMw = (sitePower * numUnits) / 1000;
+        const heatRateVal = Number(u.site_heat_rate_kj_kwh || u.iso_heat_rate_kj_kwh || 0);
+        const siteThermEffPct = Number(u.site_thermal_efficiency_pct || (heatRateVal > 0 ? 360000.0 / heatRateVal : 0));
+        const score = Number(u.selection_score || 85.0);
+        const lhvVal = lhv > 0 ? lhv : 47000;
+        const hrForOpex = heatRateVal > 0 ? heatRateVal : 10500;
+        const couplingKw = powerMotorPerUnitKw > 0 ? powerMotorPerUnitKw : powerUnitKw;
+        const unitFuelKgH = (couplingKw * hrForOpex) / lhvVal;
+        const annualFuelCost = fuelKghToSm3h(unitFuelKgH) * 8000 * 0.35;
+        const annualCo2Cost = ((unitFuelKgH * 2.75 * 8000) / 1000) * 50.0;
+        const unitAnnualOpex = annualFuelCost + annualCo2Cost;
+        const unitSurge = u.surge_margin_pct != null ? Number(u.surge_margin_pct) : null;
+        const unitChoke = u.stonewall_margin_pct != null ? Number(u.stonewall_margin_pct) : null;
+        const surgeRisk = u.meets_api617_surge === false || (unitSurge !== null && unitSurge < 10);
+        const chokeRisk = unitChoke !== null && unitChoke < 5;
+        const statusBadgeClass = (surgeRisk || chokeRisk) ? "badge-danger" : ((unitSurge !== null && unitSurge < 15) ? "badge-warning" : "badge-success");
+        const statusBadgeText = surgeRisk ? `Surge Riski (${score.toFixed(0)})` : (chokeRisk ? `Choke Riski (${score.toFixed(0)})` : `Uygun (${score.toFixed(0)})`);
+        const marginSubline = unitSurge !== null ? `<div style="font-size: 9px; color: var(--color-text-secondary); margin-top: 2px;">Surge +%${unitSurge.toFixed(1)}${unitChoke !== null ? ` • Choke +%${unitChoke.toFixed(1)}` : ""}</div>` : "";
+        const modelDisplay = u.model || u.name || "Türbin";
+        return `
+          <tr>
+            <td><b>${escapeHtml(modelDisplay)}</b><div style="font-size: 10px; color: var(--color-text-secondary);">${escapeHtml(u.manufacturer || 'Genel')}</div></td>
+            <td><span class="badge badge-info">${escapeHtml(u.type || 'Endüstriyel')}</span></td>
+            <td style="text-align: right; font-family: var(--font-mono); font-weight: 700; color: #0284c7;">${sitePower.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} kW</td>
+            <td style="text-align: right; font-family: var(--font-mono); color: var(--color-text-secondary);">${isoPower.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} kW</td>
+            <td style="text-align: right; font-family: var(--font-mono); color: #f59e0b;">${powerUnitKw.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} kW</td>
+            <td style="text-align: right; font-family: var(--font-mono); font-weight: 600; color: #10b981;">+${marginPct.toFixed(1)}%</td>
+            <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">${stationTotalPwrMw.toFixed(2)} MW</td>
+            <td style="text-align: right; font-family: var(--font-mono);">
+              <div>${heatRateVal > 0 ? Math.round(heatRateVal).toLocaleString('tr-TR') : '-'} kJ/kWh</div>
+              ${siteThermEffPct > 0 ? `<div style="display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 3px;"><span style="font-size: 10px; color: var(--color-text-secondary);">ηth %${siteThermEffPct.toFixed(1)}</span><button type="button" class="btn btn-sm turbine-apply-eff-btn" data-eff="${siteThermEffPct.toFixed(2)}" data-model="${escapeHtml(modelDisplay)}" aria-label="${escapeHtml(`${t("btn_apply_turbine_eff", ui.lang)} (${modelDisplay} %${siteThermEffPct.toFixed(1)})`)}" style="min-block-size: 24px; padding: 2px 6px; font-size: 10px;">${escapeHtml(t("btn_apply_turbine_eff", ui.lang))}</button></div>` : ""}
+            </td>
+            <td style="text-align: right; font-family: var(--font-mono); font-weight: 600; color: #f59e0b;">$${(unitAnnualOpex / 1e6).toFixed(2)}M / yıl</td>
+            <td style="text-align: center;"><span class="badge ${statusBadgeClass}" title="Seçim Skoru: ${score.toFixed(1)}/100">${statusBadgeText}</span>${marginSubline}</td>
+          </tr>
+        `;
+      }).join("");
+      bindTurbineEffButtons();
+    }
+
+    container.querySelector("#turbine-search-input")?.addEventListener("input", (e) => {
+      turbineQuery = e.target.value;
+      refreshTurbineRowsInPlace();
+    });
+    container.querySelector("#turbine-oem-filter")?.addEventListener("change", (e) => {
+      turbineOem = e.target.value;
+      refreshTurbineRowsInPlace();
+    });
+    container.querySelector("#turbine-sort-select")?.addEventListener("change", (e) => {
+      turbineSort = e.target.value;
+      refreshTurbineRowsInPlace();
+    });
+    container.querySelector("#btn-turbine-show-all")?.addEventListener("click", () => {
+      turbineShowAll = !turbineShowAll;
+      refreshTurbineRowsInPlace();
+    });
+    container.querySelector("#btn-turbine-clear-filters")?.addEventListener("click", () => {
+      turbineQuery = "";
+      turbineOem = "ALL";
+      const sInp = container.querySelector("#turbine-search-input");
+      const oSel = container.querySelector("#turbine-oem-filter");
+      if (sInp) sInp.value = "";
+      if (oSel) oSel.value = "ALL";
+      refreshTurbineRowsInPlace();
+    });
+
+    // Bind stale-results quick recalculate button
+    container.querySelector("#btn-recalculate-stale")?.addEventListener("click", async () => {
+      try {
+        await runDesignCalculation();
+      } catch (_) {}
+    });
+
+    // Bind one-click summary clipboard copy
+    const copySummaryBtn = container.querySelector("#btn-copy-results-summary");
+    copySummaryBtn?.addEventListener("click", async () => {
+      const summaryText = buildResultsSummaryText(projectStore.getState());
+      let copied = false;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(summaryText);
+          copied = true;
+        }
+      } catch (_) {}
+      if (!copied) {
+        const ta = document.createElement("textarea");
+        ta.value = summaryText;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          copied = document.execCommand("copy");
+        } catch (_) {
+          copied = false;
+        }
+        document.body.removeChild(ta);
+      }
+      if (copied) {
+        showToast("Mühendislik özeti panoya kopyalandı.", "success");
+        const label = copySummaryBtn.querySelector("span");
+        if (label) {
+          label.textContent = `✓ ${t("btn_copied_summary", ui.lang)}`;
+          setTimeout(() => {
+            if (label.isConnected) label.textContent = t("btn_copy_summary", ui.lang);
+          }, 1800);
+        }
+      } else {
+        showToast("Panoya kopyalama desteklenmiyor.", "warning");
+      }
     });
 
     // Bind 3D station banner CTA button
@@ -1095,27 +1362,39 @@ export function renderResultsView(container) {
       setActiveTab("station");
     });
 
+    function buildResultsPlotlyLayout(rawLayout, leftMargin = 50) {
+      const isDark = ui.theme === "dark" || ui.theme === "engineering";
+      const bg = isDark ? (ui.theme === "engineering" ? "#1A2332" : "#1E293B") : "#FFFFFF";
+      const text = isDark ? "#E2E8F0" : "#1C1917";
+      const grid = isDark ? "#334155" : "#E5E7EB";
+      return {
+        ...(rawLayout || {}),
+        title: undefined,
+        paper_bgcolor: bg,
+        plot_bgcolor: bg,
+        font: { color: text, family: "Inter, sans-serif", size: 10 },
+        margin: { l: leftMargin, r: 20, t: 54, b: 44 },
+        autosize: true,
+        legend: {
+          ...(rawLayout?.legend || {}),
+          orientation: "h",
+          y: 1.04,
+          yanchor: "bottom",
+          x: 0.5,
+          xanchor: "center",
+        },
+        xaxis: { ...(rawLayout?.xaxis || {}), gridcolor: grid, zerolinecolor: grid },
+        yaxis: { ...(rawLayout?.yaxis || {}), gridcolor: grid, zerolinecolor: grid },
+      };
+    }
+
     // Render Operating Envelope chart if envelope subtab is active
     if (ui.activeSubTab === "envelope" && window.Plotly && proj.charts?.operating_envelope) {
       requestAnimationFrame(() => {
         const subElem = container.querySelector("#subtab-chart-envelope");
         if (subElem) {
-          const isDark = ui.theme === "dark" || ui.theme === "engineering";
-          const bg = isDark ? (ui.theme === "engineering" ? "#1A2332" : "#1E293B") : "#FFFFFF";
-          const text = isDark ? "#E2E8F0" : "#1C1917";
-          const grid = isDark ? "#334155" : "#E5E7EB";
           const p = proj.charts.operating_envelope;
-          const mergedLayout = {
-            ...(p.layout || {}),
-            paper_bgcolor: bg,
-            plot_bgcolor: bg,
-            font: { color: text, family: "Inter, sans-serif", size: 10 },
-            margin: { l: 45, r: 20, t: 30, b: 40 },
-            autosize: true,
-            xaxis: { ...(p.layout?.xaxis || {}), gridcolor: grid, zerolinecolor: grid },
-            yaxis: { ...(p.layout?.yaxis || {}), gridcolor: grid, zerolinecolor: grid },
-          };
-          window.Plotly.newPlot(subElem, p.data || [], mergedLayout, {
+          window.Plotly.newPlot(subElem, p.data || [], buildResultsPlotlyLayout(p.layout, 48), {
             responsive: true,
             displayModeBar: false,
           });
@@ -1128,22 +1407,8 @@ export function renderResultsView(container) {
       requestAnimationFrame(() => {
         const derateElem = container.querySelector("#results-chart-derate");
         if (derateElem) {
-          const isDark = ui.theme === "dark" || ui.theme === "engineering";
-          const bg = isDark ? (ui.theme === "engineering" ? "#1A2332" : "#1E293B") : "#FFFFFF";
-          const text = isDark ? "#E2E8F0" : "#1C1917";
-          const grid = isDark ? "#334155" : "#E5E7EB";
           const p = proj.charts.turbine_derate;
-          const mergedLayout = {
-            ...(p.layout || {}),
-            paper_bgcolor: bg,
-            plot_bgcolor: bg,
-            font: { color: text, family: "Inter, sans-serif", size: 10 },
-            margin: { l: 50, r: 20, t: 30, b: 40 },
-            autosize: true,
-            xaxis: { ...(p.layout?.xaxis || {}), gridcolor: grid, zerolinecolor: grid },
-            yaxis: { ...(p.layout?.yaxis || {}), gridcolor: grid, zerolinecolor: grid },
-          };
-          window.Plotly.newPlot(derateElem, p.data || [], mergedLayout, {
+          window.Plotly.newPlot(derateElem, p.data || [], buildResultsPlotlyLayout(p.layout, 54), {
             responsive: true,
             displayModeBar: false,
           });

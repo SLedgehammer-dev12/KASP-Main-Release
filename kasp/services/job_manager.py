@@ -301,16 +301,36 @@ class JobManager:
             job = self._jobs.get(job_id)
             if not job:
                 return False
+            # A completed/errored job must never be relabelled as cancelled.
+            if job.status in ("completed", "error"):
+                return False
+            was_already_cancelled = job.cancelled
             job.cancelled = True
             job.status = "cancelled"
+            job.completed_at = job.completed_at or time.time()
 
+        if was_already_cancelled:
+            return True
         request_calculation_cancel(job_id)
         job.event_queue.put({"type": "cancelled", "message": "İş kullanıcı tarafından iptal edildi."})
         return True
 
     def _run_shootout(self, job: ShootoutJob):
         """Arka plan thread'inde izole ThermoEngine ile çalışan shootout döngüsü."""
-        job.status = "running"
+        # Cancel may arrive between create_shootout_job() and the worker picking up the
+        # job. Check under the lock and never overwrite the terminal "cancelled" state.
+        with self._lock:
+            if job.cancelled:
+                job.status = "cancelled"
+                job.completed_at = job.completed_at or time.time()
+                cancelled_before_start = True
+            else:
+                job.status = "running"
+                cancelled_before_start = False
+        if cancelled_before_start:
+            job.event_queue.put({"type": "cancelled", "message": "İş başlamadan iptal edildi."})
+            return
+
         begin_calculation_run(job.job_id)
         engine = ThermoEngine()
 
@@ -439,6 +459,9 @@ class JobManager:
                     "ranked_results": job.ranked_results,
                     "summary": job.summary,
                 })
+            else:
+                job.status = "cancelled"
+                job.completed_at = job.completed_at or time.time()
 
         except Exception as e:
             job.status = "error"

@@ -201,3 +201,35 @@ def test_station_3d_view_and_tab_pipe_naming_and_syntax():
         for js_file in (s3d_path, stab_path):
             proc = subprocess.run([node_bin, "--check", str(js_file)], capture_output=True, text=True)
             assert proc.returncode == 0, f"node --check failed for {js_file}: {proc.stderr}"
+
+
+def test_pig_trap_mainline_22_5_deg_hot_bend_axial_offset():
+    """PIG-R / PIG-L exit piping stays on trap Z-axis with double 22.5 deg hot bends (no 90 deg turns)."""
+    s3d_path = REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js"
+    s3d_text = s3d_path.read_text(encoding="utf-8")
+
+    # Legacy 90-degree ground-entry corners must be removed
+    assert "new THREE.Vector3(-224, 0.6, -112)" not in s3d_text
+    assert "new THREE.Vector3(-224, 0.6, -38)" not in s3d_text
+
+    # Axial 22.5-degree double hot-bend helper & 22.5° angle (Math.PI / 8) must exist
+    assert "buildPigTrapAxialHotBendPoints" in s3d_text
+    assert "Math.PI / 8" in s3d_text
+    assert "22.5" in s3d_text
+
+    # Backend L-101 & L-115 metadata reflects 22.5° hot-bend S-offset
+    res = PipeSizingService.size_station_network(
+        mass_flow_kgs=40.0,
+        p_in_bar=25.0,
+        p_out_bar=65.0,
+        t_in_c=15.0,
+        t_discharge_c=78.0,
+        t_cooled_c=45.0,
+        comp_op_count=2,
+        cyclone_op_count=2,
+        filter_op_count=2,
+        cooler_bays_count=2,
+    )
+    assert "22.5" in res["lines"]["mainline_inlet"].get("note", "")
+    assert "22.5" in res["lines"]["mainline_outlet"].get("note", "")
+

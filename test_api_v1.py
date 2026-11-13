@@ -302,8 +302,19 @@ def test_project_history_and_kasp_export(client, auth_tokens):
     assert resp_list.status_code == 200
     items = resp_list.json()
     saved = next(p for p in items if p["id"] == proj_id)
-    assert saved["results"]["module_results"]["psv"]["results"]["Required_Area_sqin"] == 1.47
-    assert saved["results"]["station_data"]["station_summary"]["total_mass_flow_kgs"] == 12.0
+    # List responses are lightweight; full results come from the detail endpoint.
+    assert saved["results"] is None
+    detail_resp = client.get(f"/api/v1/projects/{proj_id}", headers=headers)
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["results"]["module_results"]["psv"]["results"]["Required_Area_sqin"] == 1.47
+    assert detail["results"]["station_data"]["station_summary"]["total_mass_flow_kgs"] == 12.0
+
+    # Opt-in legacy behaviour remains available for API consumers.
+    full_list_resp = client.get("/api/v1/projects?include_results=true", headers=headers)
+    assert full_list_resp.status_code == 200
+    full_saved = next(p for p in full_list_resp.json() if p["id"] == proj_id)
+    assert full_saved["results"]["module_results"]["psv"]["results"]["Required_Area_sqin"] == 1.47
 
     # 3. Export .kasp
     export_req = {

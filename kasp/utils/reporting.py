@@ -23,6 +23,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(value, default=0.0):
+    """Coerce optional/NaN report inputs without raising on None or empty strings."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
 def _get_font_path(filename):
     if getattr(sys, "frozen", False):
         return os.path.join(sys._MEIPASS, "resources", "fonts", filename)
@@ -188,8 +197,8 @@ class ReportGenerator:
                 or results.get('calculation_method')
                 or '—'
             )
-            amb_temp_val = float(inputs.get('ambient_temp', inputs.get('t_amb', 15.0)))
-            amb_p_val = float(inputs.get('ambient_pressure', inputs.get('ambient_press', 101.325)))
+            amb_temp_val = _safe_float(inputs.get('ambient_temp', inputs.get('t_amb')), 15.0)
+            amb_p_val = _safe_float(inputs.get('ambient_pressure', inputs.get('ambient_press')), 101.325)
             amb_p_unit = 'kPa' if amb_p_val <= 200.0 else 'mbar'
 
             project_data = [
@@ -201,7 +210,7 @@ class ReportGenerator:
                 [_L("Hesaplama Metodu", "Calculation Method"), calc_method_display, ''],
                 [_L("Ortam Sıcaklığı", "Ambient Temperature"), f"{amb_temp_val:.1f}", '°C'],
                 [_L("Ortam Basıncı", "Ambient Pressure"), f"{amb_p_val:.2f}", amb_p_unit],
-                [_L("Rakım", "Altitude"), f"{float(inputs.get('altitude', 0.0)):.0f}", 'm']
+                [_L("Rakım", "Altitude"), f"{_safe_float(inputs.get('altitude'), 0.0):.0f}", 'm']
             ]
             
             project_table = Table(project_data, colWidths=[200, 200, 80])
@@ -237,9 +246,9 @@ class ReportGenerator:
                 [_L("Basınç", "Pressure"), p_in_cell, p_out_cell, p_unit_cell],
                 [_L("Sıcaklık", "Temperature"), f"{inputs.get('t_in', '-')}", f"{results.get('t_out', 0.0):.1f}" if results.get('t_out') is not None else '-', inputs.get('t_in_unit', '°C')],
                 [_L("Sıkıştırma Oranı", "Compression Ratio"), '-', f"{results.get('compression_ratio', 0.0):.2f}" if results.get('compression_ratio') is not None else '-', ''],
-                [_L("Politropik Verim", "Polytropic Efficiency"), f"{float(inputs.get('poly_eff', 80.0)):.1f}", f"{float(results.get('actual_poly_efficiency', 0.8))*100:.2f}" if results.get('actual_poly_efficiency') is not None else '-', '%'],
-                [_L("Isıl Verim", "Thermal Efficiency"), f"{float(inputs.get('therm_eff', 35.0)):.1f}", '-', '%'],
-                [_L("Mekanik Verim", "Mechanical Efficiency"), f"{float(inputs.get('mech_eff', 98.0)):.1f}", '-', '%']
+                [_L("Politropik Verim", "Polytropic Efficiency"), f"{_safe_float(inputs.get('poly_eff'), 80.0):.1f}", f"{_safe_float(results.get('actual_poly_efficiency'), 0.8)*100:.2f}" if results.get('actual_poly_efficiency') is not None else '-', '%'],
+                [_L("Isıl Verim", "Thermal Efficiency"), f"{_safe_float(inputs.get('therm_eff'), 35.0):.1f}", '-', '%'],
+                [_L("Mekanik Verim", "Mechanical Efficiency"), f"{_safe_float(inputs.get('mech_eff'), 98.0):.1f}", '-', '%']
             ]
             
             process_table = Table(process_data, colWidths=[120, 80, 80, 60])
@@ -269,7 +278,7 @@ class ReportGenerator:
             power_fmt = ".2f" if report_units.get('power_unit') == 'MW' else ".0f"
             
             num_units = int(results.get('num_units', inputs.get('num_units', 1)))
-            inlet_vol = float(results.get('inlet_vol_flow_acmh_per_unit', 0.0))
+            inlet_vol = _safe_float(results.get('inlet_vol_flow_acmh_per_unit'), 0.0)
             power_data = [
                 [_L('Parametre', 'Parameter'), _L('Ünite Başına', 'Per Unit'), _L('Toplam', 'Total'), _L('Birim', 'Unit')],
                 [_L('Kütlesel Debi', 'Mass Flow'), 
@@ -328,7 +337,7 @@ class ReportGenerator:
                 [_L('Politropik Head', 'Polytropic Head'), f"{head_val:.1f}", report_units['head_unit']],
                 [_L('Isı Oranı', 'Heat Rate'), f"{hr_val:.0f}", report_units['heat_rate']],
                 [_L('Çıkış Sıcaklığı', 'Outlet Temperature'), f"{results.get('t_out', 0.0):.1f}", '°C'],
-                [_L('Gerçek Politropik Verim', 'Actual Polytropic Efficiency'), f"{float(results.get('actual_poly_efficiency', 0.0))*100:.2f}", '%'],
+                [_L('Gerçek Politropik Verim', 'Actual Polytropic Efficiency'), f"{_safe_float(results.get('actual_poly_efficiency'), 0.0)*100:.2f}", '%'],
                 [_L('Sıkıştırma Oranı', 'Compression Ratio'), f"{results.get('compression_ratio', 1.0):.2f}", ''],
                 [_L('İzentropik Üs (k-giriş)', 'Isentropic Exponent (k-inlet)'), f"{float(inlet_props.get('k', 1.4)):.3f}", ''],
                 [_L('Sıkıştırılabilirlik (Z-giriş)', 'Compressibility (Z-inlet)'), f"{float(inlet_props.get('Z', 1.0)):.4f}", '']
@@ -393,7 +402,7 @@ class ReportGenerator:
                 [_L('HHV (Üst Isıl Değer)', 'HHV (Higher Heating Value)'), f"{hhv_val:.0f}", report_units['hhv']],
                 [_L('Ünite Yakıt Tüketimi', 'Unit Fuel Consumption'), f"{fuel_unit_val:.1f}", report_units['fuel_unit']],
                 [_L('Toplam Yakıt Tüketimi', 'Total Fuel Consumption'), f"{results.get('fuel_total_kgh', 0.0):.1f}", 'kg/h'],
-                [_L('Isıl Verim', 'Thermal Efficiency'), f"{float(inputs.get('therm_eff', 35.0)):.1f}", '%']
+                [_L('Isıl Verim', 'Thermal Efficiency'), f"{_safe_float(inputs.get('therm_eff'), 35.0):.1f}", '%']
             ]
             
             fuel_table = Table(fuel_data, colWidths=[150, 100, 80])
@@ -987,7 +996,7 @@ class ReportGenerator:
             
             # 1. TEST KOŞULLARI
             story.append(Paragraph("1. TEST KOŞULLARI", styles['Heading2']))
-            amb_p_val = float(inputs.get('ambient_pressure', inputs.get('ambient_press', 101.325)))
+            amb_p_val = _safe_float(inputs.get('ambient_pressure', inputs.get('ambient_press')), 101.325)
             amb_p_unit = 'kPa' if amb_p_val <= 200.0 else 'mbar'
             unit_name = inputs.get('unit_name', inputs.get('project_name', 'Performans Testi'))
             fuel_flow_val = inputs.get('fuel_flow', results.get('fuel_cons_kg_h', 0.0))
@@ -1001,10 +1010,10 @@ class ReportGenerator:
                 ['Çıkış Sıcaklığı', f"{inputs.get('t_out', 0.0)}", inputs.get('t_out_unit', '°C')],
                 ['Gaz Debisi', f"{inputs.get('flow', 0.0)}", inputs.get('flow_unit', 'kg/s')],
                 ['Yakıt Tüketimi', f"{fuel_flow_val}", fuel_flow_unit],
-                ['Ortam Sıcaklığı', f"{float(inputs.get('ambient_temp', 15.0)):.1f}", '°C'],
+                ['Ortam Sıcaklığı', f"{_safe_float(inputs.get('ambient_temp'), 15.0):.1f}", '°C'],
                 ['Ortam Basıncı', f"{amb_p_val:.2f}", amb_p_unit],
-                ['Nem Oranı', f"{float(inputs.get('humidity', 60)):.1f}", '%'],
-                ['Rakım', f"{float(inputs.get('altitude', 0)):.0f}", 'm']
+                ['Nem Oranı', f"{_safe_float(inputs.get('humidity'), 60.0):.1f}", '%'],
+                ['Rakım', f"{_safe_float(inputs.get('altitude'), 0.0):.0f}", 'm']
             ]
             
             test_table = Table(test_data, colWidths=[150, 100, 80])
@@ -1041,24 +1050,24 @@ class ReportGenerator:
         from reportlab.platypus import Table, TableStyle, Paragraph, Spacer
         
         def _eff_frac(val):
-            v = float(val or 0.0)
+            v = _safe_float(val, 0.0)
             return v / 100.0 if v > 1.0 else v
 
         act_poly = _eff_frac(results.get('actual_poly_eff', results.get('poly_eff', 0.0)))
         des_poly = _eff_frac(results.get('design_poly_eff', results.get('expected_poly_eff', act_poly)))
-        dev_poly = float(results.get('deviation_poly_eff', 0.0))
+        dev_poly = _safe_float(results.get('deviation_poly_eff'), 0.0)
 
         act_therm = _eff_frac(results.get('actual_therm_eff', results.get('turb_eff', 0.0)))
         exp_therm = _eff_frac(results.get('expected_therm_eff', act_therm))
-        dev_therm = float(results.get('deviation_therm_eff', 0.0))
+        dev_therm = _safe_float(results.get('deviation_therm_eff'), 0.0)
 
-        act_hr = float(results.get('actual_heat_rate', 0.0))
-        exp_hr = float(results.get('expected_heat_rate', act_hr))
-        dev_hr = float(results.get('deviation_heat_rate', 0.0))
+        act_hr = _safe_float(results.get('actual_heat_rate'), 0.0)
+        exp_hr = _safe_float(results.get('expected_heat_rate'), act_hr)
+        dev_hr = _safe_float(results.get('deviation_heat_rate'), 0.0)
 
-        act_pwr = float(results.get('actual_power', results.get('shaft_power_kw', 0.0)))
-        exp_pwr = float(results.get('expected_power', act_pwr))
-        dev_pwr = float(results.get('deviation_power', 0.0))
+        act_pwr = _safe_float(results.get('actual_power', results.get('shaft_power_kw')), 0.0)
+        exp_pwr = _safe_float(results.get('expected_power'), act_pwr)
+        dev_pwr = _safe_float(results.get('deviation_power'), 0.0)
 
         # Performance comparison data
         perf_data = [

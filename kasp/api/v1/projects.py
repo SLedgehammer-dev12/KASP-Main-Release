@@ -6,11 +6,12 @@ with strict 2MB payload guard and schema migration.
 
 import json
 import logging
+import re
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from kasp.api.auth import get_current_user, get_current_user_optional, get_db, require_permission
+from kasp.api.auth import get_current_user, get_db, require_permission
 from kasp.data.database import UnitDatabase
 from kasp.utils.project_manager import (
     ProjectManager,
@@ -123,16 +124,28 @@ class ExportResultsJsonRequest(BaseModel):
 @router.get("")
 async def list_projects(
     limit: int = 50,
+    include_results: bool = False,
     db: UnitDatabase = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
     """Kayıtlı hesaplama geçmişini listeler.
 
     Normal kullanıcılar kendi hesaplamalarını, yöneticiler ise tümünü görür.
+    Ağır sonuç gövdesi varsayılan olarak dışarıda bırakılır; tek kayıt
+    GET /projects/{id} ile tam yüklenir.
     """
     user_id = None if user.get("role") == "admin" else user.get("id")
     history = db.get_calculation_history(limit=limit, user_id=user_id)
-    return [_hydrate_project_record(h) for h in history]
+    items = []
+    for record in history:
+        item = _hydrate_project_record(record)
+        if not include_results:
+            # Keep list responses lightweight; the project modal loads the
+            # selected record's full results through the detail endpoint.
+            item.pop("results_json", None)
+            item["results"] = None
+        items.append(item)
+    return items
 
 
 @router.get("/{project_id}")
@@ -191,10 +204,16 @@ async def delete_project(
     return {"message": "Proje geçmişten silindi."}
 
 
+def _safe_download_filename(name: str, suffix: str, fallback: str = "kasp_project") -> str:
+    """Strip path separators, quotes and control characters from a download name."""
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or "").strip()).strip("._")
+    return f"{base or fallback}{suffix}"
+
+
 @router.post("/export-kasp")
 async def export_kasp(
     req: ExportKaspRequest,
-    user: Optional[dict] = Depends(get_current_user_optional),
+    user: dict = Depends(require_permission("export")),
 ):
     """Mevcut girdi ve sonuçları .kasp dosya formatında dışa aktarır."""
     import datetime
@@ -211,7 +230,7 @@ async def export_kasp(
         "modules": req.modules or {},
         "station_data": req.station_data,
     }
-    filename = f"{req.project_name.strip() or 'kasp_project'}.kasp"
+    filename = _safe_download_filename(req.project_name, ".kasp")
     sanitized_data = sanitize_json_payload(project_data)
     json_bytes = json.dumps(sanitized_data, indent=2, ensure_ascii=False).encode("utf-8")
     
@@ -227,7 +246,7 @@ async def export_kasp(
 @router.post("/export-results-json")
 async def export_results_json(
     req: ExportResultsJsonRequest,
-    user: Optional[dict] = Depends(get_current_user_optional),
+    user: dict = Depends(require_permission("export")),
 ):
     """Hesaplama sonuçlarını salt _Sonuclar.json formatında dışa aktarır."""
     import datetime
@@ -242,8 +261,7 @@ async def export_results_json(
         payload["modules"] = req.modules
     if req.station_data:
         payload["station_data"] = req.station_data
-    safe_name = (req.project_name.strip() or 'kasp_project').replace(' ', '_')
-    filename = f"{safe_name}_Sonuclar.json"
+    filename = _safe_download_filename(req.project_name, "_Sonuclar.json")
     sanitized_payload = sanitize_json_payload(payload)
     json_bytes = json.dumps(sanitized_payload, indent=4, ensure_ascii=False).encode("utf-8")
     return Response(
@@ -258,7 +276,7 @@ async def export_results_json(
 @router.post("/import-kasp")
 async def import_kasp(
     file: UploadFile = File(...),
-    user: Optional[dict] = Depends(get_current_user_optional),
+    user: dict = Depends(require_permission("write")),
 ):
     """Yüklenen .kasp dosyasını doğrular, şema migrasyonunu yapar ve girdi/sonuçları döner."""
     contents = await file.read()

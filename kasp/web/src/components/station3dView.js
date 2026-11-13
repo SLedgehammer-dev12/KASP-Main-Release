@@ -36,7 +36,7 @@
 import { uiStore } from "../store/uiStore.js";
 import { t } from "../i18n/locales.js";
 import { escapeHtml } from "../store/projectStore.js";
-import { openEquipmentTeardown } from "./equipmentTeardown.js";
+import { openEquipmentTeardown, closeEquipmentTeardown } from "./equipmentTeardown.js";
 
 export function createStation3dView(container, stationData, onSelectEquipment, options = {}) {
   if (!window.THREE) {
@@ -155,6 +155,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       <style>
         #station-3d-root { container-type: inline-size; container-name: s3d; }
         #station-3d-root[data-inspect="1"] .hud-legend { display: none !important; }
+        #station-3d-root.station-3d-expanded { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 9999 !important; border-radius: 0 !important; }
         #station-3d-root button { transition: filter 120ms ease, transform 120ms ease; }
         #station-3d-root button:hover { filter: brightness(1.18); }
         #station-3d-root button:active { transform: translateY(1px); }
@@ -233,6 +234,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         </button>
         <button id="btn-theme-mode" style="background: #1e293b; color: #e2e8f0; border: 1px solid rgba(255,255,255,0.15); border-radius: 14px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">
           ☀️ Mod: CAD Gündüz
+        </button>
+        <button id="btn-toggle-3d-fullscreen" type="button" aria-pressed="false" title="${escapeHtml(t("btn_3d_fullscreen", uiLang))} (F)" style="background: #1e293b; color: #e2e8f0; border: 1px solid rgba(255,255,255,0.15); border-radius: 14px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">
+          ⛶ ${escapeHtml(t("btn_3d_fullscreen", uiLang))}
         </button>
       </div>
 
@@ -928,11 +932,72 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   // ══════════════════ 5. SITE TERRAIN, ROADS & PERIMETER SECURITY FENCE ══════════════════
 
-  // Main Process Gravel Pad (Ice-Blue/Grey matching CAD screenshots)
-  const mainPad = new THREE.Mesh(new THREE.PlaneGeometry(420, 310), matProcessGround);
+  // Main Process Gravel Pad with 2 buried-pipeline cutaway trench windows along the PIG-R / PIG-L axis (x = -196)
+  const padShape = new THREE.Shape();
+  padShape.moveTo(-210, -155);
+  padShape.lineTo(210, -155);
+  padShape.lineTo(210, 155);
+  padShape.lineTo(-210, 155);
+  padShape.closePath();
+
+  const pigTrenchCorridors = [
+    { xMin: -198.4, xMax: -193.6, zMin: -140, zMax: -103.5 }, // PIG-R buried 22.5° offset trench
+    { xMin: -198.4, xMax: -193.6, zMin: -40.5, zMax: -8 },    // PIG-L buried 22.5° offset trench
+  ];
+  pigTrenchCorridors.forEach((tc) => {
+    const hole = new THREE.Path();
+    // Shape is rotated -PI/2 around X so shape.y maps to -world.z
+    hole.moveTo(tc.xMin, -tc.zMax);
+    hole.lineTo(tc.xMax, -tc.zMax);
+    hole.lineTo(tc.xMax, -tc.zMin);
+    hole.lineTo(tc.xMin, -tc.zMin);
+    hole.closePath();
+    padShape.holes.push(hole);
+  });
+
+  const mainPad = new THREE.Mesh(new THREE.ShapeGeometry(padShape), matProcessGround);
   mainPad.rotation.x = -Math.PI / 2;
   mainPad.receiveShadow = true;
   scene.add(mainPad);
+
+  // Buried pipeline inspection trenches so the underground 22.5° hot-bend S-offset remains clearly visible
+  const matTrenchWall = new THREE.MeshStandardMaterial({ color: 0x6b5344, roughness: 0.92, metalness: 0.05 });
+  const matTrenchSoilCover = new THREE.MeshStandardMaterial({
+    color: 0x7a5e48,
+    roughness: 0.9,
+    metalness: 0.04,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+  });
+  pigTrenchCorridors.forEach((tc) => {
+    const w = tc.xMax - tc.xMin;
+    const len = tc.zMax - tc.zMin;
+    const cx = (tc.xMin + tc.xMax) / 2;
+    const cz = (tc.zMin + tc.zMax) / 2;
+    const depth = 2.0;
+
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.14, len), matTrenchWall);
+    floor.position.set(cx, -depth, cz);
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    [-w / 2, w / 2].forEach((ox) => {
+      const sideWall = new THREE.Mesh(new THREE.BoxGeometry(0.16, depth, len), matTrenchWall);
+      sideWall.position.set(cx + ox, -depth / 2, cz);
+      scene.add(sideWall);
+    });
+    [-len / 2, len / 2].forEach((oz) => {
+      const endWall = new THREE.Mesh(new THREE.BoxGeometry(w, depth, 0.16), matTrenchWall);
+      endWall.position.set(cx, -depth / 2, cz + oz);
+      scene.add(endWall);
+    });
+
+    const translucentSoil = new THREE.Mesh(new THREE.PlaneGeometry(w, len), matTrenchSoilCover);
+    translucentSoil.rotation.x = -Math.PI / 2;
+    translucentSoil.position.set(cx, -0.02, cz);
+    scene.add(translucentSoil);
+  });
 
   // Subtle CAD reference grid
   const cadGrid = new THREE.GridHelper(400, 40, 0x93b4db, 0xb5cfee);
@@ -1008,14 +1073,20 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   addRoadSegment(62, -24, 62, -92, 6.5, 20); // Spur to Temporary Waste Storage Area
   addRoadSegment(125, 48, 142, 125, 7.0, 22); // SE Main Gate Entrance Road
 
+  // West access spur to the relocated pig trap / battery-limit yard.
+  addRoadSegment(-152, -24, -208, -24, 6.5, 20);
+  addRoadSegment(-208, -24, -208, -96, 6.5, 20);
+  addRoadSegment(-208, -96, -176, -96, 6.5, 18);
+
   // ── Perimeter Double Security Wire Fence (Proses Tel Çiti) & Patrol Road ──
   const fenceBoundaryPoints = [
-    new THREE.Vector3(-182, 0, -124),
+    // Extended west boundary to accommodate the relocated pig trap yard.
+    new THREE.Vector3(-232, 0, -124),
     new THREE.Vector3(78, 0, -124),
     new THREE.Vector3(178, 0, 38), // Angled NE pipeline boundary matching screenshots (0), (1), (2)
     new THREE.Vector3(178, 0, 128),
-    new THREE.Vector3(-182, 0, 128),
-    new THREE.Vector3(-182, 0, -124),
+    new THREE.Vector3(-232, 0, 128),
+    new THREE.Vector3(-232, 0, -124),
   ];
 
   function buildPerimeterSecurityFence(pts) {
@@ -1068,38 +1139,133 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   // ══════════════════ 6. NORTH-WEST MAINLINE TIE-IN & PIG TRAPS YARD ══════════════════
 
-  // Buried Mainline Natural Gas Pipelines (Dark Brown #5c3a21 along North & West edges)
+  // Buried Mainline Natural Gas Pipelines (Dark Brown #5c3a21):
+  // Exit PIG-R (-Z) and PIG-L (+Z) strictly along the pig-trap Z-axis (x = -196)
+  // with a double 22.5° induction hot-bend S-offset (no 90° elbows):
+  //   1st 22.5° hot bend pitches down from trap centerline (y = 2.2 m) into soil,
+  //   2nd 22.5° hot bend returns horizontal at buried cover depth (y = -1.2 m).
+  const PIG_HOT_BEND_ANGLE_RAD = Math.PI / 8; // 22.5°
+  const PIG_HOT_BEND_SLOPE_TAN = Math.tan(PIG_HOT_BEND_ANGLE_RAD);
+
+  function buildPigTrapAxialHotBendPoints({
+    axisX = -196,
+    topY = 2.2,
+    buriedY = -1.2,
+    startZ,
+    approachLen = 2.5,
+    tailLen = 30.0,
+    directionZ = -1,
+  }) {
+    const deltaY = Math.abs(topY - buriedY);
+    const horizOffsetZ = deltaY / PIG_HOT_BEND_SLOPE_TAN;
+    const bend1Z = startZ + directionZ * approachLen;
+    const bend2Z = bend1Z + directionZ * horizOffsetZ;
+    const endZ = bend2Z + directionZ * tailLen;
+    const soilEntryZ = bend1Z + directionZ * (topY / PIG_HOT_BEND_SLOPE_TAN);
+    return {
+      points: [
+        new THREE.Vector3(axisX, topY, startZ),
+        new THREE.Vector3(axisX, topY, bend1Z),
+        new THREE.Vector3(axisX, buriedY, bend2Z),
+        new THREE.Vector3(axisX, buriedY, endZ),
+      ],
+      bend1Z,
+      bend2Z,
+      soilEntryZ,
+      endZ,
+    };
+  }
+
+  function buildSoilTransitionCollar(x, z, pipeRadius) {
+    const collar = new THREE.Mesh(
+      new THREE.CylinderGeometry(pipeRadius * 1.65, pipeRadius * 1.85, 0.9, 18),
+      matConcretePlinth
+    );
+    collar.position.set(x, 0.08, z);
+    collar.rotation.x = Math.PI / 2 - PIG_HOT_BEND_ANGLE_RAD;
+    collar.castShadow = true;
+    scene.add(collar);
+  }
+
+  const pigInletOffset = buildPigTrapAxialHotBendPoints({
+    axisX: -196,
+    topY: 2.2,
+    buriedY: -1.2,
+    startZ: -96.0,
+    approachLen: 2.5,
+    tailLen: 31.0,
+    directionZ: -1,
+  });
   createCadPipeRoute(
-    [
-      new THREE.Vector3(-178, 0.6, -112),
-      new THREE.Vector3(65, 0.6, -112),
-      new THREE.Vector3(145, 0.6, -10),
-    ],
+    [...pigInletOffset.points].reverse(),
     rMainlineInlet,
     matBuriedPipe,
     {
-      flangeEnds: false,
-      equipKey: "tiein",
+      bendRadius: Math.max(4.5, rMainlineInlet * 6.5),
+      flowArrows: 3,
+      flangeEnds: true,
+      equipKey: "pig_receiver",
       lineKey: "mainline_inlet",
-      segmentTitle: "Ana İletim Giriş Hattı (Gömülü Tie-In)",
-      fromBoundary: "BOTAŞ Ana İletim Hattı Giriş Tie-In Noktası",
-      toBoundary: "Giriş Pig Kovanı (PIG-R) Giriş İzolasyon Vanası (ESDV)",
+      segmentTitle: "Ana İletim Giriş Hattı (PIG-R Aksı 22.5° Çift Hot-Bend Offset)",
+      fromBoundary: "BOTAŞ Ana İletim Hattı Giriş Tie-In Noktası (Yeraltı -1.2 m)",
+      toBoundary: "Giriş Pig Kovanı (PIG-R) Aksı Çift 22.5° Hot-Bend & ESDV Flanşı",
+      registerParticlePath: true,
+    }
+  );
+  buildSoilTransitionCollar(-196, pigInletOffset.soilEntryZ, rMainlineInlet);
+
+  const pigOutletOffset = buildPigTrapAxialHotBendPoints({
+    axisX: -196,
+    topY: 2.2,
+    buriedY: -1.2,
+    startZ: -48.0,
+    approachLen: 2.5,
+    tailLen: 27.0,
+    directionZ: 1,
+  });
+  createCadPipeRoute(
+    pigOutletOffset.points,
+    rMainlineOutlet,
+    matBuriedPipe,
+    {
+      bendRadius: Math.max(4.5, rMainlineOutlet * 6.5),
+      flowArrows: 3,
+      flangeEnds: true,
+      equipKey: "pig_launcher",
+      lineKey: "mainline_outlet",
+      segmentTitle: "Ana İletim Çıkış Hattı (PIG-L Aksı 22.5° Çift Hot-Bend Offset)",
+      fromBoundary: "Çıkış Pig Kovanı (PIG-L) Aksı ESDV Flanşı & 22.5° Hot-Bend",
+      toBoundary: "BOTAŞ Ana İletim Hattı Çıkış Tie-In Noktası (Yeraltı -1.2 m)",
+      registerParticlePath: true,
+    }
+  );
+  buildSoilTransitionCollar(-196, pigOutletOffset.soilEntryZ, rMainlineOutlet);
+
+  // Separate tee stubs joining the PIG-R / PIG-L barrels to the common pig by-pass header (x = -190)
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(-196, 2.2, -96),
+      new THREE.Vector3(-190, 2.2, -96),
+    ],
+    Math.max(0.5, rMainlineInlet * 0.85),
+    matYellowPipe,
+    {
+      equipKey: "pig_receiver",
+      lineKey: "pig_bypass",
+      segmentTitle: "PIG-R ➔ Ortak Pig By-Pass Tee Bağlantısı",
     }
   );
   createCadPipeRoute(
     [
-      new THREE.Vector3(-175, 0.6, -65),
-      new THREE.Vector3(-82, 0.6, -65),
+      new THREE.Vector3(-190, 2.2, -48),
+      new THREE.Vector3(-196, 2.2, -48),
     ],
-    rMainlineOutlet,
-    matBuriedPipe,
+    Math.max(0.5, rMainlineOutlet * 0.85),
+    matYellowPipe,
     {
-      flangeEnds: false,
       equipKey: "pig_launcher",
-      lineKey: "mainline_outlet",
-      segmentTitle: "Ana İletim Çıkış Hattı (Gömülü Tie-In)",
-      fromBoundary: "Çıkış Pig Kovanı (PIG-L) Çıkış İzolasyon Vanası (ESDV)",
-      toBoundary: "BOTAŞ Ana İletim Hattı Çıkış Tie-In Noktası",
+      lineKey: "pig_bypass",
+      segmentTitle: "Ortak Pig By-Pass ➔ PIG-L Tee Bağlantısı",
     }
   );
 
@@ -1130,49 +1296,68 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     scene.add(post, cross);
   }
 
-  // Pig Receiver (PIG-R) & Pig Launcher (PIG-L) Skids in North-West Yard (X: -145 to -95, Z: -92 to -42)
+  // Pig Receiver (PIG-R) & Pig Launcher (PIG-L) Skids — relocated to the
+  // extended west battery-limit yard. Barrels run along Z and the quick-opening
+  // closures face each other across the pigging aisle.
   function buildPigTrapStation(x, z, labelText, equipKey, isLauncher = false) {
     const grp = new THREE.Group();
     grp.position.set(x, 0, z);
+    const closureSign = isLauncher ? -1 : 1; // receiver door faces +Z, launcher door faces -Z
 
-    // Concrete Foundation Slab
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(22, 0.4, 10), matConcretePlinth);
+    // Concrete Foundation Slab (trap axis along Z)
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(10, 0.4, 24), matConcretePlinth);
     slab.position.y = 0.2;
     grp.add(slab);
 
     // Major Barrel (56") + Minor Barrel (48") in CAD Yellow/Olive
     const majorBarrel = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.15, 10, 24), matYellowPipe);
-    majorBarrel.rotation.z = Math.PI / 2;
-    majorBarrel.position.set(-2, 2.2, 0);
+    majorBarrel.rotation.x = Math.PI / 2;
+    majorBarrel.position.set(0, 2.2, 0);
     majorBarrel.castShadow = true;
     grp.add(majorBarrel);
 
     const minorBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 7, 24), matYellowPipe);
-    minorBarrel.rotation.z = Math.PI / 2;
-    minorBarrel.position.set(6.5, 2.2, 0);
+    minorBarrel.rotation.x = Math.PI / 2;
+    minorBarrel.position.set(0, 2.2, -closureSign * 6.5);
     minorBarrel.castShadow = true;
     grp.add(minorBarrel);
 
-    // Quick-Opening Closure Door on West End
+    // Quick-Opening Closure Door facing the opposite trap
     const closure = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 0.6, 20), matOliveSteel);
-    closure.rotation.z = Math.PI / 2;
-    closure.position.set(-7.2, 2.2, 0);
+    closure.rotation.x = Math.PI / 2;
+    closure.position.set(0, 2.2, closureSign * 7.2);
     grp.add(closure);
 
-    // Saddle Supports
-    [-5, 0, 5, 9].forEach((sx) => {
-      const saddle = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.8, 2.4), matConcretePlinth);
-      saddle.position.set(sx, 1.1, 0);
+    // Closure hinge / davit arm makes the facing orientation readable.
+    const hinge = new THREE.Mesh(new THREE.BoxGeometry(0.35, 2.0, 0.35), matValveBody);
+    hinge.position.set(1.55, 3.6, closureSign * 7.4);
+    grp.add(hinge);
+    const davit = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.25, 0.25), matValveBody);
+    davit.position.set(1.7, 4.6, closureSign * 7.4);
+    grp.add(davit);
+
+    // Saddle Supports along the Z axis
+    [-5, 0, 5, 9].forEach((sz) => {
+      const saddle = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.8, 0.6), matConcretePlinth);
+      saddle.position.set(0, 1.1, sz * -closureSign);
       grp.add(saddle);
     });
 
-    // Operator Grating Platform & Handrails alongside Trap
-    const walk = new THREE.Mesh(new THREE.BoxGeometry(16, 0.18, 2.8), matOliveSteel);
-    walk.position.set(1, 1.8, 2.6);
+    // Operator Grating Platform alongside the trap
+    const walk = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.18, 16), matOliveSteel);
+    walk.position.set(2.6, 1.8, 0);
     grp.add(walk);
+    for (let hz = -7; hz <= 7; hz += 3.5) {
+      const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.1, 6), matFencePost);
+      rail.position.set(4.0, 2.4, hz);
+      grp.add(rail);
+    }
+    const handrail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 15), matFencePost);
+    handrail.position.set(4.0, 2.95, 0);
+    grp.add(handrail);
 
     // Translucent Maintenance Envelope Box
-    const env = new THREE.Mesh(new THREE.BoxGeometry(24, 5.5, 11), matEnvelopeBox);
+    const env = new THREE.Mesh(new THREE.BoxGeometry(11, 5.5, 24), matEnvelopeBox);
     env.position.set(0, 2.75, 0);
     grp.add(env);
     envelopeMeshes.push(env);
@@ -1180,18 +1365,120 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     registerClickable(grp, equipKey);
     scene.add(grp);
 
-    // Isolation & Kicker Valves
-    createValveStation(x + 11, 2.2, z, isLauncher ? rDischHeader : rSuctHeader, { hasPlatform: true, equipKey });
-    createValveStation(x + 4, 2.2, z - 3.5, 0.55, { hasPlatform: false, equipKey });
-    createCadGreenLabel(labelText, x, 0.3, z + 7.2, 16, 2.4, -Math.PI / 2, 0, 0);
+    // Isolation MOV/ESDV at the pipeline-side minor barrel end
+    const isolationZ = z - closureSign * 10.8;
+    createValveStation(x, 2.2, isolationZ, isLauncher ? rDischHeader * 1.15 : rSuctHeader * 1.15, {
+      rotationY: Math.PI / 2,
+      hasPlatform: true,
+      equipKey,
+      valveColorMat: equipKey === "pig_launcher" ? matRedFire : matValveBody,
+    });
+
+    // Kicker (launcher) / receiver balance connection on the closure side.
+    const kickerZ = z + closureSign * 4.2;
+    createValveStation(x - 4.2, 1.7, kickerZ, 0.38, {
+      rotationY: Math.PI / 2,
+      hasActuator: false,
+      hasPlatform: false,
+      equipKey,
+    });
+    createCadGreenLabel(
+      labelText,
+      x - 9.5,
+      0.3,
+      z,
+      17,
+      2.4,
+      -Math.PI / 2,
+      Math.PI / 2,
+      0
+    );
   }
 
-  buildPigTrapStation(-132, -82, `${suctLine.nominal_size_in || '48"'} PIG RECEIVER`, "pig_receiver", false);
-  buildPigTrapStation(-132, -52, `${dischLine.nominal_size_in || '48"'} PIG LAUNCHER`, "pig_launcher", true);
+  buildPigTrapStation(-196, -86, `${suctLine.nominal_size_in || '48"'} PIG RECEIVER`, "pig_receiver", false);
+  buildPigTrapStation(-196, -58, `${dischLine.nominal_size_in || '48"'} PIG LAUNCHER`, "pig_launcher", true);
 
-  // Station Suction Header Upstream Spine (PIG-R Outlet MOV ➔ MFS Inlet Manifold Tie-In)
+  // ── Pig by-pass / kicker / receiver manifold ──────────────────────────────
+  // Common pig by-pass header (x = -190, z = -96 .. -48) joins station inlet,
+  // station suction header, PIG-R kicker, line valve, PIG-L kicker, station
+  // discharge header, and station outlet.
   createCadPipeRoute(
     [
+      new THREE.Vector3(-190, 2.2, -96),
+      new THREE.Vector3(-190, 2.2, -82),
+      new THREE.Vector3(-190, 2.2, -62),
+      new THREE.Vector3(-190, 2.2, -48),
+    ],
+    Math.max(0.55, rSuctHeader * 0.72),
+    matYellowPipe,
+    {
+      flowArrows: 3,
+      equipKey: "pig_receiver",
+      lineKey: "pig_bypass",
+      segmentTitle: "PIG-R / PIG-L Ortak Pig By-Pass Kolektörü",
+      fromBoundary: "Ana İletim Giriş Hattı & Station Suction Tie-In",
+      toBoundary: "Station Discharge Tie-In & Ana İletim Çıkış Hattı",
+      registerParticlePath: true,
+    }
+  );
+  // Mainline by-pass Line Valve between suction (z = -82) and discharge (z = -62) tie-ins.
+  createValveStation(-190, 2.2, -72, Math.max(0.52, rSuctHeader * 0.78), {
+    rotationY: Math.PI / 2,
+    hasActuator: true,
+    hasPlatform: true,
+    equipKey: "pig_receiver",
+    valveColorMat: matRedFire,
+  });
+  // PIG-R kicker & receiver balance line (Pig By-Pass ➔ PIG-R barrel).
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(-190, 2.2, -84),
+      new THREE.Vector3(-196, 2.2, -84),
+    ],
+    0.34,
+    matYellowPipe,
+    {
+      equipKey: "pig_receiver",
+      lineKey: "pig_kicker_receiver",
+      segmentTitle: "PIG-R Kicker & Receiver Dengeleme Hattı (Pig By-Pass Bağlantısı)",
+      fromBoundary: "Ortak Pig By-Pass Hattı",
+      toBoundary: "PIG-R Alıcı Kovan Gövdesi",
+    }
+  );
+  createValveStation(-193, 2.2, -84, 0.35, {
+    rotationY: 0,
+    hasActuator: true,
+    hasPlatform: false,
+    equipKey: "pig_receiver",
+  });
+  // PIG-L kicker line (Pig By-Pass ➔ PIG-L barrel).
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(-190, 2.2, -60),
+      new THREE.Vector3(-196, 2.2, -60),
+    ],
+    0.34,
+    matYellowPipe,
+    {
+      equipKey: "pig_launcher",
+      lineKey: "pig_kicker_launcher",
+      segmentTitle: "PIG-L Kicker Hattı (Pig By-Pass Bağlantısı)",
+      fromBoundary: "Ortak Pig By-Pass Hattı",
+      toBoundary: "PIG-L Atıcı Kovan Gövdesi",
+    }
+  );
+  createValveStation(-193, 2.2, -60, 0.35, {
+    rotationY: 0,
+    hasActuator: true,
+    hasPlatform: false,
+    equipKey: "pig_launcher",
+  });
+
+  // Station Suction Header Upstream Spine (PIG by-pass ➔ MFS Inlet Manifold Tie-In)
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(-190, 2.2, -82),
+      new THREE.Vector3(-160, 2.2, -82),
       new THREE.Vector3(-122, 2.2, -82),
       new THREE.Vector3(-92, 2.2, -82),
       new THREE.Vector3(-92, 2.2, -92),
@@ -1203,22 +1490,22 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       flowArrows: 3,
       equipKey: "pig_receiver",
       lineKey: "suction_header",
-      segmentTitle: "Station Suction Header (Giriş Pig Kovanı ➔ MFS Kollektörü)",
-      fromBoundary: "Giriş Pig Kovanı (PIG-R) Çıkış İzolasyon Vanası (MOV/ESDV)",
+      segmentTitle: "Station Suction Header (Pig By-Pass ➔ MFS Kollektörü)",
+      fromBoundary: "Ortak Pig By-Pass Hattı Emiş Bağlantısı",
       toBoundary: "MFS Çoklu Siklon Giriş Manifoldu Bağlantısı (TC Suction Header'a Devam Eden Ana Omurga)",
       registerParticlePath: true,
     }
   );
 
-  // Station Discharge Header Downstream Spine (Gas Cooler Cooled Return ➔ Outlet Pig Launcher PIG-L).
-  // Full main-header diameter (rDischHeader) continues unbroken to PIG-L inlet isolation valve.
+  // Station Discharge Header Downstream Spine (Gas Cooler Cooled Return ➔ PSV & ESD Risers ➔ Ultrasonic Meter ➔ Pig By-Pass).
   createCadPipeRoute(
     [
       new THREE.Vector3(-0.5, 1.6, -48),
       new THREE.Vector3(-0.5, coolerReturnY, -48),
       new THREE.Vector3(-98, coolerReturnY, -48),
-      new THREE.Vector3(-98, 2.2, -52),
-      new THREE.Vector3(-122, 2.2, -52),
+      new THREE.Vector3(-98, 2.2, -62),
+      new THREE.Vector3(-160, 2.2, -62),
+      new THREE.Vector3(-190, 2.2, -62),
     ],
     rDischHeader,
     matYellowPipe,
@@ -1226,26 +1513,285 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       flowArrows: 4,
       equipKey: "pig_launcher",
       lineKey: "discharge_header",
-      segmentTitle: "Station Discharge Header (Soğutucu Dönüşü ➔ Çıkış Pig Kovanı PIG-L)",
+      segmentTitle: "Station Discharge Header (Soğutucu Dönüşü ➔ PSV/ESD ➔ USM ➔ Pig By-Pass)",
       fromBoundary: "TC Ünite Çıkış Hatları Bağlantı Headerı (Gaz Soğutucu Çıkış Tie-In)",
-      toBoundary: "Çıkış Pig Kovanı (PIG-L) Giriş İzolasyon Vanası (MOV/ESDV)",
+      toBoundary: "Ortak Pig By-Pass Hattı Basma Bağlantısı",
       registerParticlePath: true,
     }
   );
 
+  // ── 1) PSV Riser Bank on Station Discharge Header (rising vertically on the line) ──
+  const psvCount3d = Math.max(1, Math.min(4, Number(eq.safety_relief_and_blowdown?.psv_count || 2)));
+  const psvBaseX = -24;
+  const psvSpanX = Math.max(6, psvCount3d * 3.4);
+  const psvPlatformY = coolerReturnY + 2.4;
+  const psvRiserTopY = coolerReturnY + 3.3;
+  const psvVentTopY = coolerReturnY + 10.6;
+  const psvBankGroup = new THREE.Group();
+
+  // Olive-steel elevated grating platform straddling the discharge header (matching cad_ref_1.jpg)
+  const psvDeck = new THREE.Mesh(new THREE.BoxGeometry(psvSpanX + 3.0, 0.20, 5.2), matOliveSteel);
+  psvDeck.position.set(psvBaseX, psvPlatformY, -48);
+  psvBankGroup.add(psvDeck);
+  const psvRailEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(psvSpanX + 3.0, 1.1, 5.2));
+  const psvRails = new THREE.LineSegments(psvRailEdges, new THREE.LineBasicMaterial({ color: 0xcab300 }));
+  psvRails.position.set(psvBaseX, psvPlatformY + 0.55, -48);
+  psvBankGroup.add(psvRails);
+  [
+    [psvBaseX - (psvSpanX + 2.4) / 2, -50.3],
+    [psvBaseX + (psvSpanX + 2.4) / 2, -50.3],
+    [psvBaseX - (psvSpanX + 2.4) / 2, -45.7],
+    [psvBaseX + (psvSpanX + 2.4) / 2, -45.7],
+  ].forEach(([lx, lz]) => {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, psvPlatformY, 0.22), matOliveSteel);
+    leg.position.set(lx, psvPlatformY / 2, lz);
+    psvBankGroup.add(leg);
+  });
+
+  for (let i = 0; i < psvCount3d; i++) {
+    const offset = (i - (psvCount3d - 1) / 2) * 3.2;
+    const rx = psvBaseX + offset;
+
+    // Vertical riser teeing straight up from the discharge header
+    createCadPipeRoute(
+      [
+        new THREE.Vector3(rx, coolerReturnY, -48),
+        new THREE.Vector3(rx, psvRiserTopY, -48),
+      ],
+      0.30,
+      matYellowPipe,
+      {
+        equipKey: "safety_relief",
+        lineKey: "psv_inlet",
+        segmentTitle: `PSV-10${i + 1} Dikey Giriş Riser Hattı (Discharge Header Üzeri)`,
+        fromBoundary: "Station Discharge Header",
+        toBoundary: `PSV-10${i + 1} Giriş Flanşı`,
+      }
+    );
+
+    const unit = new THREE.Group();
+    unit.position.set(rx, psvRiserTopY, -48);
+    const inFlg = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 0.18, 16), matFlangeSteel);
+    unit.add(inFlg);
+    const blockValve = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.55, 14), matValveBody);
+    blockValve.position.y = 0.38;
+    unit.add(blockValve);
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.50, 1.15, 16), matValveBody);
+    body.position.y = 1.22;
+    unit.add(body);
+    const bonnet = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.35, 1.05, 14), matRedFire);
+    bonnet.position.y = 2.30;
+    unit.add(bonnet);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 8), matActuator);
+    cap.position.y = 2.92;
+    unit.add(cap);
+
+    // Side discharge nozzle + vertical atmospheric relief stack rising straight up
+    const sideNozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 1.1, 12), matYellowPipe);
+    sideNozzle.rotation.x = Math.PI / 2;
+    sideNozzle.position.set(0, 1.35, -0.65);
+    unit.add(sideNozzle);
+    const ventPipeH = psvVentTopY - (psvRiserTopY + 1.35);
+    const ventPipe = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.30, ventPipeH, 14), matVesselGrey);
+    ventPipe.position.set(0, 1.35 + ventPipeH / 2, -1.15);
+    unit.add(ventPipe);
+    const arrestorTip = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.26, 1.1, 14), matRedFire);
+    arrestorTip.position.set(0, 1.35 + ventPipeH + 0.55, -1.15);
+    unit.add(arrestorTip);
+
+    psvBankGroup.add(unit);
+  }
+  registerClickable(psvBankGroup, "safety_relief");
+  scene.add(psvBankGroup);
+
+  // ── 2) ESD / Blowdown Riser Bank on Station Discharge Header (rising vertically on the line) ──
+  const esdCount3d = Math.max(1, Math.min(6, Number(eq.esd_sizing?.esd_count || 2)));
+  const esdBaseX = -46;
+  const esdSpanX = Math.max(6, esdCount3d * 3.4);
+  const esdPlatformY = coolerReturnY + 2.4;
+  const esdRiserTopY = coolerReturnY + 3.1;
+  const esdVentTopY = coolerReturnY + 9.8;
+  const esdBankGroup = new THREE.Group();
+
+  const esdDeck = new THREE.Mesh(new THREE.BoxGeometry(esdSpanX + 3.0, 0.20, 5.2), matOliveSteel);
+  esdDeck.position.set(esdBaseX, esdPlatformY, -48);
+  esdBankGroup.add(esdDeck);
+  const esdRailEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(esdSpanX + 3.0, 1.1, 5.2));
+  const esdRails = new THREE.LineSegments(esdRailEdges, new THREE.LineBasicMaterial({ color: 0xcab300 }));
+  esdRails.position.set(esdBaseX, esdPlatformY + 0.55, -48);
+  esdBankGroup.add(esdRails);
+  [
+    [esdBaseX - (esdSpanX + 2.4) / 2, -50.3],
+    [esdBaseX + (esdSpanX + 2.4) / 2, -50.3],
+    [esdBaseX - (esdSpanX + 2.4) / 2, -45.7],
+    [esdBaseX + (esdSpanX + 2.4) / 2, -45.7],
+  ].forEach(([lx, lz]) => {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, esdPlatformY, 0.22), matOliveSteel);
+    leg.position.set(lx, esdPlatformY / 2, lz);
+    esdBankGroup.add(leg);
+  });
+
+  for (let i = 0; i < esdCount3d; i++) {
+    const offset = (i - (esdCount3d - 1) / 2) * 3.2;
+    const ex = esdBaseX + offset;
+
+    createCadPipeRoute(
+      [
+        new THREE.Vector3(ex, coolerReturnY, -48),
+        new THREE.Vector3(ex, esdRiserTopY, -48),
+      ],
+      0.32,
+      matYellowPipe,
+      {
+        equipKey: "esd_valves",
+        lineKey: "esd_riser",
+        segmentTitle: `ESD/BDV-10${i + 1} Dikey Riser Hattı (Discharge Header Üzeri)`,
+        fromBoundary: "Station Discharge Header",
+        toBoundary: `ESD/BDV-10${i + 1} Acil Boşaltma & Kapatma Vanası`,
+      }
+    );
+
+    const esdUnit = new THREE.Group();
+    esdUnit.position.set(ex, esdRiserTopY, -48);
+    const flgLow = new THREE.Mesh(new THREE.CylinderGeometry(0.54, 0.54, 0.18, 16), matFlangeSteel);
+    esdUnit.add(flgLow);
+    const valveSphere = new THREE.Mesh(new THREE.SphereGeometry(0.52, 16, 12), matRedFire);
+    valveSphere.position.y = 0.62;
+    esdUnit.add(valveSphere);
+    const actuator = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.95, 14), matActuator);
+    actuator.rotation.z = Math.PI / 2;
+    actuator.position.set(0.68, 0.62, 0);
+    esdUnit.add(actuator);
+    const flgHigh = new THREE.Mesh(new THREE.CylinderGeometry(0.50, 0.50, 0.18, 16), matFlangeSteel);
+    flgHigh.position.y = 1.24;
+    esdUnit.add(flgHigh);
+    const stackH = esdVentTopY - (esdRiserTopY + 1.24);
+    const stackPipe = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, stackH, 14), matVesselGrey);
+    stackPipe.position.y = 1.24 + stackH / 2;
+    esdUnit.add(stackPipe);
+    const stackTip = new THREE.Mesh(new THREE.CylinderGeometry(0.40, 0.28, 1.0, 14), matRedFire);
+    stackTip.position.y = 1.24 + stackH + 0.5;
+    esdUnit.add(stackTip);
+
+    esdBankGroup.add(esdUnit);
+  }
+  registerClickable(esdBankGroup, "esd_valves");
+  scene.add(esdBankGroup);
+
+  // Mainline full-bore ESD isolation valves on discharge and suction headers
+  createValveStation(-56, coolerReturnY, -48, Math.max(0.78, rDischHeader * 1.15), {
+    hasActuator: true,
+    hasPlatform: true,
+    equipKey: "esd_valves",
+    valveColorMat: matRedFire,
+  });
+  createValveStation(-102, 2.2, -82, Math.max(0.72, rSuctHeader * 1.15), {
+    hasActuator: true,
+    hasPlatform: true,
+    equipKey: "esd_valves",
+    valveColorMat: matRedFire,
+  });
+
+  createCadPipeCallout(
+    `PSV-101..10${psvCount3d} & ESD-101..10${esdCount3d} • DISCHARGE HEADER EMNİYET MANİFOLDU`,
+    "Hat Üzeri Dikey Riser PSV & ESD Vanaları (Tıklayarak Sayı & Çap Hesaplayın)",
+    -35,
+    coolerReturnY + 11.8,
+    -48,
+    { width: 32, height: 4.8, pipeY: coolerReturnY + rDischHeader, accentColor: "#ef4444", lineKey: "discharge_header", equipKey: "safety_relief" }
+  );
+
+  // ── 3) Ultrasonic Gas Flow Meter (USM - FT-401) on Station Discharge Header ──
+  const usmX = -74;
+  const usmY = coolerReturnY;
+  const usmZ = -48;
+  const usmGroup = new THREE.Group();
+  usmGroup.position.set(usmX, usmY, usmZ);
+
+  // Precision machined USM spool body + upstream flow conditioner spool
+  const usmRadius = Math.max(0.68, rDischHeader * 1.18);
+  const usmSpool = new THREE.Mesh(
+    new THREE.CylinderGeometry(usmRadius, usmRadius, 3.6, 24),
+    matCadBlueSteel
+  );
+  usmSpool.rotation.z = Math.PI / 2;
+  usmGroup.add(usmSpool);
+
+  // Heavy ANSI weld-neck flanges (flow conditioner, USM inlet, USM outlet)
+  [-3.8, -1.8, 1.8].forEach((dx) => {
+    const flg = new THREE.Mesh(
+      new THREE.CylinderGeometry(usmRadius * 1.38, usmRadius * 1.38, 0.32, 20),
+      matFlangeSteel
+    );
+    flg.rotation.z = Math.PI / 2;
+    flg.position.x = dx;
+    usmGroup.add(flg);
+  });
+
+  // 8-path chordal ultrasonic transducer pockets / bosses in X-pattern
+  [-1.0, -0.35, 0.35, 1.0].forEach((dx) => {
+    [
+      [0, usmRadius * 0.85, usmRadius * 0.85, Math.PI / 4],
+      [0, usmRadius * 0.85, -usmRadius * 0.85, -Math.PI / 4],
+      [0, -usmRadius * 0.85, usmRadius * 0.85, (3 * Math.PI) / 4],
+      [0, -usmRadius * 0.85, -usmRadius * 0.85, -(3 * Math.PI) / 4],
+    ].forEach(([, dy, dz, ang]) => {
+      const boss = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 0.55, 10), matSilverVessel);
+      boss.position.set(dx, dy, dz);
+      boss.rotation.x = ang;
+      usmGroup.add(boss);
+    });
+  });
+
+  // Top-mounted SPU / flow computer transmitter enclosure (FT-401)
+  const usmPost = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 1.25, 10), matSilverVessel);
+  usmPost.position.set(0, usmRadius + 0.6, 0);
+  usmGroup.add(usmPost);
+  const usmHead = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.85, 0.75), matCadBlueSteel);
+  usmHead.position.set(0, usmRadius + 1.35, 0);
+  usmGroup.add(usmHead);
+
+  // Access platform under the ultrasonic meter run
+  const usmDeck = new THREE.Mesh(new THREE.BoxGeometry(8.5, 0.18, 4.6), matOliveSteel);
+  usmDeck.position.set(-0.8, -usmRadius - 0.55, 0);
+  usmGroup.add(usmDeck);
+  const usmLegH = Math.max(0.5, usmY - usmRadius - 0.55);
+  [
+    [-4.8, -2.1],
+    [3.2, -2.1],
+    [-4.8, 2.1],
+    [3.2, 2.1],
+  ].forEach(([lx, lz]) => {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.18, usmLegH, 0.18), matOliveSteel);
+    leg.position.set(lx, -usmRadius - 0.55 - usmLegH / 2, lz);
+    usmGroup.add(leg);
+  });
+
+  registerClickable(usmGroup, "ultrasonic_meter");
+  scene.add(usmGroup);
+
+  createCadPipeCallout(
+    `FT-401 • ULTRASONIC FLOW METER (${dischLine.nominal_size_in || '40"'} AGA-9)`,
+    `8-Path Chordal Gaz Ölçüm İstasyonu • Hız: ${eq.ultrasonic_meter?.gas_velocity_ms || dischLine.actual_velocity_ms || 15.0} m/s`,
+    usmX,
+    coolerReturnY + usmRadius + 3.6,
+    usmZ,
+    { width: 28, height: 4.5, pipeY: coolerReturnY + rDischHeader, accentColor: "#38bdf8", lineKey: "discharge_header", equipKey: "ultrasonic_meter" }
+  );
+
   // 3D Battery-Limit & Main-Header Callouts in North-West Pig Trap & Recycle Yard
   createCadPipeCallout(
-    `L-101/115 • ANA İLETİM SINIRI (BATTERY LIMIT)`,
-    `Boru Hattı Tie-In ➔ PIG-R Girişi / PIG-L Çıkışı`,
-    -154,
-    6.2,
-    -68,
-    { width: 25, height: 4.6, pipeY: 0.8, accentColor: "#a855f7", lineKey: "mainline_inlet", equipKey: "tiein" }
+    `L-101/115 • 22.5° ÇİFT HOT BEND OFFSET (PIG-R / PIG-L)`,
+    `Kovan Aksında Toprağa Giriş & Yeraltı Yatay Offset (-1.2 m)`,
+    -196,
+    11.2,
+    -72,
+    { width: 17, height: 3.0, pipeY: 2.2, accentColor: "#a855f7", lineKey: "mainline_inlet", equipKey: "tiein" }
   );
   createCadPipeCallout(
     `L-102 • STATION SUCTION HEADER (BAŞLANGIÇ)`,
-    `Sınır: PIG-R Çıkış MOV ➔ MFS & TC Suction Header (${suctLine.nominal_size_in || '48"'})`,
-    -104,
+    `Sınır: PIG by-pass ➔ MFS & TC Suction Header (${suctLine.nominal_size_in || '48"'})`,
+    -170,
     6.4,
     -82,
     { width: 26, height: 4.8, pipeY: 2.2 + rSuctHeader, accentColor: "#38bdf8", lineKey: "suction_header", equipKey: "pig_receiver" }
@@ -2621,7 +3167,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     manifold: { pos: new THREE.Vector3(18, 18, -32), look: new THREE.Vector3(-12, 3, -10) },
     filtration: { pos: new THREE.Vector3(-45, 36, -118), look: new THREE.Vector3(-45, 4, -68) },
     cooler: { pos: new THREE.Vector3(24, 30, -30), look: new THREE.Vector3(22, 7, -72) },
-    tiein: { pos: new THREE.Vector3(-165, 38, -115), look: new THREE.Vector3(-122, 3, -68) },
+    tiein: { pos: new THREE.Vector3(-232, 22, -74), look: new THREE.Vector3(-192, 0.2, -72) },
     control: { pos: new THREE.Vector3(-25, 55, 155), look: new THREE.Vector3(-15, 5, 85) },
   };
 
@@ -2782,9 +3328,11 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     station_recycle: { pos: new THREE.Vector3(50, 16, 10), look: new THREE.Vector3(45, 2, -14) },
     cooler_bypass: { pos: new THREE.Vector3(20, 20, -60), look: new THREE.Vector3(20, 6, -80) },
     condensate_system: { pos: new THREE.Vector3(25, 12, -45), look: new THREE.Vector3(25, 2, -68) },
-    safety_relief: { pos: new THREE.Vector3(-98, 24, -75), look: new THREE.Vector3(-98, 10, -91) },
-    pig_receiver: { pos: new THREE.Vector3(-152, 20, -82), look: new THREE.Vector3(-132, 2, -82) },
-    pig_launcher: { pos: new THREE.Vector3(-152, 20, -52), look: new THREE.Vector3(-132, 2, -52) },
+    safety_relief: { pos: new THREE.Vector3(-24, 18, -28), look: new THREE.Vector3(-24, 6, -48) },
+    esd_valves: { pos: new THREE.Vector3(-46, 18, -28), look: new THREE.Vector3(-46, 6, -48) },
+    ultrasonic_meter: { pos: new THREE.Vector3(-74, 15, -30), look: new THREE.Vector3(-74, 4, -48) },
+    pig_receiver: { pos: new THREE.Vector3(-214, 22, -86), look: new THREE.Vector3(-196, 2, -86) },
+    pig_launcher: { pos: new THREE.Vector3(-214, 22, -58), look: new THREE.Vector3(-196, 2, -58) },
     tiein: { pos: new THREE.Vector3(-85, 20, -80), look: new THREE.Vector3(-85, 2, -104) },
     anti_surge: { pos: new THREE.Vector3(-22, 20, -8), look: new THREE.Vector3(-22, 2, -18) },
     control_building: { pos: new THREE.Vector3(-30, 24, 60), look: new THREE.Vector3(-30, 8, 90) },
@@ -2894,22 +3442,66 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         rows.push(["PCV IEC 60534 Boyut:", `${pcvSizing.valve_inch} • Cv ${Number(pcvSizing.required_cv || 0).toFixed(1)} • Açıklık %${Number(pcvSizing.opening_percent || 0).toFixed(1)}`]);
       }
     } else if (key === "safety_relief") {
-      tag = `VENT-01 & PSV-101/102`;
-      sub = `İstasyon Acil Tahliye & 35m Vent Bacası`;
+      const psv = eq.safety_relief_and_blowdown || {};
+      const auto = psv.auto_inputs || {};
+      const psvSizing = psv.psv_sizing || {};
+      const compStr = auto.gas_comp
+        ? Object.entries(auto.gas_comp)
+            .filter(([, v]) => Number(v) > 0)
+            .slice(0, 4)
+            .map(([k, v]) => `${k} %${Number(v).toFixed(1)}`)
+            .join(", ")
+        : "CH4 %85, C2H6 %7...";
+      tag = `PSV-101..10${psv.psv_count || 2} (API 520 / 526)`;
+      sub = `Discharge Header Dikey Riser Emniyet Tahliye Vanaları`;
       rows = [
-        ["PSV Ayar Basıncı:", `${eq.safety_relief_and_blowdown?.psv_set_pressure_bar || 82.5} bar(g) (1 Duty + 1 Standby)`],
-        ["Tahliye Kapasitesi:", `%100 Maksimum İstasyon Debisi`],
-        ["BDV Acil Boşaltma Süresi:", `< ${eq.safety_relief_and_blowdown?.depressurization_time_min || 15} Dakika (API 521)`],
-        ["Baca Yüksekliği / Emniyet:", `35 metre / Flame Arrester Alev Tutucu`],
+        ["Gaz Bileşimi (Programdan):", `${escapeHtml(compStr)} • MW ${auto.mw || sm.gas_mw || 18.95} g/mol`],
+        ["EOS / Z / k (Programdan):", `${String(auto.eos_model || sm.eos_model || "coolprop").toUpperCase()} • Z=${auto.z ?? psvSizing.z_used ?? 0.87} • k=${auto.k ?? psvSizing.k_used ?? 1.55}`],
+        ["Vana Giriş P / T (Programdan):", `${auto.p_upstream_bar || sm.discharge_pressure_bar || 75} bar(a) • ${auto.t_relieving_c || eq.air_coolers?.inlet_temp_c || 50} °C`],
+        ["Toplam Tahliye Debisi:", `${auto.mass_flow_total_kgs || sm.total_mass_flow_kgs || 441.8} kg/s`],
+        ["Toplam / Vana Başına Alan:", `${Number(psvSizing.required_area_total_sqin || psvSizing.required_area_sqin || 0).toFixed(3)} in² / ${Number(psvSizing.required_area_sqin || 0).toFixed(3)} in²`],
+        ["Hesaplanan Eşdeğer Çap:", `Ø${Number(psvSizing.required_diameter_in || 0).toFixed(2)}" (Orifis Ø${Number(psvSizing.selected_orifice_diameter_in || 0).toFixed(2)}")`],
+        ["Seçilen API 526 Orifis / Flanş:", `${psvSizing.selected_orifice || "-"} (${psvSizing.inlet_flange_in || '8"'} × ${psvSizing.outlet_flange_in || '10"'})`],
+        ["Önerilen Min. PSV Sayısı:", `${psvSizing.recommended_duty_count || 1} Duty + 1 Standby (Toplam ${psvSizing.recommended_total_count || 2})`],
       ];
-      const psvSizing = eq.safety_relief_and_blowdown?.psv_sizing;
-      if (psvSizing) {
-        rows.push(
-          ["API 520 Gerekli Alan:", `${Number(psvSizing.required_area_sqin || 0).toFixed(3)} in²`],
-          ["Seçilen Orifis:", `${psvSizing.selected_orifice || '-'} (${Number(psvSizing.selected_orifice_area_sqin || 0).toFixed(3)} in²)`],
-          ["Orifis Yükü:", `%${Number(psvSizing.orifice_loading_pct || 0).toFixed(1)} • ${psvSizing.flow_type || 'Gas'}`],
-        );
-      }
+    } else if (key === "esd_valves") {
+      const esd = eq.esd_sizing || {};
+      const auto = esd.auto_inputs || {};
+      const suct = esd.suction || {};
+      const disch = esd.discharge || {};
+      const compStr = auto.gas_comp
+        ? Object.entries(auto.gas_comp)
+            .filter(([, v]) => Number(v) > 0)
+            .slice(0, 4)
+            .map(([k, v]) => `${k} %${Number(v).toFixed(1)}`)
+            .join(", ")
+        : "CH4 %85, C2H6 %7...";
+      tag = `ESD / BDV-101..10${esd.esd_count || 2} (IEC 60534)`;
+      sub = `Discharge Header Dikey Riser & Hat Acil Kapatma Vanaları`;
+      rows = [
+        ["Gaz Bileşimi (Programdan):", `${escapeHtml(compStr)} • MW ${auto.mw || sm.gas_mw || 18.95} g/mol`],
+        ["Basma Giriş P / T (Programdan):", `${auto.discharge_p_in_bar || sm.discharge_pressure_bar || 74.6} bar(a) • ${auto.discharge_t_c || 45.0} °C`],
+        ["Emiş Giriş P / T (Programdan):", `${auto.suction_p_in_bar || sm.suction_pressure_bar || 50.7} bar(a) • ${auto.suction_t_c || 19.0} °C`],
+        ["Vana Başına / Toplam Debi:", `${disch.flow_per_valve_kgs || sm.total_mass_flow_kgs || 441.8} kg/s / ${auto.mass_flow_total_kgs || sm.total_mass_flow_kgs || 441.8} kg/s`],
+        ["ESD Gerekli Cv (Vana / Toplam):", `Cv ${Number(disch.required_cv || 0).toFixed(0)} / Toplam Cv ${Number(disch.required_cv_total || disch.required_cv || 0).toFixed(0)}`],
+        ["Hesaplanan Aerodinamik Çap:", `Basma: ${disch.calculated_size_in || disch.selected_size_in || '-'}" (DN${disch.calculated_dn_mm || disch.selected_dn_mm || '-'}) • Emiş: ${suct.calculated_size_in || suct.selected_size_in || '-'}"`],
+        ["Tam Geçişli Hat ESD Çapı:", `Basma: ${disch.selected_size_in || '-'}" • Emiş: ${suct.selected_size_in || '-'}"`],
+        ["Önerilen Paralel ESD Sayısı:", `${disch.recommended_duty_count || 1} Aktif (Kurulu: ${esd.esd_count || 2} Adet)`],
+      ];
+    } else if (key === "ultrasonic_meter") {
+      const usm = eq.ultrasonic_meter || {};
+      tag = `${usm.tag || "FT-401"} • ULTRASONIC METER`;
+      sub = `${usm.meter_type || "8-Path Chordal Ultrasonic Flow Meter (AGA-9)"}`;
+      rows = [
+        ["Anma Çapı (Header):", `${usm.nominal_size_in || dischLine.nominal_size_in || '40"'}`],
+        ["Hat Basıncı & Sıcaklığı:", `${usm.pressure_bar_a || sm.discharge_pressure_bar || 74.6} bar(a) • ${usm.temperature_c || 45.0} °C`],
+        ["Kütlesel Debi:", `${usm.mass_flow_kgs || sm.total_mass_flow_kgs || 441.8} kg/s`],
+        ["Gerçek Hacimsel Debi (Q_act):", `${usm.actual_volumetric_flow_m3h || 26500} m³/h (ACMH)`],
+        ["Standart Debi:", `${usm.standard_flow_mmscmd || sm.volumetric_flow_mmscmd || 47.5} MMSCMD`],
+        ["Hat Gaz Hızı:", `${usm.gas_velocity_ms || dischLine.actual_velocity_ms || 15.8} m/s (Maks: ${usm.max_recommended_velocity_ms || 25.0} m/s)`],
+        ["Ses Hızı (Speed of Sound):", `${usm.speed_of_sound_ms || 410.0} m/s • ρ=${usm.gas_density_kgm3 || 60.0} kg/m³`],
+        ["Doğruluk & Düz Boru:", `${usm.accuracy_class || "±0.15%"} • ${usm.straight_run_requirement || "10D / 5D"}`],
+      ];
     } else if (key === "condensate_system") {
       tag = `TK-101`;
       sub = `Kondensat Sıvı Toplama ve Depolama Sistemi`;
@@ -2925,8 +3517,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       rows = [
         ["Kovan Ölçüsü:", `PIG-R 56"x48" (ANSI Class 600)`],
         ["İşletme Basıncı:", `${sm.suction_pressure_bar || 45.0} bar(a)`],
-        ["Hızlı Açılır Kapak:", `Band-lock / Clamp tipi emniyet kilitli`],
-        ["Kicker / Dengeleme:", `NPS 8" By-pass & Tahliye Bağlantısı`],
+        ["Hızlı Açılır Kapak:", `Band-lock / Clamp tipi • PIG-L kapısına dönük`],
+        ["Kicker / Dengeleme:", `PIG by-pass hattına receiver & dengeleme bağlantısı`],
         ["İzolasyon:", `Full-Bore Motorlu Küresel Vana (MOV/ESDV)`],
       ];
     } else if (key === "cooler_bypass") {
@@ -3012,8 +3604,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       rows = [
         ["Ana Hat Çapı:", `${suctLine.nominal_size_in || '48"'} NPS (OD: ${suctLine.od_mm || 1219} mm) ${suctLine.pipe_material || 'API 5L X70'}`],
         ["Kovan Ölçüsü:", `PIG-R 56"x48" / PIG-L 56"x48" (ANSI Class 900)`],
+        ["Oryantasyon:", `Kapaklar karşılıklı • Batarya limiti batı sahasında`],
         ["İşletme Basıncı:", `${sm.suction_pressure_bar || 45} bar(a) Emiş • ${sm.discharge_pressure_bar || 75} bar(a) Basma`],
-        ["Kicker & İzolasyon:", `Full-Bore Motorlu Küresel Vanalar (MOV/ESDV)`],
+        ["By-Pass / Kicker:", `Ortak by-pass hattı • hat vanası • PIG-L kicker bağlantısı`],
       ];
     } else {
       tag = key.toUpperCase();
@@ -3022,6 +3615,109 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         ["Durum:", `Aktif`],
         ["Standart:", `BOTAŞ Standart Şartnamesi`],
       ];
+    }
+
+    let interactiveFormHtml = "";
+    if (key === "safety_relief") {
+      const psv = eq.safety_relief_and_blowdown || {};
+      const psvSetVal = psv.psv_set_pressure_bar ?? 82.5;
+      const psvOverVal = psv.psv_overpressure_pct ?? 10;
+      const psvBackVal = psv.psv_back_pressure_bar ?? 1.01325;
+      const psvTypeVal = psv.psv_valve_type || "conventional";
+      const psvCountVal = Number(psv.psv_count || 2);
+      const psvDutyVal = Number(psv.psv_duty_count || 1);
+      interactiveFormHtml = `
+        <div style="background: rgba(15,23,42,0.85); border: 1px solid rgba(56,189,248,0.35); border-radius: 6px; padding: 8px; margin-bottom: 10px;">
+          <div style="font-size: 10.5px; font-weight: 700; color: #38bdf8; margin-bottom: 6px;">
+            🛡️ PSV Sayı &amp; Çap Hesaplama Girdileri (Kullanıcı Girişi)
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 10px;">
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              Toplam PSV Adedi
+              <select id="hud-psv-count" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px;">
+                ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${psvCountVal === n ? "selected" : ""}>${n} Adet</option>`).join("")}
+              </select>
+            </label>
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              Eşzamanlı (Duty) PSV
+              <select id="hud-psv-duty" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px;">
+                ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${psvDutyVal === n ? "selected" : ""}>${n} Duty</option>`).join("")}
+              </select>
+            </label>
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              Set Basıncı (bar g)
+              <input type="number" id="hud-psv-set" step="0.5" value="${psvSetVal}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+            </label>
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              Aşırı Basınç (%)
+              <input type="number" id="hud-psv-over" step="1" min="1" max="25" value="${psvOverVal}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+            </label>
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              Karşı Basınç (bar a)
+              <input type="number" id="hud-psv-back" step="0.05" value="${psvBackVal}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+            </label>
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              PSV Vana Tipi
+              <select id="hud-psv-type" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px;">
+                <option value="conventional" ${psvTypeVal === "conventional" ? "selected" : ""}>Conventional</option>
+                <option value="balanced_bellows" ${psvTypeVal === "balanced_bellows" ? "selected" : ""}>Balanced Bellows</option>
+                <option value="pilot" ${psvTypeVal === "pilot" ? "selected" : ""}>Pilot Operated</option>
+              </select>
+            </label>
+          </div>
+          <button id="btn-hud-calc-psv" style="margin-top: 7px; width: 100%; background: #059669; color: #fff; border: 1px solid #34d399; border-radius: 5px; padding: 5px 8px; font-size: 10.5px; font-weight: 700; cursor: pointer;">
+            🧮 PSV Sayı &amp; Çapını Hesapla
+          </button>
+        </div>
+      `;
+    } else if (key === "esd_valves") {
+      const esd = eq.esd_sizing || {};
+      const esdCountVal = Number(esd.esd_count || 2);
+      const esdDutyVal = Number(esd.esd_duty_count || 1);
+      const esdDpVal = esd.allowable_dp_bar ?? 0.5;
+      const esdTypeVal = esd.valve_type || "full_bore_ball";
+      const bdvTimeVal = esd.depressurization_time_min ?? 15;
+      interactiveFormHtml = `
+        <div style="background: rgba(15,23,42,0.85); border: 1px solid rgba(239,68,68,0.40); border-radius: 6px; padding: 8px; margin-bottom: 10px;">
+          <div style="font-size: 10.5px; font-weight: 700; color: #f87171; margin-bottom: 6px;">
+            🚨 ESD / BDV Sayı &amp; Çap Hesaplama Girdileri (Kullanıcı Girişi)
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 10px;">
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              Toplam ESD/BDV Adedi
+              <select id="hud-esd-count" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px;">
+                ${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${esdCountVal === n ? "selected" : ""}>${n} Adet</option>`).join("")}
+              </select>
+            </label>
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              Eşzamanlı Aktif ESD
+              <select id="hud-esd-duty" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px;">
+                ${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${esdDutyVal === n ? "selected" : ""}>${n} Aktif</option>`).join("")}
+              </select>
+            </label>
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              İzin Verilen ΔP (bar)
+              <input type="number" id="hud-esd-dp" step="0.05" min="0.05" value="${esdDpVal}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+            </label>
+            <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
+              ESD Vana Tipi
+              <select id="hud-esd-type" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px;">
+                <option value="full_bore_ball" ${esdTypeVal === "full_bore_ball" ? "selected" : ""}>Full-Bore Ball</option>
+                <option value="ball" ${esdTypeVal === "ball" ? "selected" : ""}>Ball</option>
+                <option value="butterfly" ${esdTypeVal === "butterfly" ? "selected" : ""}>Butterfly</option>
+                <option value="gate" ${esdTypeVal === "gate" ? "selected" : ""}>Gate</option>
+              </select>
+            </label>
+            <label style="grid-column: 1 / -1; color:#cbd5e1; display:flex; justify-content:space-between; align-items:center; gap:6px;">
+              <span>Hedef Boşaltma Süresi (dk, API 521)</span>
+              <input type="number" id="hud-esd-bdv-time" step="1" min="1" max="60" value="${bdvTimeVal}" style="width:70px; background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+            </label>
+          </div>
+          <button id="btn-hud-calc-esd" style="margin-top: 7px; width: 100%; background: #dc2626; color: #fff; border: 1px solid #f87171; border-radius: 5px; padding: 5px 8px; font-size: 10.5px; font-weight: 700; cursor: pointer;">
+            🧮 ESD Sayı &amp; Çapını Hesapla
+          </button>
+        </div>
+      `;
     }
 
     return `
@@ -3048,6 +3744,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
           </tbody>
         </table>
       </div>
+
+      ${interactiveFormHtml}
 
       <div style="display: flex; gap: 8px;">
         <button id="btn-telemetry-flyto" style="flex: 1; background: #0284c7; color: #fff; border: 1px solid #38bdf8; border-radius: 6px; padding: 5px 8px; font-size: 10.5px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
@@ -3284,7 +3982,40 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         });
       };
       hudEl.querySelector("#btn-telemetry-teardown")?.addEventListener("click", openTeardown);
-      if (TEARDOWN_KEYS.has(key)) openTeardown();
+
+      hudEl.querySelector("#btn-hud-calc-psv")?.addEventListener("click", () => {
+        if (typeof options.onUpdateSafetyInputs !== "function") return;
+        const psvCount = parseInt(hudEl.querySelector("#hud-psv-count")?.value || "2", 10);
+        const psvDuty = parseInt(hudEl.querySelector("#hud-psv-duty")?.value || "1", 10);
+        const psvSet = parseFloat(hudEl.querySelector("#hud-psv-set")?.value);
+        const psvOver = parseFloat(hudEl.querySelector("#hud-psv-over")?.value);
+        const psvBack = parseFloat(hudEl.querySelector("#hud-psv-back")?.value);
+        const psvType = hudEl.querySelector("#hud-psv-type")?.value || "conventional";
+        options.onUpdateSafetyInputs({
+          psv_count: Number.isFinite(psvCount) ? psvCount : 2,
+          psv_duty_count: Number.isFinite(psvDuty) ? Math.min(psvCount, psvDuty) : 1,
+          psv_set_pressure_bar: Number.isFinite(psvSet) && psvSet > 0 ? psvSet : "",
+          psv_overpressure_pct: Number.isFinite(psvOver) && psvOver > 0 ? psvOver : 10,
+          psv_back_pressure_bar: Number.isFinite(psvBack) && psvBack > 0 ? psvBack : 1.01325,
+          psv_valve_type: psvType,
+        });
+      });
+
+      hudEl.querySelector("#btn-hud-calc-esd")?.addEventListener("click", () => {
+        if (typeof options.onUpdateSafetyInputs !== "function") return;
+        const esdCount = parseInt(hudEl.querySelector("#hud-esd-count")?.value || "2", 10);
+        const esdDuty = parseInt(hudEl.querySelector("#hud-esd-duty")?.value || "1", 10);
+        const esdDp = parseFloat(hudEl.querySelector("#hud-esd-dp")?.value);
+        const esdType = hudEl.querySelector("#hud-esd-type")?.value || "full_bore_ball";
+        const bdvTime = parseFloat(hudEl.querySelector("#hud-esd-bdv-time")?.value);
+        options.onUpdateSafetyInputs({
+          esd_count: Number.isFinite(esdCount) ? esdCount : 2,
+          esd_duty_count: Number.isFinite(esdDuty) ? Math.min(esdCount, esdDuty) : 1,
+          esd_allowable_dp_bar: Number.isFinite(esdDp) && esdDp > 0 ? esdDp : 0.5,
+          esd_valve_type: esdType,
+          bdv_depressurization_time_min: Number.isFinite(bdvTime) && bdvTime > 0 ? bdvTime : 15,
+        });
+      });
     }
 
     // 3. Keep bottom inspector drawer in sync
@@ -3445,9 +4176,28 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   tick();
 
-  // ══════════════════ 13b. KLAVYE ERGONOMİSİ ══════════════════
-  // 1-8: kamera ön ayarları • R: izometrik sıfırla • Esc: seçimi/pencereleri kapat
+  // ══════════════════ 13b. KLAVYE ERGONOMİSİ & TAM EKRAN ══════════════════
+  // 1-8: kamera ön ayarları • R: izometrik sıfırla • F: tam ekran • Esc: tam ekrandan çık / seçimi kapat
   const KEY_PRESETS = ["iso", "top", "compCutaway", "manifold", "filtration", "cooler", "tiein", "control"];
+  const fullscreenBtn = container.querySelector("#btn-toggle-3d-fullscreen");
+  function set3dFullscreen(expanded) {
+    if (!rootEl) return;
+    const isExp = !!expanded;
+    rootEl.classList.toggle("station-3d-expanded", isExp);
+    if (fullscreenBtn) {
+      fullscreenBtn.setAttribute("aria-pressed", isExp ? "true" : "false");
+      fullscreenBtn.textContent = isExp
+        ? `⛶ ${t("btn_3d_exit_fullscreen", uiLang)}`
+        : `⛶ ${t("btn_3d_fullscreen", uiLang)}`;
+      fullscreenBtn.style.background = isExp ? "#0284c7" : "#1e293b";
+      fullscreenBtn.style.borderColor = isExp ? "#38bdf8" : "rgba(255,255,255,0.15)";
+    }
+    requestAnimationFrame(() => onResize());
+  }
+  fullscreenBtn?.addEventListener("click", () => {
+    set3dFullscreen(!rootEl?.classList.contains("station-3d-expanded"));
+  });
+
   function onRootPointerDown(ev) {
     if (!ev.target.closest("button, #equip-telemetry-hud, #pipe-section-overlay")) rootEl.focus({ preventScroll: true });
   }
@@ -3460,7 +4210,15 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       const btn = container.querySelector(`.cam-preset-btn[data-cam="${name}"]`);
       if (preset) flyToCamera(preset.pos, preset.look, btn);
       ev.preventDefault();
+    } else if (k === "f" || k === "F") {
+      set3dFullscreen(!rootEl?.classList.contains("station-3d-expanded"));
+      ev.preventDefault();
     } else if (k === "Escape") {
+      if (rootEl?.classList.contains("station-3d-expanded")) {
+        set3dFullscreen(false);
+        ev.preventDefault();
+        return;
+      }
       const hudEl = container.querySelector("#equip-telemetry-hud");
       if (hudEl) hudEl.style.display = "none";
       rootEl.removeAttribute("data-inspect");
@@ -3565,6 +4323,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   return {
     destroy: () => {
       isDestroyed = true;
+      // Tear down any open exploded-view overlay before disposing the main scene.
+      closeEquipmentTeardown();
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
       if (pointerMoveRaf) cancelAnimationFrame(pointerMoveRaf);
       if (unsubUi) unsubUi();
@@ -3615,6 +4375,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       });
 
       renderer.dispose();
+      renderer.forceContextLoss?.();
       if (window.__KASP_3D__ && window.__KASP_3D__.scene === scene) {
         window.__KASP_3D__ = null;
       }
