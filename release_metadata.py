@@ -34,7 +34,7 @@ LOCAL_BUILD_SCRIPT = "build_release_local.bat"
 LOCAL_BUILD_COMMAND = f"pyinstaller --clean {LOCAL_SPEC_FILENAME}"
 
 # ── Web Edition release metadata ────────────────────────────────────────
-WEB_RELEASE_VERSION = "4.1.0-web"
+WEB_RELEASE_VERSION = "4.1.1-web"
 WEB_CFBUNDLE_VERSION = WEB_RELEASE_VERSION.split("-", 1)[0]
 WEB_RELEASE_TAG = f"web-v{WEB_CFBUNDLE_VERSION}"
 WEB_EXE_STEM = f"KASP Web v{WEB_RELEASE_VERSION}"

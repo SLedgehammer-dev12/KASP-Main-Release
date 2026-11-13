@@ -36,7 +36,7 @@ def test_web_version_is_distinct_from_desktop():
     assert WEB_RELEASE_VERSION != RELEASE_VERSION
     assert WEB_RELEASE_VERSION.endswith("-web")
     assert WEB_RELEASE_TAG == f"web-v{WEB_CFBUNDLE_VERSION}"
-    assert WEB_CFBUNDLE_VERSION == "4.1.0"
+    assert WEB_CFBUNDLE_VERSION == "4.1.1"
 
 
 def test_web_artifact_files_exist():

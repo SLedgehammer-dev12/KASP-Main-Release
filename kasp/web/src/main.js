@@ -127,7 +127,7 @@ async function initApp() {
         <span>•</span>
         <span id="status-user-label">Misafir</span>
         <span>•</span>
-        <span id="status-web-version" style="cursor:pointer;" title="Sürüm & İndirme Yöneticisi">v4.1.0-web</span>
+        <span id="status-web-version" style="cursor:pointer;" title="Sürüm & İndirme Yöneticisi">v4.1.1-web</span>
       </div>
     </footer>
 
