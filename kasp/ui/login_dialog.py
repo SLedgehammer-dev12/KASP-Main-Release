@@ -26,15 +26,19 @@ from kasp.i18n import tr
 class LoginDialog(QDialog):
     _LOCKOUT_TIMER_INTERVAL = 1000
 
-    def __init__(self, user_manager, initial_password: str | None = None, parent=None):
+    def __init__(self, user_manager, initial_password: str | None = None, parent=None,
+                 remember_me_manager=None):
         super().__init__(parent)
         self._user_manager = user_manager
         self._initial_password = initial_password
+        self._remember_me = remember_me_manager
+        self._authenticated_user = None
         self._remaining_lockout = get_lockout_remaining()
         self._lockout_timer = None
         self._was_locked = False
         self._setup_ui()
         self._update_lockout_state(is_initial=True)
+        self._restore_remembered_session()
 
     def _setup_ui(self):
         self.setWindowTitle(tr("KASP — Giriş"))
@@ -104,6 +108,14 @@ class LoginDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
+        # "Beni hatırla": 30 gün geçerli, yenilenen oturum jetonu (parola saklanmaz)
+        self._remember_cb = QCheckBox(tr("Beni hatırla (30 gün)"))
+        self._remember_cb.setToolTip(
+            tr("Bu cihazda 30 gün boyunca şifre sormadan oturum açılır.")
+        )
+        self._remember_cb.setVisible(self._remember_me is not None)
+        layout.addWidget(self._remember_cb)
+
         forgot_layout = QHBoxLayout()
         forgot_layout.setAlignment(Qt.AlignCenter)
         self._forgot_btn = QPushButton(tr("❓ Şifremi Unuttum"))
@@ -135,6 +147,34 @@ class LoginDialog(QDialog):
             QLineEdit.Normal if checked else QLineEdit.Password
         )
 
+    def _restore_remembered_session(self):
+        """Diskte geçerli jeton varsa kullanıcı adını doldurur ve otomatik giriş dener."""
+        if self._remember_me is None:
+            return
+
+        username = self._remember_me.saved_username()
+        if not username:
+            return
+
+        self._username_edit.setText(username)
+        self._remember_cb.setChecked(True)
+
+        locked, _ = check_lockout(username)
+        if locked:
+            return
+
+        user = self._remember_me.redeem()
+        if user is not None:
+            self._authenticated_user = user
+            self.accept()
+            return
+
+        self._remember_cb.setChecked(False)
+        self._status_label.setText(
+            tr("Kayıtlı oturum geçersiz. Lütfen şifrenizle giriş yapın.")
+        )
+        self._status_label.setStyleSheet("color: #b25300;")
+
     def _try_login(self):
         username = self._username_edit.text().strip()
         locked, msg = check_lockout(username)
@@ -152,6 +192,11 @@ class LoginDialog(QDialog):
         user = self._user_manager.authenticate(username, password)
         if user is not None:
             record_attempt(success=True, username=username)
+            if self._remember_me is not None:
+                if self._remember_cb.isChecked():
+                    self._remember_me.issue(user.username)
+                else:
+                    self._remember_me.forget()
             self._authenticated_user = user
             self.accept()
         else:

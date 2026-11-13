@@ -187,26 +187,23 @@ def main():
             logger.warning(f"⚠ Application icon not found: {icon_path}")
         
         # Login authentication — Gelişmiş Kullanıcı Yönetimi
-        from kasp.security import hash_password, generate_initial_admin_password, Session
-        from kasp.core.user_manager import UserManager
+        from kasp.security import Session
+        from kasp.core.user_manager import UserManager, ensure_initial_admin
         from kasp.data.database import UnitDatabase
 
         db = UnitDatabase()
         user_manager = UserManager(db)
+        from kasp.core.remember_me import RememberMeManager
+        remember_me = RememberMeManager(user_manager)
 
         # İlk çalıştırma: Varsayılan admin olustur (rastgele tek-seferlik parola, P4-6)
-        initial_pw = None
-        if db._is_users_table_empty():
-            initial_pw = generate_initial_admin_password()
-            initial_pw_hash = hash_password(initial_pw)
-            db.create_default_admin(initial_pw_hash)
-        else:
-            # Mevcut kurulumlarda admin must_change_password=1 olmali (P4-6)
-            db.ensure_default_admin_must_change_password()
+        # Var olan kurulumda must_change_password bayrağına dokunulmaz.
+        initial_pw = ensure_initial_admin(db)
         # Rastgele parola loglanmaz; kullaniciya LoginDialog'da gosterilir
 
         from kasp.ui.login_dialog import LoginDialog
-        login = LoginDialog(user_manager, initial_password=initial_pw)
+        login = LoginDialog(user_manager, initial_password=initial_pw,
+                            remember_me_manager=remember_me)
         if login.exec_() != LoginDialog.Accepted:
             logger.info("Login cancelled by user")
             sys.exit(0)

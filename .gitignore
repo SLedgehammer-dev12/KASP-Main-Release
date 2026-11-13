@@ -39,12 +39,14 @@ scratch/
 # Database, Runtime storage & Lockout states
 *.db
 kasp_database.db
+*.db.bak_*
 *.db-journal
 *.db-wal
 *.db-shm
 *.kasp
 deneme.kasp
 kasp_lockout.json*
+kasp_remember.json*
 
 # Backup & Scratch files
 *_backup_*.json

@@ -57,6 +57,38 @@ class User:
     has_recovery_key: bool = False
 
 
+def user_from_dict(user_dict: dict) -> User:
+    """DB satırından User nesnesi üretir (kimlik doğrulama ve jeton yolları ortak)."""
+    return User(
+        id=user_dict["id"],
+        username=user_dict["username"],
+        role=user_dict.get("role", "user"),
+        full_name=user_dict.get("full_name", ""),
+        email=user_dict.get("email", ""),
+        is_active=bool(user_dict.get("is_active", 1)),
+        must_change_password=bool(user_dict.get("must_change_password", 0)),
+        created_at=user_dict.get("created_at", ""),
+        last_login=user_dict.get("last_login", ""),
+        security_question=user_dict.get("security_question", "") or "",
+        has_security_answer=bool(user_dict.get("security_answer_hash")),
+        has_recovery_key=bool(user_dict.get("recovery_key_hash")),
+    )
+
+
+def ensure_initial_admin(db) -> str | None:
+    """İlk kurulumda rastgele tek seferlik admin parolası üretir.
+
+    Var olan kurulumlara dokunmaz. Özellikle `must_change_password` bayrağını
+    her açılışta yeniden açmaz; aksi halde şifresini değiştiren kullanıcı her
+    girişte zorunlu değişiklik ekranıyla karşılaşır.
+    """
+    if not db._is_users_table_empty():
+        return None
+    password = generate_initial_admin_password()
+    db.create_default_admin(hash_password(password))
+    return password
+
+
 class UserManager:
     def __init__(self, db):
         self.db = db
@@ -88,20 +120,7 @@ class UserManager:
         user_dict = self.db.get_user_by_username(clean_user)
         if not user_dict:
             return None
-        return User(
-            id=user_dict["id"],
-            username=user_dict["username"],
-            role=user_dict.get("role", "user"),
-            full_name=user_dict.get("full_name", ""),
-            email=user_dict.get("email", ""),
-            is_active=bool(user_dict.get("is_active", 1)),
-            must_change_password=bool(user_dict.get("must_change_password", 0)),
-            created_at=user_dict.get("created_at", ""),
-            last_login=user_dict.get("last_login", ""),
-            security_question=user_dict.get("security_question", "") or "",
-            has_security_answer=bool(user_dict.get("security_answer_hash")),
-            has_recovery_key=bool(user_dict.get("recovery_key_hash")),
-        )
+        return user_from_dict(user_dict)
 
     def create_user(self, username, password, role="user", full_name="", email=""):
         clean_user = str(username or "").strip()
@@ -146,7 +165,10 @@ class UserManager:
         if pw_error:
             return False, pw_error
         new_hash = hash_password(new_password)
-        return self.db.update_user(user_id, password_hash=new_hash), None
+        ok = self.db.update_user(user_id, password_hash=new_hash)
+        if ok:
+            self.db.delete_user_remember_tokens(user_id)
+        return ok, None
 
     def admin_reset_password(self, user_id, new_password):
         pw_error = validate_password_policy(new_password)
@@ -154,6 +176,8 @@ class UserManager:
             return False, pw_error
         new_hash = hash_password(new_password)
         ok = self.db.update_user(user_id, password_hash=new_hash, must_change_password=1)
+        if ok:
+            self.db.delete_user_remember_tokens(user_id)
         return ok, (None if ok else "Şifre sıfırlanamadı.")
 
     def delete_user(self, user_id):
@@ -239,6 +263,7 @@ class UserManager:
         new_hash = hash_password(new_password)
         ok = self.db.update_user(user_dict["id"], password_hash=new_hash, must_change_password=0)
         if ok:
+            self.db.delete_user_remember_tokens(user_dict["id"])
             record_attempt(success=True, username=clean_user)
             logger.info(f"Kullanıcı '{clean_user}' güvenlik sorusu ile şifresini başarıyla sıfırladı.")
             return True, None
@@ -298,6 +323,7 @@ class UserManager:
         new_hash = hash_password(new_password)
         ok = self.db.update_user(user_dict["id"], password_hash=new_hash, must_change_password=0)
         if ok:
+            self.db.delete_user_remember_tokens(user_dict["id"])
             # Tek kullanimlik: anahtari gecersizlestir ve yenisini uret
             new_key, key_err = self.generate_and_save_recovery_key(user_dict["id"])
             record_attempt(success=True, username=username)
@@ -324,6 +350,7 @@ class UserManager:
         admin_id = admin_dict["id"]
         raw_key, _ = self.generate_and_save_recovery_key(admin_id)
         self.db.update_user(admin_id, password_hash=pw_hash, is_active=1, must_change_password=1)
+        self.db.delete_user_remember_tokens(admin_id)
         reset_lockout_state()
         logger.info("CLI Acil Durum: Admin şifresi ve kurtarma anahtarı başarıyla sıfırlandı.")
         return True, pw, (raw_key or "")

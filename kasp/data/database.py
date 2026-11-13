@@ -3,6 +3,7 @@ import json
 import shutil
 import sys
 import threading
+import time
 import logging
 import os
 import re
@@ -322,9 +323,24 @@ class UnitDatabase:
                 )
             """)
 
+            # "Beni hatırla" kalıcı oturum jetonları (yalnızca SHA-256 özeti saklanır)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS RememberTokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    last_used_at REAL DEFAULT 0,
+                    FOREIGN KEY(user_id) REFERENCES Users(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_remember_user ON RememberTokens(user_id)"
+            )
+
             self.get_connection().commit()
             self.logger.info("Veritabanı tabloları başarıyla oluşturuldu.")
-            
         except sqlite3.Error as e:
             self.logger.error(f"Tablo oluşturma hatası: {e}", exc_info=True)
             raise
@@ -969,30 +985,6 @@ class UnitDatabase:
                 pass
             self.logger.error(f"Admin oluşturma hatası: {e}")
 
-    def ensure_default_admin_must_change_password(self, default_password_hash=None):
-        """Mevcut admin'in must_change_password=1 olmasi gerekiyorsa ayarlar.
-
-        DEFAULT_PASSWORD kalktigi icin (P4-6), admin varsa ve must_change_password
-        henuz ayarlanmamissa, bunu zorunlu hale getirir. Bu, ilk kurulumda
-        rastgele olusturulan parolanin degistirilmesini saglar.
-        """
-        try:
-            cursor = self.get_cursor()
-            cursor.execute("SELECT password_hash, must_change_password FROM Users WHERE username = 'admin'")
-            row = cursor.fetchone()
-            if not row or row["must_change_password"]:
-                return
-            # Sabit default parola kalktigi icin (P4-6), her admin icin zorunlu degistirme
-            cursor.execute("UPDATE Users SET must_change_password = 1 WHERE username = 'admin'")
-            self.get_connection().commit()
-            self.logger.info("Mevcut admin kullanıcısı için şifre değiştirme zorunlu hale getirildi (P4-6).")
-        except sqlite3.Error as e:
-            try:
-                self.get_connection().rollback()
-            except sqlite3.Error:
-                pass
-            self.logger.error(f"Admin şifre politikası güncelleme hatası: {e}")
-
     def get_user_by_username(self, username):
         try:
             cursor = self.get_cursor()
@@ -1074,6 +1066,7 @@ class UnitDatabase:
     def delete_user(self, user_id):
         try:
             cursor = self.get_cursor()
+            cursor.execute("DELETE FROM RememberTokens WHERE user_id = ?", (user_id,))
             cursor.execute("DELETE FROM Users WHERE id = ?", (user_id,))
             self.get_connection().commit()
             return cursor.rowcount > 0
@@ -1084,3 +1077,78 @@ class UnitDatabase:
                 pass
             self.logger.error(f"Kullanıcı silme hatası: {e}")
             return False
+
+    def get_user_by_id(self, user_id):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT * FROM Users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            self.logger.error(f"Kullanıcı getirme hatası: {e}")
+            return None
+
+    # ─────────────────── "Beni hatırla" oturum jetonları ───────────────────
+
+    def create_remember_token(self, user_id, token_hash, expires_at):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("DELETE FROM RememberTokens WHERE expires_at <= ?", (time.time(),))
+            cursor.execute("""
+                INSERT INTO RememberTokens (user_id, token_hash, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, token_hash, time.time(), expires_at))
+            self.get_connection().commit()
+            return cursor.lastrowid
+        except sqlite3.Error as e:
+            try:
+                self.get_connection().rollback()
+            except sqlite3.Error:
+                pass
+            self.logger.error(f"Beni hatırla jetonu oluşturma hatası: {e}")
+            return None
+
+    def get_remember_token(self, token_hash):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute(
+                "SELECT * FROM RememberTokens WHERE token_hash = ?", (token_hash,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            self.logger.error(f"Beni hatırla jetonu okuma hatası: {e}")
+            return None
+
+    def touch_remember_token(self, token_hash, used_at=None):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute(
+                "UPDATE RememberTokens SET last_used_at = ? WHERE token_hash = ?",
+                (time.time() if used_at is None else used_at, token_hash),
+            )
+            self.get_connection().commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            self.logger.error(f"Beni hatırla jetonu güncelleme hatası: {e}")
+            return False
+
+    def delete_remember_token(self, token_hash):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("DELETE FROM RememberTokens WHERE token_hash = ?", (token_hash,))
+            self.get_connection().commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            self.logger.error(f"Beni hatırla jetonu silme hatası: {e}")
+            return False
+
+    def delete_user_remember_tokens(self, user_id):
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("DELETE FROM RememberTokens WHERE user_id = ?", (user_id,))
+            self.get_connection().commit()
+            return cursor.rowcount
+        except sqlite3.Error as e:
+            self.logger.error(f"Kullanıcı jetonlarını silme hatası: {e}")
+            return 0

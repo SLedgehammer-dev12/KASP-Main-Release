@@ -4,6 +4,20 @@ All notable changes to KASP (Kompresör Tasarım ve Performans Simülatörü).
 
 ---
 
+## [v2.6.3] — 2026-11-13
+
+### Added
+- **Desktop "Remember me (30 days)"** — secure persistent session on the login screen. A random token is issued, stored as a SHA-256 digest in the new `RememberTokens` table, and the raw token is written to `kasp_remember.json` with `0600` permissions. Tokens rotate on every automatic login and are revoked on password change, admin reset, recovery-key use and logout. Auto-login is blocked while `must_change_password=1`. (`kasp/core/remember_me.py`, `kasp/ui/login_dialog.py`, `main.py`)
+
+### Fixed
+- **Repeating forced password-change loop** — startup called `ensure_default_admin_must_change_password()`, which re-armed `admin.must_change_password=1` on every launch, so every login showed “Your password was reset by an admin” plus the mandatory change dialog. Startup now uses `ensure_initial_admin(db)` and only provisions an admin when the `Users` table is empty; the faulty helper was removed. (`main.py`, `kasp/core/user_manager.py`, `kasp/data/database.py`)
+
+### Tests
+- `test_remember_me.py` (10) and `test_admin_must_change.py` (4) added.
+- Full suite: **660 passed, 12 skipped, 0 failed**. `kasp_verify.py doctor`: **ok**.
+
+---
+
 ## [v2.6.2] — 2026-10-20
 
 ### Fixed

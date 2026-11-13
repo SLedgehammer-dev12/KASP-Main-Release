@@ -41,6 +41,11 @@ def _get_app_data_dir() -> str:
     return base
 
 
+def get_app_data_dir() -> str:
+    """Uygulama veri dizinini döndürür (ortamdan bağımsız genel erişim)."""
+    return _get_app_data_dir()
+
+
 _lockout_file = os.path.join(_get_app_data_dir(), "kasp_lockout.json")
 
 

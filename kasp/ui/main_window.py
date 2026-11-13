@@ -1450,6 +1450,12 @@ class KaspMainWindow(QMainWindow):
 
     def logout(self):
         from kasp.security import Session
+        try:
+            from kasp.core.remember_me import RememberMeManager
+            from kasp.core.user_manager import UserManager
+            RememberMeManager(UserManager(self.db)).forget()
+        except Exception as exc:  # çıkış akışı hiçbir koşulda kesilmemeli
+            self.logger.warning("Beni hatırla jetonu iptal edilemedi: %s", exc)
         Session.logout()
         self.close()
 
