@@ -15,6 +15,7 @@ from kasp.api.v1.reports import router as reports_router
 from kasp.api.v1.jobs import router as jobs_router
 from kasp.api.v1.logs import router as logs_router
 from kasp.api.v1.modules import router as modules_router
+from kasp.api.v1.updates import router as updates_router
 
 api_v1 = APIRouter(prefix="/api/v1")
 
@@ -28,3 +29,4 @@ api_v1.include_router(reports_router)
 api_v1.include_router(jobs_router)
 api_v1.include_router(logs_router)
 api_v1.include_router(modules_router)
+api_v1.include_router(updates_router)

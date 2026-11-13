@@ -21,6 +21,8 @@ import { renderProjectModal } from "./components/projectModal.js";
 import { renderUserModal } from "./components/userModal.js";
 import { renderAuthModal } from "./components/authModal.js";
 import { renderHandbookModal } from "./components/handbookModal.js";
+import { renderUpdateModal } from "./components/updateModal.js";
+import { updateStore, checkWebUpdates } from "./store/updateStore.js";
 import { initGasCatalog } from "./components/gasTable.js";
 import { t } from "./i18n/locales.js";
 
@@ -125,7 +127,7 @@ async function initApp() {
         <span>•</span>
         <span id="status-user-label">Misafir</span>
         <span>•</span>
-        <span>v4.1.0</span>
+        <span id="status-web-version" style="cursor:pointer;" title="Sürüm & İndirme Yöneticisi">v4.1.0-web</span>
       </div>
     </footer>
 
@@ -197,6 +199,8 @@ async function initApp() {
         renderHandbookModal(modalsMount);
       } else if (ui.activeModal === "users") {
         renderUserModal(modalsMount);
+      } else if (ui.activeModal === "updates") {
+        renderUpdateModal(modalsMount);
       } else if (ui.activeModal === "login" || ui.activeModal === "changePassword") {
         renderAuthModal(modalsMount);
       }
@@ -337,6 +341,19 @@ async function initApp() {
     fetchPresets(),
     checkSession(),
   ]);
+
+  // Automatic non-blocking startup update check for Web Edition
+  checkWebUpdates({ force: false, silent: true });
+
+  document.getElementById("status-web-version")?.addEventListener("click", () => {
+    uiStore.setState({ activeModal: "updates" });
+  });
+  updateStore.subscribe((upd) => {
+    const verEl = document.getElementById("status-web-version");
+    if (verEl && upd.currentVersion) {
+      verEl.textContent = `v${upd.currentVersion}`;
+    }
+  });
 
   recalculateGasTotal();
   recalculateLiveMetrics();

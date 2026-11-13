@@ -16,7 +16,15 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from typing import Callable, Optional
 
-from PyQt5.QtCore import QObject, pyqtSignal
+try:
+    from PyQt5.QtCore import QObject, pyqtSignal
+except ImportError:  # Web-only / headless bundles exclude PyQt5
+    class QObject:  # type: ignore[no-redef]
+        def __init__(self, parent=None):
+            pass
+
+    def pyqtSignal(*_args, **_kwargs):  # type: ignore[misc]
+        return None
 
 from release_metadata import RELEASES_API_URL
 
@@ -68,8 +76,12 @@ def _get_ssl_context() -> ssl.SSLContext:
     return _ssl_context
 
 
+def _strip_release_prefix(tag: str) -> str:
+    return re.sub(r"^(?:web-)?v", "", (tag or "").strip(), flags=re.IGNORECASE)
+
+
 def _extract_numeric_tuple(tag: str) -> tuple[int, ...]:
-    tag_str = (tag or "").strip().lstrip("v")
+    tag_str = _strip_release_prefix(tag)
     numbers = re.findall(r"\d+", tag_str)
     if not numbers:
         return tuple()
@@ -78,7 +90,7 @@ def _extract_numeric_tuple(tag: str) -> tuple[int, ...]:
 
 def parse_release_tag(tag: str):
     """PEP 440 uyumlu sürüm ayrıştırıcı. Geçersiz etiketlerde eski sayısal ayrıştırıcıya düşer."""
-    tag_str = (tag or "").strip().lstrip("v")
+    tag_str = _strip_release_prefix(tag)
     try:
         from packaging.version import Version
         return Version(tag_str)
@@ -334,6 +346,20 @@ class GitHubReleaseClient:
             draft=bool(item_dict.get("draft")),
             assets=assets,
         )
+
+
+def is_web_release_tag(tag_name: str) -> bool:
+    tag = (tag_name or "").strip().lower()
+    return tag.startswith("web-v") or tag.endswith("-web")
+
+
+def filter_releases_for_channel(
+    releases: list[ReleaseInfo],
+    channel: str = "desktop",
+) -> list[ReleaseInfo]:
+    if channel == "web":
+        return [r for r in releases if is_web_release_tag(r.tag_name)]
+    return [r for r in releases if not is_web_release_tag(r.tag_name)]
 
 
 def newer_releases(current_tag: str, releases: list[ReleaseInfo]) -> list[ReleaseInfo]:

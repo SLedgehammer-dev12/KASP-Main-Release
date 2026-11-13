@@ -13,6 +13,7 @@ import {
 } from "../store/projectStore.js";
 import { t } from "../i18n/locales.js";
 import { api } from "../api/client.js";
+import { updateStore } from "../store/updateStore.js";
 
 function escapeAttr(str) {
   if (!str) return "";
@@ -29,6 +30,8 @@ export function renderHeader(container) {
     const ui = uiStore.getState();
     const auth = authStore.getState();
     const proj = projectStore.getState();
+    const upd = updateStore.getState();
+    const activeDl = (upd.downloads || []).find((d) => d.status === "downloading");
 
     container.innerHTML = `
       <div class="kasp-header-left">
@@ -127,6 +130,18 @@ export function renderHeader(container) {
         <!-- Keyboard Shortcuts Help -->
         <button type="button" id="btn-shortcuts-help" class="btn btn-sm" title="Klavye Kısayolları (?)" aria-label="Klavye Kısayolları" style="padding: 0 7px; font-size: 11px; font-weight: 700;">
           ?
+        </button>
+
+        <!-- Update & Download Manager -->
+        <button type="button" id="btn-update-manager" class="btn btn-sm ${upd.updateAvailable ? "btn-warning" : ""}" title="${t("update_manager_title", ui.lang)}" style="gap: 5px;">
+          ${icon("download", 13)}
+          <span>${
+            activeDl
+              ? `${activeDl.percent || 0}%`
+              : upd.updateAvailable
+                ? t("btn_updates_new", ui.lang)
+                : t("btn_updates", ui.lang)
+          }</span>
         </button>
 
         <div style="width: 1px; height: 18px; background: var(--color-border); margin: 0 4px;"></div>
@@ -345,10 +360,15 @@ export function renderHeader(container) {
     container.querySelector("#btn-shortcuts-help")?.addEventListener("click", () => {
       window.dispatchEvent(new CustomEvent("kasp:open-shortcuts-help"));
     });
+
+    container.querySelector("#btn-update-manager")?.addEventListener("click", () => {
+      openModal("updates");
+    });
   }
 
   uiStore.subscribe(update);
   authStore.subscribe(update);
   projectStore.subscribe(update);
+  updateStore.subscribe(update);
   update();
 }
