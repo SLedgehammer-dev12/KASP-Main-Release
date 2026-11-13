@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-RELEASE_VERSION = "2.6.2"
+RELEASE_VERSION = "2.6.3"
 APP_VERSION = RELEASE_VERSION
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 
