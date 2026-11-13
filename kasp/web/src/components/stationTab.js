@@ -102,15 +102,15 @@ function renderStation2dViewport(data, lang) {
       <div class="station-2d-toolbar" style="position: absolute; top: 10px; right: 10px; z-index: 15; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(6px); padding: 4px 8px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.16); max-width: calc(100% - 20px);">
         <select id="select-2d-focus-equip" aria-label="${escapeHtml(t("select_2d_focus", lang))}" style="background: #1e293b; color: #e2e8f0; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; padding: 2px 6px; font-size: 10.5px; cursor: pointer;">
           <option value="all">${escapeHtml(t("select_2d_focus", lang))}</option>
-          <option value="pig_r">PIG-R Giriş</option>
-          <option value="filtration">Siklon &amp; Kartuş Filtre</option>
-          <option value="compressors">Ünite Binası &amp; Kompresör</option>
-          <option value="cooler">Hava Soğutucu &amp; TCV</option>
-          <option value="psv_bdv">PSV / BDV &amp; PIG-L</option>
+          <option value="pig_r">${escapeHtml(t("station_focus_pig_r", lang))}</option>
+          <option value="filtration">${escapeHtml(t("station_focus_filtration", lang))}</option>
+          <option value="compressors">${escapeHtml(t("station_focus_compressors", lang))}</option>
+          <option value="cooler">${escapeHtml(t("station_focus_cooler", lang))}</option>
+          <option value="psv_bdv">${escapeHtml(t("station_focus_psv_bdv", lang))}</option>
         </select>
         <span id="pid-zoom-badge" style="font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: #38bdf8; padding: 2px 6px; background: rgba(56,189,248,0.12); border-radius: 8px;">%100</span>
-        <button type="button" id="btn-2d-zoom-in" class="btn btn-sm" title="Yakınlaştır (+)" style="padding: 2px 7px; font-size: 11px; font-weight: 700;">+</button>
-        <button type="button" id="btn-2d-zoom-out" class="btn btn-sm" title="Uzaklaştır (-)" style="padding: 2px 7px; font-size: 11px; font-weight: 700;">−</button>
+        <button type="button" id="btn-2d-zoom-in" class="btn btn-sm" title="${escapeHtml(t("btn_2d_zoom_in", lang))}" style="padding: 2px 7px; font-size: 11px; font-weight: 700;">+</button>
+        <button type="button" id="btn-2d-zoom-out" class="btn btn-sm" title="${escapeHtml(t("btn_2d_zoom_out", lang))}" style="padding: 2px 7px; font-size: 11px; font-weight: 700;">−</button>
         <button type="button" id="btn-2d-zoom-reset" class="btn btn-sm" title="${escapeHtml(t("btn_2d_zoom_reset", lang))} (0)" style="padding: 2px 7px; font-size: 10.5px;">${escapeHtml(t("btn_2d_zoom_reset", lang))}</button>
         <button type="button" id="btn-2d-toggle-tags" class="btn btn-sm" aria-pressed="true" title="${escapeHtml(t("btn_2d_tags", lang))}" style="padding: 2px 7px; font-size: 10.5px;">🏷️ ${escapeHtml(t("btn_2d_tags", lang))}</button>
         <button type="button" id="btn-2d-fullscreen" class="btn btn-sm" aria-pressed="false" title="${escapeHtml(t("btn_3d_fullscreen", lang))}" style="padding: 2px 7px; font-size: 10.5px;">⛶ ${escapeHtml(t("btn_3d_fullscreen", lang))}</button>
@@ -231,7 +231,7 @@ function bindStation2dControls(container, lang) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast("2D P&ID SVG indirildi.", "success");
+    showToast(t("toast_2d_svg_exported", lang), "success");
   });
 
   viewport.querySelector("#btn-2d-export-png")?.addEventListener("click", () => {
@@ -262,7 +262,7 @@ function bindStation2dControls(container, lang) {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(pngUrl);
-        showToast("2D P&ID PNG (2x HiDPI) indirildi.", "success");
+        showToast(t("toast_2d_png_exported", lang), "success");
       }, "image/png");
     };
     img.src = url;
@@ -402,6 +402,10 @@ function collectStationWarnings(stationData) {
 }
 
 export function renderStationTab(container) {
+  if (typeof container._stationCleanup === "function") {
+    container._stationCleanup();
+  }
+
   let stationData = null;
   let isLoading = false;
   let selectedEquip = null;
@@ -467,6 +471,13 @@ export function renderStationTab(container) {
   };
 
   let last3dState = null;
+  function abort2dControls() {
+    if (container._s2dAbort) {
+      container._s2dAbort.abort();
+      container._s2dAbort = null;
+    }
+  }
+
   function destroy3d() {
     if (active3dInstance) {
       if (typeof active3dInstance.getState === "function") {
@@ -477,10 +488,24 @@ export function renderStationTab(container) {
     }
   }
 
+  function setStationBusyState(busy) {
+    container.classList.toggle("is-station-busy", !!busy);
+    container.setAttribute("aria-busy", busy ? "true" : "false");
+    const recalcBtn = container.querySelector("#btn-recalc-station");
+    if (recalcBtn) recalcBtn.disabled = !!busy;
+    const applyBtn = container.querySelector("#btn-apply-station-params");
+    if (applyBtn) applyBtn.disabled = !!busy;
+  }
+
   async function fetchStationData() {
     isLoading = true;
-    render();
+    if (!stationData) {
+      render();
+    } else {
+      setStationBusyState(true);
+    }
     const proj = projectStore.getState();
+    let didUpdateData = false;
     try {
       const mergedInputs = {
         ...proj.inputs,
@@ -532,12 +557,16 @@ export function renderStationTab(container) {
         stationData.equipment_sizing.air_coolers.detailed_design = cachedAirCooler;
       }
       setStationData(stationData);
+      didUpdateData = true;
     } catch (err) {
       console.error("Station data fetch error:", err);
-      showToast("İstasyon verisi alınamadı: " + err.message, "danger");
+      showToast(t("toast_station_fetch_err", uiStore.getState().lang) + err.message, "danger");
     } finally {
       isLoading = false;
-      render();
+      setStationBusyState(false);
+      if (didUpdateData || !stationData) {
+        render();
+      }
     }
   }
 
@@ -559,6 +588,45 @@ export function renderStationTab(container) {
   let lastDesignFlowUnit = projectFlowUnit;
   let lastDesignPinUnit = projectPinUnit;
   let lastDesignPoutUnit = projectPoutUnit;
+
+  function syncStationInputsFromDesign(sourceInputs = projectStore.getState()?.inputs) {
+    const inp = sourceInputs || {};
+    lastProcessSig = stationProcessSignature(inp);
+    const rawF = Number(inp.flow ?? inp.mass_flow ?? 0);
+    const fKgs = Math.round(toKgs(rawF, inp.flow_unit || "kg/s", inp.gas_comp) * 1e6) / 1e6;
+    const pin = Math.round(convertPressureToBarA(inp.p_in || 0, inp.p_in_unit || "bar(a)") * 10000) / 10000;
+    const pout = Math.round(convertPressureToBarA(inp.p_out || 0, inp.p_out_unit || "bar(a)") * 10000) / 10000;
+    const tin = Math.round(convertTempToC(inp.t_in ?? 25.0, inp.t_in_unit || "°C") * 10) / 10;
+
+    if (fKgs > 0) stationInputs.mass_flow = fKgs;
+    if (pin > 0) stationInputs.p_in = pin;
+    if (pout > 0) stationInputs.p_out = pout;
+    if (Number.isFinite(tin)) stationInputs.t_in = tin;
+
+    // Follow design unit changes, but do not overwrite a local unit choice
+    // when only design values change.
+    const flowUnit = String(inp.flow_unit || "kg/s");
+    const pinUnit = String(inp.p_in_unit || "bar(a)");
+    const poutUnit = String(inp.p_out_unit || "bar(a)");
+    if (flowUnit !== lastDesignFlowUnit) {
+      lastDesignFlowUnit = flowUnit;
+      if (STATION_FLOW_UNITS.includes(flowUnit)) stationInputs.mass_flow_unit = flowUnit;
+    }
+    if (pinUnit !== lastDesignPinUnit) {
+      lastDesignPinUnit = pinUnit;
+      if (STATION_PRESSURE_UNITS.includes(pinUnit)) stationInputs.p_in_unit = pinUnit;
+    }
+    if (poutUnit !== lastDesignPoutUnit) {
+      lastDesignPoutUnit = poutUnit;
+      if (STATION_PRESSURE_UNITS.includes(poutUnit)) {
+        stationInputs.p_out_unit = poutUnit === "bar(a)" ? "bar(g)" : poutUnit;
+      }
+    }
+
+    const nUnits = Number(inp.num_units || 0);
+    if (nUnits > 0) stationInputs.comp_op_count = nUnits;
+  }
+
   const unsubscribeStore = projectStore.subscribe(() => {
     const s = projectStore.getState();
     if (s?.inputs && !isLoading) {
@@ -568,40 +636,7 @@ export function renderStationTab(container) {
       // Station-local overrides must survive stationData/module/store updates.
       const nextProcessSig = stationProcessSignature(s.inputs);
       if (nextProcessSig !== lastProcessSig) {
-        lastProcessSig = nextProcessSig;
-        const rawF = Number(s.inputs.flow || s.inputs.mass_flow || 0);
-        const fKgs = Math.round(toKgs(rawF, s.inputs.flow_unit || "kg/s", s.inputs.gas_comp) * 1e6) / 1e6;
-        const pin = Math.round(convertPressureToBarA(s.inputs.p_in || 0, s.inputs.p_in_unit || "bar(a)") * 10000) / 10000;
-        const pout = Math.round(convertPressureToBarA(s.inputs.p_out || 0, s.inputs.p_out_unit || "bar(a)") * 10000) / 10000;
-        const tin = Math.round(convertTempToC(s.inputs.t_in ?? 25.0, s.inputs.t_in_unit || "°C") * 10) / 10;
-
-        if (fKgs > 0) stationInputs.mass_flow = fKgs;
-        if (pin > 0) stationInputs.p_in = pin;
-        if (pout > 0) stationInputs.p_out = pout;
-        if (Number.isFinite(tin)) stationInputs.t_in = tin;
-
-        // Follow design unit changes, but do not overwrite a local unit choice
-        // when only design values change.
-        const flowUnit = String(s.inputs.flow_unit || "kg/s");
-        const pinUnit = String(s.inputs.p_in_unit || "bar(a)");
-        const poutUnit = String(s.inputs.p_out_unit || "bar(a)");
-        if (flowUnit !== lastDesignFlowUnit) {
-          lastDesignFlowUnit = flowUnit;
-          if (STATION_FLOW_UNITS.includes(flowUnit)) stationInputs.mass_flow_unit = flowUnit;
-        }
-        if (pinUnit !== lastDesignPinUnit) {
-          lastDesignPinUnit = pinUnit;
-          if (STATION_PRESSURE_UNITS.includes(pinUnit)) stationInputs.p_in_unit = pinUnit;
-        }
-        if (poutUnit !== lastDesignPoutUnit) {
-          lastDesignPoutUnit = poutUnit;
-          if (STATION_PRESSURE_UNITS.includes(poutUnit)) {
-            stationInputs.p_out_unit = poutUnit === "bar(a)" ? "bar(g)" : poutUnit;
-          }
-        }
-
-        const nUnits = Number(s.inputs.num_units || 0);
-        if (nUnits > 0) stationInputs.comp_op_count = nUnits;
+        syncStationInputsFromDesign(s.inputs);
         changed = true;
       }
 
@@ -623,6 +658,22 @@ export function renderStationTab(container) {
     }
   });
 
+  let currentLang = uiStore.getState().lang || "tr";
+  const unsubscribeUi = uiStore.subscribe((ui) => {
+    const nextLang = ui?.lang || "tr";
+    if (nextLang !== currentLang) {
+      currentLang = nextLang;
+      render();
+    }
+  });
+
+  function clearEquipmentSelection() {
+    selectedEquip = null;
+    highlightSvgEquipment(null);
+    active3dInstance?.clearSelection?.();
+    updateInspectorDrawer();
+  }
+
   function updateInspectorDrawer() {
     const inspMount = container.querySelector("#station-inspector-mount");
     if (!inspMount) return;
@@ -632,17 +683,15 @@ export function renderStationTab(container) {
     }
     const { equipment_sizing: eq, station_summary: sm } = stationData;
     const gasComp = projectStore.getState().inputs?.gas_comp;
-    inspMount.innerHTML = renderInspectorDrawer(selectedEquip, eq, sm, gasComp);
-    inspMount.querySelector("#btn-close-inspector")?.addEventListener("click", () => {
-      selectedEquip = null;
-      updateInspectorDrawer();
-    });
+    const lang = uiStore.getState().lang || "tr";
+    inspMount.innerHTML = renderInspectorDrawer(selectedEquip, eq, sm, gasComp, viewMode, lang);
+    inspMount.querySelector("#btn-close-inspector")?.addEventListener("click", clearEquipmentSelection);
     inspMount.querySelector("#btn-detailed-air-cooler")?.addEventListener("click", async (event) => {
       const btn = event.currentTarget;
       const detail = inspMount.querySelector("#air-cooler-detail");
       const originalText = btn.textContent;
       btn.disabled = true;
-      btn.textContent = "Hesaplanıyor...";
+      btn.textContent = t("btn_calculating", uiStore.getState().lang);
       if (detail) detail.innerHTML = `<div style="font-size:11px;color:var(--color-text-secondary);">API 661 detaylı tasarım çalışıyor...</div>`;
       try {
         const inputs = projectStore.getState().inputs;
@@ -694,7 +743,7 @@ export function renderStationTab(container) {
 
   function highlightSvgEquipment(key) {
     container.querySelectorAll(".station-equip-group").forEach((el) => {
-      if (el.getAttribute("data-equip-key") === key) {
+      if (key && el.getAttribute("data-equip-key") === key) {
         el.classList.add("active-selected");
       } else {
         el.classList.remove("active-selected");
@@ -702,340 +751,37 @@ export function renderStationTab(container) {
     });
   }
 
-  function mount3dView() {
-    const mount = container.querySelector("#station-3d-mount");
-    if (!mount || !stationData) {
-      destroy3d();
+  function updatePfdModal() {
+    const modalMount = container.querySelector("#station-pfd-modal-mount");
+    if (!modalMount) return;
+    if (!isPfdModalOpen) {
+      modalMount.innerHTML = "";
       return;
     }
-    const previousState = last3dState;
-    destroy3d();
-    try {
-      active3dInstance = createStation3dView(
-        mount,
-        stationData,
-        (equipKey) => {
-          selectedEquip = equipKey;
-          highlightSvgEquipment(equipKey);
-          updateInspectorDrawer();
-        },
-        {
-          initialState: previousState || last3dState,
-          onUpdateSafetyInputs: (updates) => {
-            Object.assign(stationInputs, updates || {});
-            fetchStationData();
-          },
-        }
-      );
-    } catch (err) {
-      console.error("3D sahne oluşturulamadı:", err);
-      active3dInstance = null;
-      mount.innerHTML = `
-        <div role="alert" style="height: 100%; min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; background: var(--color-surface); color: var(--color-text);">
-          <div style="font-size: 32px;">⚠️</div>
-          <div style="font-weight: 700;">3D görünüm başlatılamadı</div>
-          <div style="font-size: 12px; color: var(--color-text-secondary); max-width: 420px;">
-            Tarayıcınızda WebGL kullanılamıyor olabilir (donanım hızlandırma kapalı veya GPU sürücü hatası).
-            2D P&amp;ID akış şeması tüm ekipman verisiyle çalışmaya devam eder.
-          </div>
-          <button type="button" class="btn btn-sm btn-primary" id="btn-3d-fallback-2d">📐 2D P&amp;ID Görünümüne Geç</button>
-        </div>`;
-      mount.querySelector("#btn-3d-fallback-2d")?.addEventListener("click", () => {
-        viewMode = "2d";
-        render();
-      });
-    }
-    if (selectedEquip && active3dInstance) {
-      active3dInstance.selectEquipment(selectedEquip);
-      highlightSvgEquipment(selectedEquip);
-    }
+    const lang = uiStore.getState().lang || "tr";
+    modalMount.innerHTML = renderBotasPfdModal(lang);
+    const closePfd = () => {
+      isPfdModalOpen = false;
+      updatePfdModal();
+    };
+    modalMount.querySelector("#btn-close-pfd-modal")?.addEventListener("click", closePfd);
+    modalMount.querySelector("#btn-footer-close-pfd-modal")?.addEventListener("click", closePfd);
+    modalMount.querySelector("#botas-pfd-backdrop")?.addEventListener("click", (e) => {
+      if (e.target.id === "botas-pfd-backdrop") closePfd();
+    });
   }
 
-  function render() {
-    destroy3d();
+  function updatePrCardSubline() {
+    const sublineEl = container.querySelector("#station-pr-subline");
+    if (!sublineEl || !stationData?.station_summary) return;
+    const sm = stationData.station_summary;
+    sublineEl.innerHTML = `${stationPressureDisplay(sm.suction_pressure_bar, stationInputs.p_in_unit)} ${escapeHtml(stationInputs.p_in_unit)} → ${stationPressureDisplay(sm.discharge_pressure_bar, stationInputs.p_out_unit)} ${escapeHtml(stationInputs.p_out_unit)} • T_in: ${stationInputs.t_in.toFixed(1)}°C`;
+  }
 
-    if (isLoading && !stationData) {
-      container.innerHTML = `
-        <div style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--color-text-secondary); min-height: 400px;">
-          ${icon("refreshCw", 24, "station-fan-blade")}
-          <span>Kompresör İstasyonu Süreç Modeli Hesaplanıyor...</span>
-        </div>
-      `;
-      return;
-    }
-
-    if (!stationData) {
-      container.innerHTML = `
-        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; min-height: 400px;">
-          <p style="color: var(--color-text-secondary);">İstasyon modeli yükleniyor...</p>
-          <button id="btn-refresh-station" class="btn btn-primary">
-            ${icon("play", 14)}
-            <span>İstasyon Modelini Başlat</span>
-          </button>
-        </div>
-      `;
-      container.querySelector("#btn-refresh-station")?.addEventListener("click", fetchStationData);
-      return;
-    }
-
-    const { station_summary: sm, equipment_sizing: eq, nodes } = stationData;
-    const activeGasComp = projectStore.getState().inputs?.gas_comp;
-    const stationWarnings = collectStationWarnings(stationData);
-    const currentDesignSig = stationProcessSignature(projectStore.getState().inputs || {});
-    const isStationStale = !!lastProcessSig && lastProcessSig !== currentDesignSig;
-
-    container.innerHTML = `
-      <div style="flex: 1; padding: 16px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;">
-        ${
-          isStationStale
-            ? `<div id="station-stale-banner" role="status" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: var(--radius-md); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #d97706; font-size: 12px; font-weight: 600;">
-                <span>⚠️ Tasarım sekmesindeki proses şartları değişti — istasyon modeli güncel değil.</span>
-                <button type="button" id="btn-station-sync-recalc" class="btn btn-sm btn-primary">Güncel Tasarımla Yeniden Boyutlandır</button>
-              </div>`
-            : ""
-        }
-        <!-- Top Summary Cards -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px;">
-          <div class="card" style="padding: 10px 14px;">
-            <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
-              İstasyon Toplam Debisi
-            </div>
-            <div style="font-size: 18px; font-weight: 700; color: var(--color-primary); margin-top: 4px;">
-              ${sm.total_mass_flow_kgs} <span style="font-size: 12px; font-weight: 400;">kg/s</span>
-            </div>
-            <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
-              ${sm.volumetric_flow_mmscmd} MMSCMD • MW: ${sm.gas_mw} g/mol
-            </div>
-          </div>
-
-          <div class="card" style="padding: 10px 14px;">
-            <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
-              İletim Basınç Oranı (PR)
-            </div>
-            <div style="font-size: 18px; font-weight: 700; color: #0ea5e9; margin-top: 4px;">
-              ${sm.pressure_ratio} : 1
-            </div>
-            <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
-              ${stationPressureDisplay(sm.suction_pressure_bar, stationInputs.p_in_unit)} ${escapeHtml(stationInputs.p_in_unit)} → ${stationPressureDisplay(sm.discharge_pressure_bar, stationInputs.p_out_unit)} ${escapeHtml(stationInputs.p_out_unit)} • T_in: ${stationInputs.t_in.toFixed(1)}°C
-            </div>
-          </div>
-
-          <div class="card" style="padding: 10px 14px;">
-            <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
-              Toplam Absorbe Güç
-            </div>
-            <div style="font-size: 18px; font-weight: 700; color: #f59e0b; margin-top: 4px;">
-              ${sm.total_power_mw} <span style="font-size: 12px; font-weight: 400;">MW</span>
-            </div>
-            <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
-              ${(sm.total_power_kw * 1.34102 / 1000).toFixed(1)}k HP • ${eq.turbo_compressors.configuration}
-            </div>
-          </div>
-
-          <div class="card" style="padding: 10px 14px;">
-            <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
-              Gaz Soğutucu Isıl Yükü
-            </div>
-            <div style="font-size: 18px; font-weight: 700; color: #10b981; margin-top: 4px;">
-              ${sm.cooler_heat_duty_mw} <span style="font-size: 12px; font-weight: 400;">MWth</span>
-            </div>
-            <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
-              ${eq.air_coolers.bay_count} Fin-Fan Bay • Çıkış: ${eq.air_coolers.outlet_temp_c}°C
-            </div>
-          </div>
-
-          <div class="card" style="padding: 10px 14px; display: flex; flex-direction: column; justify-content: space-between;">
-            <div>
-              <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
-                İstasyon Dinamik Yapısı
-              </div>
-              <div style="font-size: 12px; font-weight: 600; color: var(--color-text); margin-top: 4px;">
-                ${eq.cyclones.operating_count}+1 Siklon • ${eq.cartridge_filters.operating_count}+1 Filtre
-              </div>
-              <div style="font-size: 11px; color: var(--color-text-secondary);">
-                ${eq.turbo_compressors.operating_count}+1 Tren • ${eq.compressor_building.area_m2} m² Bina
-              </div>
-            </div>
-            <div style="display: flex; gap: 6px; margin-top: 6px;">
-              <button id="btn-recalc-station" class="btn btn-sm btn-secondary" style="flex: 1; padding: 2px 6px; font-size: 11px;" title="Modeli Yeniden Hesapla">
-                ${icon("refreshCw", 12)}
-                <span>Hesapla</span>
-              </button>
-              <button id="btn-view-botas-pfd" class="btn btn-sm btn-primary" style="flex: 1.4; padding: 2px 6px; font-size: 11px;" title="BOTAŞ Adapazarı PFD & 3D CAD Referans Görsellerini İncele">
-                ${icon("fileText", 12)}
-                <span>PFD & 3D CAD</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        ${
-          stationWarnings.length > 0
-            ? `
-            <div id="station-warnings-banner" role="alert" aria-live="polite" style="padding: 10px 14px; border-radius: var(--radius-md); background: rgba(245, 158, 11, 0.10); border: 1px solid rgba(245, 158, 11, 0.35); color: var(--color-text);">
-              <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
-                <div style="font-size: 12px; font-weight: 700; color: #f59e0b;">
-                  ⚠️ İstasyon Ekipman, Vana (ASV/PCV/TCV/PSV) ve Hidrolik Erozyon Uyarıları (${stationWarnings.length})
-                </div>
-                <span class="badge badge-warning" style="font-size: 10px;">IEC 60534 / API 520 / API RP 14E</span>
-              </div>
-              <ul style="margin: 0; padding-left: 18px; font-size: 11px; line-height: 1.45; color: var(--color-text);">
-                ${stationWarnings.map(w => `<li>${escapeHtml(w)}</li>`).join("")}
-              </ul>
-            </div>
-            `
-            : ""
-        }
-
-        <!-- Live Station Operating Parameters & Dynamic Pipe Sizing Bar (Natural Gas Flow Calc) -->
-        ${renderLiveParamsBar(stationInputs, isParamsPanelOpen, activeGasComp)}
-
-        <!-- View Mode Selector Bar & Quick Legend -->
-        <div style="display: flex; justify-content: space-between; align-items: center; background: var(--color-surface); padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--color-border); flex-wrap: wrap; gap: 8px;">
-          <div style="display: flex; gap: 6px; align-items: center;">
-            <span style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); margin-right: 4px; text-transform: uppercase;">Görünüm:</span>
-            <button id="btn-mode-3d" class="btn btn-sm ${viewMode === '3d' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
-              <span>🧊 3D Dijital İkiz (CAD Mimari)</span>
-            </button>
-            <button id="btn-mode-2d" class="btn btn-sm ${viewMode === '2d' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
-              <span>📐 2D P&ID Akış Şeması</span>
-            </button>
-            <button id="btn-mode-split" class="btn btn-sm ${viewMode === 'split' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
-              <span>🔀 Yan Yana (Split 3D + 2D)</span>
-            </button>
-          </div>
-
-          <div style="display: flex; gap: 10px; align-items: center; font-size: 11px; color: var(--color-text-secondary);">
-            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #e2d400;"></span> Proses Gaz Borulama</span>
-            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #00f0ff;"></span> Akış Yönü (→)</span>
-            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #0077be;"></span> Çelik Karkas</span>
-            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #8c735b;"></span> Ünite & Kontrol Binaları</span>
-            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #2b2e34;"></span> 7.0m Yol & Tel Çit</span>
-          </div>
-        </div>
-
-        <!-- Main Visualizer Area -->
-        <div id="station-main-viewer" style="position: relative;">
-          ${
-            viewMode === "3d"
-              ? `<div id="station-3d-mount" style="width: 100%; height: clamp(440px, 74vh, 780px); border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--color-border); background: #7aa0dc;"></div>`
-              : viewMode === "2d"
-              ? renderStation2dViewport(stationData, uiStore.getState().lang)
-              : `<div class="station-split-grid">
-                   <div id="station-3d-mount" style="height: 100%; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--color-border); background: #7aa0dc;"></div>
-                   ${renderStation2dViewport(stationData, uiStore.getState().lang)}
-                 </div>`
-          }
-
-          <!-- Equipment Inspector Drawer Container -->
-          <div id="station-inspector-mount">
-            ${selectedEquip ? renderInspectorDrawer(selectedEquip, eq, sm, activeGasComp) : ""}
-          </div>
-        </div>
-
-        <!-- 8-Nodal Telemetry Table -->
-        <div class="card" style="padding: 12px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <div style="font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
-              ${icon("activity", 14, "text-primary")}
-              <span>BOTAŞ Adapazarı İstasyon Süreç Düğümleri ve Termodinamik Durum Matrisi</span>
-            </div>
-            <span style="font-size: 11px; color: var(--color-text-secondary);">Doküman No: 0-NGTL0-CS-I-001-4000</span>
-          </div>
-
-          <table class="kasp-table" style="font-size: 11px;">
-            <thead>
-              <tr>
-                <th>Düğüm Kodu</th>
-                <th>Açıklama / Süreç Konumu</th>
-                <th style="text-align: right;">Basınç (bar a)</th>
-                <th style="text-align: right;">Sıcaklık (°C)</th>
-                <th style="text-align: right;">Kütlesel Debi (kg/s)</th>
-                <th>Akışkan Fazı</th>
-                <th>Süreç Durumu</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${nodes.map(n => `
-                <tr>
-                  <td style="font-family: var(--font-mono); font-weight: 700; color: ${escapeHtml(n.color)};">${escapeHtml(n.id)}</td>
-                  <td style="font-weight: 600;">${escapeHtml(n.name)}</td>
-                  <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">${Number(n.pressure_bar || 0).toFixed(2)}</td>
-                  <td style="text-align: right; font-family: var(--font-mono);">${Number(n.temp_c || 0).toFixed(1)}</td>
-                  <td style="text-align: right; font-family: var(--font-mono);">${Number(n.flow_kgs || 0).toFixed(1)}</td>
-                  <td><span class="badge badge-neutral" style="font-size: 10px;">${escapeHtml(n.phase)}</span></td>
-                  <td style="color: var(--color-text-secondary); font-size: 11px;">${escapeHtml(n.state_desc)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-
-        <!-- ASME B36.10M / API 5L Natural Gas Flow Calc Pipe Sizing Matrix Table -->
-        ${renderPipeSizingTable(stationData.station_piping)}
-
-        <!-- BOTAŞ Adapazarı PFD Lightbox Modal -->
-        ${isPfdModalOpen ? renderBotasPfdModal() : ""}
-
-      </div>
-    `;
-
-    container.querySelector("#btn-station-sync-recalc")?.addEventListener("click", () => {
-      syncStationInputsFromDesign();
-      fetchStationData();
-    });
-
-    // Mode switching handlers
-    container.querySelector("#btn-mode-3d")?.addEventListener("click", () => {
-      if (viewMode !== "3d") {
-        viewMode = "3d";
-        render();
-      }
-    });
-
-    container.querySelector("#btn-mode-2d")?.addEventListener("click", () => {
-      if (viewMode !== "2d") {
-        viewMode = "2d";
-        render();
-      }
-    });
-
-    container.querySelector("#btn-mode-split")?.addEventListener("click", () => {
-      if (viewMode !== "split") {
-        viewMode = "split";
-        render();
-      }
-    });
-
-    // Mount 3D scene if applicable
-    if (viewMode === "3d" || viewMode === "split") {
-      mount3dView();
-    }
-    if (viewMode === "2d" || viewMode === "split") {
-      bindStation2dControls(container, uiStore.getState().lang);
-    }
-
-    // Inspector Close handler
-    container.querySelector("#btn-close-inspector")?.addEventListener("click", () => {
-      selectedEquip = null;
-      updateInspectorDrawer();
-    });
-
-    // Event Bindings
-    container.querySelector("#btn-recalc-station")?.addEventListener("click", () => {
-      const flowInp = container.querySelector("#station-input-mass-flow");
-      if (flowInp && !isNaN(parseFloat(flowInp.value))) stationInputs.mass_flow = parseFloat(flowInp.value);
-      const pinInp = container.querySelector("#station-input-pin");
-      if (pinInp && !isNaN(parseFloat(pinInp.value))) stationInputs.p_in = parseFloat(pinInp.value);
-      const poutInp = container.querySelector("#station-input-pout");
-      if (poutInp && !isNaN(parseFloat(poutInp.value))) stationInputs.p_out = parseFloat(poutInp.value);
-      fetchStationData();
-    });
-
-    // Live Parameters Panel Event Bindings
+  function bindLiveParamsControls() {
     container.querySelector("#btn-toggle-params-panel")?.addEventListener("click", () => {
       isParamsPanelOpen = !isParamsPanelOpen;
-      render();
+      updateLiveParamsMount();
     });
 
     const activeGas = projectStore.getState().inputs?.gas_comp;
@@ -1064,14 +810,12 @@ export function renderStationTab(container) {
       const typed = parseFloat(flowInput?.value);
       const oldUnit = stationInputs.mass_flow_unit || "kg/s";
       const shown = roundDisplay(stationFlowDisplay(stationInputs.mass_flow, oldUnit, activeGas));
-      // Only use the field value when it differs from the displayed canonical value;
-      // otherwise keep full precision to avoid unit round-trip drift.
       if (Number.isFinite(typed) && typed > 0 && Math.abs(typed - Number(shown)) > 1e-6) {
         const kgs = stationFlowToKgs(typed, oldUnit, activeGas);
         if (Number.isFinite(kgs) && kgs > 0) stationInputs.mass_flow = Math.round(kgs * 1e6) / 1e6;
       }
       stationInputs.mass_flow_unit = e.target.value;
-      render();
+      updateLiveParamsMount();
     });
 
     const pinSlider = container.querySelector("#slider-param-pin");
@@ -1115,7 +859,8 @@ export function renderStationTab(container) {
         if (Number.isFinite(barA) && barA > 0) stationInputs.p_in = Math.round(barA * 10000) / 10000;
       }
       stationInputs.p_in_unit = e.target.value;
-      render();
+      updateLiveParamsMount();
+      updatePrCardSubline();
     });
 
     const poutSlider = container.querySelector("#slider-param-pout");
@@ -1145,11 +890,11 @@ export function renderStationTab(container) {
         if (Number.isFinite(barA) && barA > 0) stationInputs.p_out = Math.round(barA * 10000) / 10000;
       }
       stationInputs.p_out_unit = e.target.value;
-      render();
+      updateLiveParamsMount();
+      updatePrCardSubline();
     });
 
     container.querySelector("#select-param-comps")?.addEventListener("change", (e) => {
-      // Station-level override; do not rewrite the design-tab num_units field.
       stationInputs.comp_op_count = parseInt(e.target.value, 10);
       fetchStationData();
     });
@@ -1181,7 +926,6 @@ export function renderStationTab(container) {
       fetchStationData();
     });
 
-    // PSV / ESD sizing inputs (empty PSV set pressure = engine-derived)
     container.querySelector("#input-param-psv-set")?.addEventListener("change", (e) => {
       const raw = e.target.value.trim();
       stationInputs.psv_set_pressure_bar = raw === "" ? "" : Number(raw);
@@ -1240,7 +984,7 @@ export function renderStationTab(container) {
         p_in: 45.0,
         p_in_unit: stationInputs.p_in_unit || "bar(a)",
         p_out: 75.0,
-        p_out_unit: stationInputs.p_out_unit || "bar(a)",
+        p_out_unit: stationInputs.p_out_unit || "bar(g)",
         t_in: Math.round(convertTempToC(cur.t_in ?? 25.0, cur.t_in_unit || "°C") * 10) / 10,
         comp_op_count: 0,
         cyclone_op_count: 0,
@@ -1264,28 +1008,355 @@ export function renderStationTab(container) {
       };
       fetchStationData();
     });
+  }
 
-    container.querySelector("#btn-view-botas-pfd")?.addEventListener("click", () => {
-      isPfdModalOpen = true;
-      render();
+  function updateLiveParamsMount() {
+    const paramsMount = container.querySelector("#station-params-mount");
+    if (!paramsMount) return;
+    const activeGasComp = projectStore.getState().inputs?.gas_comp;
+    const lang = uiStore.getState().lang || "tr";
+    paramsMount.innerHTML = renderLiveParamsBar(stationInputs, isParamsPanelOpen, activeGasComp, lang);
+    bindLiveParamsControls();
+  }
+
+  function mount3dView() {
+    const mount = container.querySelector("#station-3d-mount");
+    if (!mount || !stationData) {
+      destroy3d();
+      return;
+    }
+    const previousState = last3dState;
+    destroy3d();
+    try {
+      active3dInstance = createStation3dView(
+        mount,
+        stationData,
+        (equipKey) => {
+          selectedEquip = equipKey;
+          highlightSvgEquipment(equipKey);
+          updateInspectorDrawer();
+        },
+        {
+          initialState: previousState || last3dState,
+          onUpdateSafetyInputs: (updates) => {
+            Object.assign(stationInputs, updates || {});
+            fetchStationData();
+          },
+        }
+      );
+    } catch (err) {
+      console.error("3D sahne oluşturulamadı:", err);
+      active3dInstance = null;
+      mount.innerHTML = `
+        <div role="alert" style="height: 100%; min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; background: var(--color-surface); color: var(--color-text);">
+          <div style="font-size: 32px;">⚠️</div>
+          <div style="font-weight: 700;">3D görünüm başlatılamadı</div>
+          <div style="font-size: 12px; color: var(--color-text-secondary); max-width: 420px;">
+            Tarayıcınızda WebGL kullanılamıyor olabilir (donanım hızlandırma kapalı veya GPU sürücü hatası).
+            2D P&amp;ID akış şeması tüm ekipman verisiyle çalışmaya devam eder.
+          </div>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-3d-fallback-2d">📐 2D P&amp;ID Görünümüne Geç</button>
+        </div>`;
+      mount.querySelector("#btn-3d-fallback-2d")?.addEventListener("click", () => {
+        viewMode = "2d";
+        render();
+      });
+    }
+    if (selectedEquip && active3dInstance) {
+      active3dInstance.selectEquipment(selectedEquip);
+      highlightSvgEquipment(selectedEquip);
+    }
+  }
+
+  function render() {
+    abort2dControls();
+    destroy3d();
+    const lang = uiStore.getState().lang || "tr";
+
+    if (isLoading && !stationData) {
+      container.innerHTML = `
+        <div style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--color-text-secondary); min-height: 400px;">
+          ${icon("refreshCw", 24, "station-fan-blade")}
+          <span>${escapeHtml(t("station_loading_calc", lang))}</span>
+        </div>
+      `;
+      return;
+    }
+
+    if (!stationData) {
+      container.innerHTML = `
+        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; min-height: 400px;">
+          <p style="color: var(--color-text-secondary);">${escapeHtml(t("station_loading_init", lang))}</p>
+          <button id="btn-refresh-station" class="btn btn-primary">
+            ${icon("play", 14)}
+            <span>${escapeHtml(t("station_btn_start", lang))}</span>
+          </button>
+        </div>
+      `;
+      container.querySelector("#btn-refresh-station")?.addEventListener("click", fetchStationData);
+      return;
+    }
+
+    const { station_summary: sm, equipment_sizing: eq, nodes } = stationData;
+    const activeGasComp = projectStore.getState().inputs?.gas_comp;
+    const stationWarnings = collectStationWarnings(stationData);
+    const currentDesignSig = stationProcessSignature(projectStore.getState().inputs || {});
+    const isStationStale = !!lastProcessSig && lastProcessSig !== currentDesignSig;
+
+    container.innerHTML = `
+      <div style="flex: 1; padding: 16px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;">
+        ${
+          isStationStale
+            ? `<div id="station-stale-banner" role="status" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: var(--radius-md); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #d97706; font-size: 12px; font-weight: 600;">
+                <span>${escapeHtml(t("station_stale_msg", lang))}</span>
+                <button type="button" id="btn-station-sync-recalc" class="btn btn-sm btn-primary">${escapeHtml(t("station_stale_btn", lang))}</button>
+              </div>`
+            : ""
+        }
+        <!-- Top Summary Cards -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px;">
+          <div class="card" style="padding: 10px 14px;">
+            <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
+              ${escapeHtml(t("station_card_flow", lang))}
+            </div>
+            <div style="font-size: 18px; font-weight: 700; color: var(--color-primary); margin-top: 4px;">
+              ${escapeHtml(sm.total_mass_flow_kgs)} <span style="font-size: 12px; font-weight: 400;">kg/s</span>
+            </div>
+            <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
+              ${escapeHtml(sm.volumetric_flow_mmscmd)} MMSCMD • MW: ${escapeHtml(sm.gas_mw)} g/mol
+            </div>
+          </div>
+
+          <div class="card" style="padding: 10px 14px;">
+            <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
+              ${escapeHtml(t("station_card_pr", lang))}
+            </div>
+            <div style="font-size: 18px; font-weight: 700; color: #0ea5e9; margin-top: 4px;">
+              ${escapeHtml(sm.pressure_ratio)} : 1
+            </div>
+            <div id="station-pr-subline" style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
+              ${stationPressureDisplay(sm.suction_pressure_bar, stationInputs.p_in_unit)} ${escapeHtml(stationInputs.p_in_unit)} → ${stationPressureDisplay(sm.discharge_pressure_bar, stationInputs.p_out_unit)} ${escapeHtml(stationInputs.p_out_unit)} • T_in: ${stationInputs.t_in.toFixed(1)}°C
+            </div>
+          </div>
+
+          <div class="card" style="padding: 10px 14px;">
+            <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
+              ${escapeHtml(t("station_card_power", lang))}
+            </div>
+            <div style="font-size: 18px; font-weight: 700; color: #f59e0b; margin-top: 4px;">
+              ${escapeHtml(sm.total_power_mw)} <span style="font-size: 12px; font-weight: 400;">MW</span>
+            </div>
+            <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
+              ${(sm.total_power_kw * 1.34102 / 1000).toFixed(1)}k HP • ${escapeHtml(eq.turbo_compressors.configuration)}
+            </div>
+          </div>
+
+          <div class="card" style="padding: 10px 14px;">
+            <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
+              ${escapeHtml(t("station_card_cooler", lang))}
+            </div>
+            <div style="font-size: 18px; font-weight: 700; color: #10b981; margin-top: 4px;">
+              ${escapeHtml(sm.cooler_heat_duty_mw)} <span style="font-size: 12px; font-weight: 400;">MWth</span>
+            </div>
+            <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">
+              ${escapeHtml(eq.air_coolers.bay_count)} Fin-Fan Bay • ${escapeHtml(t("station_card_outlet", lang))}: ${escapeHtml(eq.air_coolers.outlet_temp_c)}°C
+            </div>
+          </div>
+
+          <div class="card" style="padding: 10px 14px; display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; font-weight: 600;">
+                ${escapeHtml(t("station_card_dynamic", lang))}
+              </div>
+              <div style="font-size: 12px; font-weight: 600; color: var(--color-text); margin-top: 4px;">
+                ${escapeHtml(eq.cyclones.operating_count)}+1 ${escapeHtml(t("station_unit_cyclones", lang))} • ${escapeHtml(eq.cartridge_filters.operating_count)}+1 ${escapeHtml(t("station_unit_filters", lang))}
+              </div>
+              <div style="font-size: 11px; color: var(--color-text-secondary);">
+                ${escapeHtml(eq.turbo_compressors.operating_count)}+1 ${escapeHtml(t("station_unit_trains", lang))} • ${escapeHtml(eq.compressor_building.area_m2)} m² ${escapeHtml(t("station_unit_building", lang))}
+              </div>
+            </div>
+            <div style="display: flex; gap: 6px; margin-top: 6px;">
+              <button id="btn-recalc-station" class="btn btn-sm btn-secondary" style="flex: 1; padding: 2px 6px; font-size: 11px;" title="${escapeHtml(t("station_btn_recalc_title", lang))}">
+                ${icon("refreshCw", 12)}
+                <span>${escapeHtml(t("station_btn_recalc", lang))}</span>
+              </button>
+              <button id="btn-view-botas-pfd" class="btn btn-sm btn-primary" style="flex: 1.4; padding: 2px 6px; font-size: 11px;" title="${escapeHtml(t("station_btn_pfd_title", lang))}">
+                ${icon("fileText", 12)}
+                <span>${escapeHtml(t("station_btn_pfd", lang))}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        ${
+          stationWarnings.length > 0
+            ? `
+            <div id="station-warnings-banner" role="alert" aria-live="polite" style="padding: 10px 14px; border-radius: var(--radius-md); background: rgba(245, 158, 11, 0.10); border: 1px solid rgba(245, 158, 11, 0.35); color: var(--color-text);">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
+                <div style="font-size: 12px; font-weight: 700; color: #f59e0b;">
+                  ⚠️ ${escapeHtml(t("station_warnings_title", lang))} (${stationWarnings.length})
+                </div>
+                <span class="badge badge-warning" style="font-size: 10px;">IEC 60534 / API 520 / API RP 14E</span>
+              </div>
+              <ul style="margin: 0; padding-left: 18px; font-size: 11px; line-height: 1.45; color: var(--color-text);">
+                ${stationWarnings.map(w => `<li>${escapeHtml(w)}</li>`).join("")}
+              </ul>
+            </div>
+            `
+            : ""
+        }
+
+        <!-- Live Station Operating Parameters & Dynamic Pipe Sizing Bar (Natural Gas Flow Calc) -->
+        <div id="station-params-mount">
+          ${renderLiveParamsBar(stationInputs, isParamsPanelOpen, activeGasComp, lang)}
+        </div>
+
+        <!-- View Mode Selector Bar & Quick Legend -->
+        <div style="display: flex; justify-content: space-between; align-items: center; background: var(--color-surface); padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--color-border); flex-wrap: wrap; gap: 8px;">
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <span style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); margin-right: 4px; text-transform: uppercase;">${escapeHtml(t("station_view_label", lang))}</span>
+            <button id="btn-mode-3d" class="btn btn-sm ${viewMode === '3d' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+              <span>${escapeHtml(t("station_mode_3d", lang))}</span>
+            </button>
+            <button id="btn-mode-2d" class="btn btn-sm ${viewMode === '2d' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+              <span>${escapeHtml(t("station_mode_2d", lang))}</span>
+            </button>
+            <button id="btn-mode-split" class="btn btn-sm ${viewMode === 'split' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+              <span>${escapeHtml(t("station_mode_split", lang))}</span>
+            </button>
+          </div>
+
+          <div style="display: flex; gap: 10px; align-items: center; font-size: 11px; color: var(--color-text-secondary); flex-wrap: wrap;">
+            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #e2d400;"></span> ${escapeHtml(t("station_leg_piping", lang))}</span>
+            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #00f0ff;"></span> ${escapeHtml(t("station_leg_flow", lang))}</span>
+            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #0077be;"></span> ${escapeHtml(t("station_leg_steel", lang))}</span>
+            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #8c735b;"></span> ${escapeHtml(t("station_leg_buildings", lang))}</span>
+            <span style="display: flex; align-items: center; gap: 4px;"><span style="display: inline-block; width: 10px; height: 3px; background: #2b2e34;"></span> ${escapeHtml(t("station_leg_road", lang))}</span>
+          </div>
+        </div>
+
+        <!-- Main Visualizer Area -->
+        <div id="station-main-viewer" data-view-mode="${escapeHtml(viewMode)}" style="position: relative;">
+          ${
+            viewMode === "3d"
+              ? `<div id="station-3d-mount" style="width: 100%; height: clamp(440px, 74vh, 780px); border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--color-border); background: #7aa0dc;"></div>`
+              : viewMode === "2d"
+              ? renderStation2dViewport(stationData, lang)
+              : `<div class="station-split-grid">
+                   <div id="station-3d-mount" style="height: 100%; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--color-border); background: #7aa0dc;"></div>
+                   ${renderStation2dViewport(stationData, lang)}
+                 </div>`
+          }
+
+          <!-- Equipment Inspector Drawer Container -->
+          <div id="station-inspector-mount">
+            ${selectedEquip ? renderInspectorDrawer(selectedEquip, eq, sm, activeGasComp, viewMode, lang) : ""}
+          </div>
+        </div>
+
+        <!-- 8-Nodal Telemetry Table -->
+        <div class="card" style="padding: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+            <div style="font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+              ${icon("activity", 14, "text-primary")}
+              <span>${escapeHtml(t("station_nodes_title", lang))}</span>
+            </div>
+            <span style="font-size: 11px; color: var(--color-text-secondary);">${escapeHtml(t("station_doc_no", lang))}</span>
+          </div>
+
+          <table class="kasp-table" style="font-size: 11px;">
+            <thead>
+              <tr>
+                <th>${escapeHtml(t("station_col_node_id", lang))}</th>
+                <th>${escapeHtml(t("station_col_node_desc", lang))}</th>
+                <th style="text-align: right;">${escapeHtml(t("station_col_pressure", lang))}</th>
+                <th style="text-align: right;">${escapeHtml(t("station_col_temp", lang))}</th>
+                <th style="text-align: right;">${escapeHtml(t("station_col_flow", lang))}</th>
+                <th>${escapeHtml(t("station_col_phase", lang))}</th>
+                <th>${escapeHtml(t("station_col_state", lang))}</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${nodes.map(n => `
+                <tr>
+                  <td style="font-family: var(--font-mono); font-weight: 700; color: ${escapeHtml(n.color)};">${escapeHtml(n.id)}</td>
+                  <td style="font-weight: 600;">${escapeHtml(n.name)}</td>
+                  <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">${Number(n.pressure_bar || 0).toFixed(2)}</td>
+                  <td style="text-align: right; font-family: var(--font-mono);">${Number(n.temp_c || 0).toFixed(1)}</td>
+                  <td style="text-align: right; font-family: var(--font-mono);">${Number(n.flow_kgs || 0).toFixed(1)}</td>
+                  <td><span class="badge badge-neutral" style="font-size: 10px;">${escapeHtml(n.phase)}</span></td>
+                  <td style="color: var(--color-text-secondary); font-size: 11px;">${escapeHtml(n.state_desc)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+
+        <!-- ASME B36.10M / API 5L Natural Gas Flow Calc Pipe Sizing Matrix Table -->
+        ${renderPipeSizingTable(stationData.station_piping)}
+
+        <!-- BOTAŞ Adapazarı PFD Lightbox Modal -->
+        <div id="station-pfd-modal-mount">
+          ${isPfdModalOpen ? renderBotasPfdModal(lang) : ""}
+        </div>
+
+      </div>
+    `;
+
+    container.querySelector("#btn-station-sync-recalc")?.addEventListener("click", () => {
+      syncStationInputsFromDesign();
+      fetchStationData();
     });
 
-    container.querySelector("#btn-close-pfd-modal")?.addEventListener("click", () => {
-      isPfdModalOpen = false;
-      render();
-    });
-
-    container.querySelector("#btn-footer-close-pfd-modal")?.addEventListener("click", () => {
-      isPfdModalOpen = false;
-      render();
-    });
-
-    container.querySelector("#botas-pfd-backdrop")?.addEventListener("click", (e) => {
-      if (e.target.id === "botas-pfd-backdrop") {
-        isPfdModalOpen = false;
+    // Mode switching handlers
+    container.querySelector("#btn-mode-3d")?.addEventListener("click", () => {
+      if (viewMode !== "3d") {
+        viewMode = "3d";
         render();
       }
     });
+
+    container.querySelector("#btn-mode-2d")?.addEventListener("click", () => {
+      if (viewMode !== "2d") {
+        viewMode = "2d";
+        render();
+      }
+    });
+
+    container.querySelector("#btn-mode-split")?.addEventListener("click", () => {
+      if (viewMode !== "split") {
+        viewMode = "split";
+        render();
+      }
+    });
+
+    // Mount 3D scene if applicable
+    if (viewMode === "3d" || viewMode === "split") {
+      mount3dView();
+    }
+    if (viewMode === "2d" || viewMode === "split") {
+      bindStation2dControls(container, lang);
+    }
+
+    // Inspector Close & Air Cooler Detail handlers
+    if (selectedEquip) {
+      updateInspectorDrawer();
+    }
+
+    // Event Bindings
+    container.querySelector("#btn-recalc-station")?.addEventListener("click", () => {
+      fetchStationData();
+    });
+
+    bindLiveParamsControls();
+
+    container.querySelector("#btn-view-botas-pfd")?.addEventListener("click", () => {
+      isPfdModalOpen = true;
+      updatePfdModal();
+    });
+    if (isPfdModalOpen) {
+      updatePfdModal();
+    }
 
     // Inspector & 3D Sync Click Handlers on SVG elements (for 2D / split view)
     container.querySelectorAll(".station-equip-group").forEach(el => {
@@ -1303,8 +1374,22 @@ export function renderStationTab(container) {
     });
   }
 
+  function cleanupStationTab() {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+    abort2dControls();
+    destroy3d();
+    if (typeof unsubscribeStore === "function") unsubscribeStore();
+    if (typeof unsubscribeUi === "function") unsubscribeUi();
+    if (container._stationCleanup === cleanupStationTab) {
+      container._stationCleanup = null;
+    }
+  }
+  container._stationCleanup = cleanupStationTab;
+
   // Auto-fetch on mount
   fetchStationData();
+  return { destroy: cleanupStationTab };
 }
 
 /**
@@ -1438,7 +1523,7 @@ function renderStationSvg(data) {
         <!-- Mainline Pipe Incoming -->
         <line x1="20" y1="210" x2="80" y2="210" stroke="#0ea5e9" stroke-width="8" stroke-linecap="round" />
         <line x1="20" y1="210" x2="80" y2="210" stroke="#bae6fd" stroke-width="3" class="station-flow-fast" />
-        <text x="25" y="195" fill="#0ea5e9" font-size="10" font-weight="700">${suctionNps}" BATI KARADENİZ</text>
+        <text x="25" y="195" fill="#0ea5e9" font-size="10" font-weight="700">${escapeHtml(suctionNps)}" BATI KARADENİZ</text>
         <text x="25" y="232" fill="var(--color-text-secondary)" font-size="9">${sm.suction_pressure_bar} bar</text>
 
         <!-- Pig Receiver Vessel (Horizontal Capsule) -->
@@ -1446,7 +1531,7 @@ function renderStationSvg(data) {
         <line x1="140" y1="185" x2="140" y2="235" stroke="#f59e0b" stroke-width="3" />
         <path d="M 140 195 L 147 210 L 140 225 Z" fill="#f59e0b" />
         <text x="107" y="212" fill="#ffffff" font-size="8" font-weight="700" text-anchor="middle">PIG-R</text>
-        <text x="107" y="224" fill="#38bdf8" font-size="7" font-weight="600" text-anchor="middle">${pigReceiverBarrel}</text>
+        <text x="107" y="224" fill="#38bdf8" font-size="7" font-weight="600" text-anchor="middle">${escapeHtml(pigReceiverBarrel)}</text>
         <text x="107" y="248" fill="var(--color-text-secondary)" font-size="8" text-anchor="middle">Pig Alıcı Kovan</text>
       </g>
 
@@ -1462,7 +1547,7 @@ function renderStationSvg(data) {
       <!-- ══════════════════ 2. 48" SUCTION HEADER & DYNAMIC CYCLONES (X: 180 - 280) ══════════════════ -->
       <!-- Suction Header Manifold Bar -->
       <rect x="180" y="112" width="16" height="320" rx="6" fill="#0284c7" stroke="#38bdf8" stroke-width="2" />
-      <text x="188" y="98" fill="#0284c7" font-size="9" font-weight="700" text-anchor="middle">${suctionNps}" SUCTION HEADER</text>
+      <text x="188" y="98" fill="#0284c7" font-size="9" font-weight="700" text-anchor="middle">${escapeHtml(suctionNps)}" SUCTION HEADER</text>
 
       <!-- Separation Differential Pressure & Suction Transmitters -->
       ${renderIsaBubble(240, 65, 240, 112, "PDT", "101", "0.20", "Δbar", "#0ea5e9")}
@@ -1480,7 +1565,7 @@ function renderStationSvg(data) {
 
       <!-- Filtered Header into Compressor Suction -->
       <rect x="360" y="140" width="14" height="260" rx="4" fill="#1d4ed8" stroke="#93c5fd" stroke-width="1.5" />
-      <text x="367" y="128" fill="#1d4ed8" font-size="8" font-weight="700" text-anchor="middle">${compSuctionNps}" COMP. SUCTION</text>
+      <text x="367" y="128" fill="#1d4ed8" font-size="8" font-weight="700" text-anchor="middle">${escapeHtml(compSuctionNps)}" COMP. SUCTION</text>
 
       <!-- ══════════════════ CONDENSATE TANK & DRAIN LINES (BOTAŞ PFD Note 14 & 15) ══════════════════ -->
       <g class="station-equip-group" data-equip-key="condensate_system">
@@ -1512,7 +1597,7 @@ function renderStationSvg(data) {
       <!-- ══════════════════ 4. 48" DISCHARGE HEADER (X: 750 - 775) ══════════════════ -->
       <!-- Common Discharge Header Manifold -->
       <rect x="750" y="130" width="16" height="300" rx="6" fill="#b91c1c" stroke="#f87171" stroke-width="2" />
-      <text x="758" y="108" fill="#ef4444" font-size="9" font-weight="700" text-anchor="middle">${dischargeNps}" DISCHARGE HEADER</text>
+      <text x="758" y="108" fill="#ef4444" font-size="9" font-weight="700" text-anchor="middle">${escapeHtml(dischargeNps)}" DISCHARGE HEADER</text>
       <text x="758" y="445" fill="#ef4444" font-size="9" text-anchor="middle">${sm.discharge_pressure_bar} bar</text>
 
       <!-- Discharge Header Transmitters -->
@@ -1529,7 +1614,7 @@ function renderStationSvg(data) {
         <circle cx="470" cy="60" r="14" fill="#334155" stroke="#f97316" stroke-width="2" />
         <path d="M 462 53 L 478 67 M 478 53 L 462 67" stroke="#f97316" stroke-width="2" />
         <rect x="466" y="40" width="8" height="8" fill="#f97316" />
-        <text x="470" y="32" fill="#f97316" font-size="9" font-weight="700" text-anchor="middle">${recycleNps}" ANTI-SURGE / RECYCLE HEADER</text>
+        <text x="470" y="32" fill="#f97316" font-size="9" font-weight="700" text-anchor="middle">${escapeHtml(recycleNps)}" ANTI-SURGE / RECYCLE HEADER</text>
       </g>
 
       <!-- Main Header pipe to Air Coolers -->
@@ -1593,13 +1678,13 @@ function renderStationSvg(data) {
         <line x1="1050" y1="235" x2="1050" y2="285" stroke="#10b981" stroke-width="3" />
         <path d="M 1050 245 L 1043 260 L 1050 275 Z" fill="#10b981" />
         <text x="1080" y="260" fill="#ffffff" font-size="8" font-weight="700" text-anchor="middle">PIG-L</text>
-        <text x="1080" y="272" fill="#6ee7b7" font-size="7" font-weight="600" text-anchor="middle">${pigLauncherBarrel}</text>
+        <text x="1080" y="272" fill="#6ee7b7" font-size="7" font-weight="600" text-anchor="middle">${escapeHtml(pigLauncherBarrel)}</text>
         <text x="1080" y="298" fill="var(--color-text-secondary)" font-size="8" text-anchor="middle">Pig Atıcı Kovan</text>
 
         <!-- Mainline Out -->
         <line x1="1110" y1="260" x2="1170" y2="260" stroke="#10b981" stroke-width="8" stroke-linecap="round" />
         <line x1="1110" y1="260" x2="1170" y2="260" stroke="#ecfdf5" stroke-width="3" class="station-flow-fast" />
-        <text x="1165" y="232" fill="#10b981" font-size="10" font-weight="700" text-anchor="end">${dischargeNps}" ANA HAT BASMA</text>
+        <text x="1165" y="232" fill="#10b981" font-size="10" font-weight="700" text-anchor="end">${escapeHtml(dischargeNps)}" ANA HAT BASMA</text>
         <text x="1165" y="280" fill="var(--color-text-secondary)" font-size="9" text-anchor="end">${eq.air_coolers.outlet_temp_c}°C • ${n8Pres} bar</text>
       </g>
 
@@ -1742,7 +1827,7 @@ function renderDynamicCompressorTrainsSvg(count, info) {
       <circle cx="560" cy="${y + 24}" r="8" fill="#334155" stroke="#f59e0b" stroke-width="1.5" />
       <path d="M 555 ${y + 20} L 565 ${y + 28} M 565 ${y + 20} L 555 ${y + 28}" stroke="#f59e0b" stroke-width="1.5" />
       <rect x="557" y="${y + 11}" width="6" height="5" fill="#f59e0b" />
-      <text x="560" y="${y + 38}" fill="#f59e0b" font-size="7" font-weight="600" text-anchor="middle">ASV-${i + 1} (${info.anti_surge_valve_size_in}")</text>
+      <text x="560" y="${y + 38}" fill="#f59e0b" font-size="7" font-weight="600" text-anchor="middle">ASV-${i + 1} (${escapeHtml(info.anti_surge_valve_size_in)}")</text>
 
       <!-- Train Status Label -->
       <text x="449" y="${y + 34}" fill="${isSpare ? '#94a3b8' : '#38bdf8'}" font-size="8" font-weight="600" text-anchor="middle">
@@ -1796,19 +1881,19 @@ function renderDynamicCoolersSvg(count, info) {
 /**
  * Renders the floating inspection drawer when an equipment item is clicked.
  */
-function renderDrawerWarnings(warningsList) {
+function renderDrawerWarnings(warningsList, lang = "tr") {
   const cleaned = (warningsList || []).map(w => normalizeWarningItem(w)).filter(Boolean);
   if (!cleaned.length) return "";
   return `
     <div role="alert" style="margin-top: 8px; padding: 6px 8px; border-radius: var(--radius-sm); background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); font-size: 10px; color: #f59e0b;">
-      <div style="font-weight: 700; margin-bottom: 2px;">⚠️ Mühendislik Uyarıları:</div>
+      <div style="font-weight: 700; margin-bottom: 2px;">⚠️ ${escapeHtml(t("station_warnings_title", lang))}:</div>
       ${cleaned.map(w => `<div>• ${escapeHtml(w)}</div>`).join("")}
     </div>
   `;
 }
 
-function renderInspectorDrawer(key, eq, sm, gasComp) {
-  let title = "Ekipman Teftişi";
+function renderInspectorDrawer(key, eq, sm, gasComp, viewMode = "2d", lang = "tr") {
+  let title = t("station_inspector_default_title", lang);
   let content = "";
 
   if (key === "pig_receiver") {
@@ -1843,7 +1928,7 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
         <p><b>İşlev:</b> Siklon sonrası kalan 0.3 mikrona kadar ince aerosol ve tozu tutarak çark erozyonunu önler.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
-          <tr><td>Filtreleme Hassasiyeti</td><td>${eq.cartridge_filters.filter_efficiency_micron}</td></tr>
+          <tr><td>Filtreleme Hassasiyeti</td><td>${escapeHtml(eq.cartridge_filters.filter_efficiency_micron)}</td></tr>
           <tr><td>Ünite Başına Debi</td><td>${eq.cartridge_filters.flow_per_unit_kgs} kg/s</td></tr>
           <tr><td>Temiz Filtre ΔP</td><td>${eq.cartridge_filters.clean_dp_bar} bar</td></tr>
           <tr><td>Fark Basınç İletimi</td><td>PDT Diferansiyel Basınç Transmiteri</td></tr>
@@ -1866,13 +1951,13 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
           <tr><td>Tren Başına Gaz Debisi</td><td>${eq.turbo_compressors.flow_per_unit_kgs} kg/s</td></tr>
           <tr><td>Tren Başına Yakıt Tüketimi</td><td>${unitFuelKgh.toFixed(1)} kg/h (~${unitFuelSm3h.toFixed(0)} Sm³/h)</td></tr>
           <tr><td>Tahmini Isı Oranı (Heat Rate)</td><td>~10,285 kJ/kWh (%35 Termal Verim)</td></tr>
-          <tr><td>Emiş Nozulu</td><td>${eq.turbo_compressors.suction_nozzle_size_in}</td></tr>
-          <tr><td>Basma Nozulu</td><td>${eq.turbo_compressors.discharge_nozzle_size_in}</td></tr>
-          <tr><td>Anti-Surge Valfi</td><td>ASV ${eq.turbo_compressors.anti_surge_valve_size_in}" (Stroking: &lt; ${eq.turbo_compressors.anti_surge_stroke_time_s}s)</td></tr>
+          <tr><td>Emiş Nozulu</td><td>${escapeHtml(eq.turbo_compressors.suction_nozzle_size_in)}</td></tr>
+          <tr><td>Basma Nozulu</td><td>${escapeHtml(eq.turbo_compressors.discharge_nozzle_size_in)}</td></tr>
+          <tr><td>Anti-Surge Valfi</td><td>ASV ${escapeHtml(eq.turbo_compressors.anti_surge_valve_size_in)}" (Stroking: &lt; ${eq.turbo_compressors.anti_surge_stroke_time_s}s)</td></tr>
           ${eq.turbo_compressors.anti_surge_valve_sizing ? `<tr><td>ASV IEC 60534 Boyut</td><td>${escapeHtml(eq.turbo_compressors.anti_surge_valve_sizing.valve_inch)} • Cv ${Number(eq.turbo_compressors.anti_surge_valve_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.turbo_compressors.anti_surge_valve_sizing.opening_percent).toFixed(1)} • EOS: ${escapeHtml((eq.turbo_compressors.anti_surge_valve_sizing.eos_model || "pr").toUpperCase())}</td></tr>` : ''}
           <tr><td>Surge Sınır Debisi</td><td>${eq.turbo_compressors.surge_limit_flow_kgs} kg/s</td></tr>
         </table>
-        ${renderDrawerWarnings(asvWarn)}
+        ${renderDrawerWarnings(asvWarn, lang)}
       </div>
     `;
   } else if (key === "anti_surge") {
@@ -1885,13 +1970,13 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
         <p><b>İşlev:</b> Kompresörün surge bölgesine düşmesini engellemek için hızlı tepki süreli (&lt; ${eq.turbo_compressors.anti_surge_stroke_time_s}s) pnömatik valf ile basma gazını emişe yönlendirir.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
-          <tr><td>Vana Çapı</td><td>ASV ${eq.turbo_compressors.anti_surge_valve_size_in}" Hızlı Açılan Küresel/Kafesli Vana</td></tr>
+          <tr><td>Vana Çapı</td><td>ASV ${escapeHtml(eq.turbo_compressors.anti_surge_valve_size_in)}" Hızlı Açılan Küresel/Kafesli Vana</td></tr>
           <tr><td>Stroking Süresi</td><td>&lt; ${eq.turbo_compressors.anti_surge_stroke_time_s} saniye (Tam Açılma)</td></tr>
           <tr><td>Surge Kontrol Sınırı</td><td>${eq.turbo_compressors.surge_limit_flow_kgs} kg/s</td></tr>
           <tr><td>Akustik İyileştirme</td><td>Gürültü ve titreşim önleyici kademeli difüzör trim</td></tr>
           ${eq.turbo_compressors.anti_surge_valve_sizing ? `<tr><td>IEC 60534 Kapasite</td><td>${escapeHtml(eq.turbo_compressors.anti_surge_valve_sizing.valve_inch)} • Cv ${Number(eq.turbo_compressors.anti_surge_valve_sizing.required_cv).toFixed(1)} • Gürültü ${Number(eq.turbo_compressors.anti_surge_valve_sizing.noise_db || 0).toFixed(1)} dB • EOS: ${escapeHtml((eq.turbo_compressors.anti_surge_valve_sizing.eos_model || "pr").toUpperCase())}</td></tr>` : ''}
         </table>
-        ${renderDrawerWarnings(asvWarn)}
+        ${renderDrawerWarnings(asvWarn, lang)}
       </div>
     `;
   } else if (key === "compressor_building") {
@@ -1903,7 +1988,7 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
           <tr><td>Boyutlar (G x U x Y)</td><td>${eq.compressor_building.width_m} x ${eq.compressor_building.length_m} x ${eq.compressor_building.height_m} m</td></tr>
           <tr><td>Toplam Taban Alanı</td><td>${eq.compressor_building.area_m2} m²</td></tr>
           <tr><td>Tavan Vinci</td><td>${eq.compressor_building.crane_capacity_tons} Ton Gezer Vinç</td></tr>
-          <tr><td>Akustik İzolasyon</td><td>${eq.compressor_building.acoustic_attenuation_dba}</td></tr>
+          <tr><td>Akustik İzolasyon</td><td>${escapeHtml(eq.compressor_building.acoustic_attenuation_dba)}</td></tr>
           <tr><td>Emniyet Sistemleri</td><td>Gaz Algılama (%20 LEL), CO2 / Inergen Söndürme</td></tr>
         </table>
       </div>
@@ -1919,12 +2004,12 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
         <p><b>İşlev:</b> Kompresör anti-surge (ASV) çıkışlarını toplayıp emiş kolektörüne döndürür; aynı zamanda istasyon recycle/purge hattı olarak çalışır.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
-          <tr><td>Boru Çapı</td><td>${recycleSize} Anti-Surge / Suction Tie-in</td></tr>
+          <tr><td>Boru Çapı</td><td>${escapeHtml(recycleSize)} Anti-Surge / Suction Tie-in</td></tr>
           <tr><td>Maks. Sirkülasyon</td><td>${eq.station_recycle.max_recirculation_capacity_kgs} kg/s</td></tr>
           <tr><td>Kontrol Vanası</td><td>PCV Kademeli Basınç Düşürücü Düşük Gürültülü Trim</td></tr>
           ${eq.station_recycle.pcv_sizing ? `<tr><td>PCV IEC 60534 Boyut</td><td>${escapeHtml(eq.station_recycle.pcv_sizing.valve_inch)} • Cv ${Number(eq.station_recycle.pcv_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.station_recycle.pcv_sizing.opening_percent).toFixed(1)} • EOS: ${escapeHtml((eq.station_recycle.pcv_sizing.eos_model || "pr").toUpperCase())}</td></tr>` : ''}
         </table>
-        ${renderDrawerWarnings(pcvWarn)}
+        ${renderDrawerWarnings(pcvWarn, lang)}
       </div>
     `;
   } else if (key === "cooler_bypass") {
@@ -1938,12 +2023,12 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
         <p><b>İşlev:</b> Soğuk kış aylarında veya düşük debide VFD fanlar minimum devirde dahi gazı aşırı soğutursa, TCV vanası açılarak sıcak basma gazını soğuk çıkışla karıştırır.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
           <tr><td>Vana Tipi</td><td>TCV Sıcaklık Kontrollü Oransal Vana</td></tr>
-          <tr><td>Baypas Boru Çapı</td><td>${eq.air_coolers.bypass_line?.pipe_size || '-'} (ASME B36.10M)</td></tr>
+          <tr><td>Baypas Boru Çapı</td><td>${escapeHtml(eq.air_coolers.bypass_line?.pipe_size || '-')} (ASME B36.10M)</td></tr>
           <tr><td>Birincil Kontrol</td><td>Hava Soğutucu Fanlarında VFD Frekans Kontrolü</td></tr>
           <tr><td>İkincil Kontrol</td><td>TCV Sıcak Gaz Karıştırma Baypası</td></tr>
           ${eq.air_coolers.cooler_bypass_valve_sizing ? `<tr><td>TCV IEC 60534 Boyut</td><td>${escapeHtml(eq.air_coolers.cooler_bypass_valve_sizing.valve_inch)} • Cv ${Number(eq.air_coolers.cooler_bypass_valve_sizing.required_cv).toFixed(1)} • Açıklık %${Number(eq.air_coolers.cooler_bypass_valve_sizing.opening_percent).toFixed(1)} • EOS: ${escapeHtml((eq.air_coolers.cooler_bypass_valve_sizing.eos_model || "pr").toUpperCase())}</td></tr>` : ''}
         </table>
-        ${renderDrawerWarnings(tcvWarn)}
+        ${renderDrawerWarnings(tcvWarn, lang)}
       </div>
     `;
   } else if (key === "condensate_system") {
@@ -1974,8 +2059,8 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
           <tr><td>Basınç Kaybı (ΔP)</td><td>${eq.air_coolers.pressure_drop_bar} bar</td></tr>
           ${eq.air_coolers.cooler_bypass_valve_sizing ? `<tr><td>TCV Boyut</td><td>${escapeHtml(eq.air_coolers.cooler_bypass_valve_sizing.valve_inch)} • Cv ${Number(eq.air_coolers.cooler_bypass_valve_sizing.required_cv).toFixed(1)}</td></tr>` : ''}
         </table>
-        ${renderDrawerWarnings(acWarn)}
-        <button id="btn-detailed-air-cooler" class="btn btn-sm btn-primary" style="margin-top: 6px;">📐 API 661 Detaylı Tasarım</button>
+        ${renderDrawerWarnings(acWarn, lang)}
+        <button id="btn-detailed-air-cooler" class="btn btn-sm btn-primary" style="margin-top: 6px;">${escapeHtml(t("station_inspector_api661", lang))}</button>
         <div id="air-cooler-detail" style="margin-top: 8px;"></div>
       </div>
     `;
@@ -1999,7 +2084,7 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
           <tr><td>Önerilen Min. PSV Sayısı</td><td>${psvSizing.recommended_duty_count || 1} Duty (Toplam ${psvSizing.recommended_total_count || 2})</td></tr>
           ` : ''}
         </table>
-        ${renderDrawerWarnings(psvWarn)}
+        ${renderDrawerWarnings(psvWarn, lang)}
       </div>
     `;
   } else if (key === "esd_valves") {
@@ -2013,11 +2098,11 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
         <p><b>İşlev:</b> Basma kollektörü üzerinde dikey yükselen acil boşaltma (BDV) ve ana hat acil kapatma (ESDV) vanaları.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
           <tr><td>Kurulu / Aktif ESD Sayısı</td><td>${esd.esd_count || 2} Adet (${esd.esd_duty_count || 1} Aktif) • İzin Verilen ΔP: ${esd.allowable_dp_bar || 0.5} bar</td></tr>
-          <tr><td>Basma ESD Aerodinamik / Hat Çapı</td><td>${disch.calculated_size_in || '-'}" (DN${disch.calculated_dn_mm || '-'}) / Hat: ${disch.selected_size_in || '-'}" • Cv ${Number(disch.required_cv || 0).toFixed(0)}</td></tr>
-          <tr><td>Emiş ESD Aerodinamik / Hat Çapı</td><td>${suct.calculated_size_in || '-'}" (DN${suct.calculated_dn_mm || '-'}) / Hat: ${suct.selected_size_in || '-'}" • Cv ${Number(suct.required_cv || 0).toFixed(0)}</td></tr>
+          <tr><td>Basma ESD Aerodinamik / Hat Çapı</td><td>${escapeHtml(disch.calculated_size_in || '-')}" (DN${escapeHtml(disch.calculated_dn_mm || '-')}) / Hat: ${escapeHtml(disch.selected_size_in || '-')}" • Cv ${Number(disch.required_cv || 0).toFixed(0)}</td></tr>
+          <tr><td>Emiş ESD Aerodinamik / Hat Çapı</td><td>${escapeHtml(suct.calculated_size_in || '-')}" (DN${escapeHtml(suct.calculated_dn_mm || '-')}) / Hat: ${escapeHtml(suct.selected_size_in || '-')}" • Cv ${Number(suct.required_cv || 0).toFixed(0)}</td></tr>
           <tr><td>Önerilen Paralel ESD Sayısı</td><td>${disch.recommended_duty_count || 1} Aktif Vana</td></tr>
         </table>
-        ${renderDrawerWarnings(esdWarn)}
+        ${renderDrawerWarnings(esdWarn, lang)}
       </div>
     `;
   } else if (key === "ultrasonic_meter") {
@@ -2109,10 +2194,10 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
   }
 
   return `
-    <div class="station-inspector-card">
+    <div class="station-inspector-card${viewMode !== "2d" ? " station-inspector-docked" : ""}">
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--color-border); padding-bottom: 8px; margin-bottom: 10px;">
-        <div style="font-size: 12px; font-weight: 700; color: var(--color-primary);">${title}</div>
-        <button id="btn-close-inspector" class="btn btn-sm btn-icon" style="padding: 2px;">${icon("x", 12)}</button>
+        <div style="font-size: 12px; font-weight: 700; color: var(--color-primary);">${escapeHtml(title)}</div>
+        <button id="btn-close-inspector" class="btn btn-sm btn-icon" style="padding: 2px;" aria-label="${escapeHtml(t("station_inspector_close", lang))}" title="${escapeHtml(t("station_inspector_close", lang))}">${icon("x", 12)}</button>
       </div>
       ${content}
     </div>
@@ -2122,29 +2207,29 @@ function renderInspectorDrawer(key, eq, sm, gasComp) {
 /**
  * Renders the full-screen BOTAŞ Adapazarı PFD & 3D CAD Reference Gallery lightbox modal.
  */
-function renderBotasPfdModal() {
+function renderBotasPfdModal(lang = "tr") {
   return `
     <div class="kasp-modal-backdrop" id="botas-pfd-backdrop" style="z-index: 1000; background: rgba(0, 0, 0, 0.85);">
-      <div class="kasp-modal" style="width: 95vw; height: 92vh; max-width: 98vw; max-height: 96vh; display: flex; flex-direction: column; background: var(--color-surface);">
+      <div class="kasp-modal" role="dialog" aria-modal="true" style="width: 95vw; height: 92vh; max-width: 98vw; max-height: 96vh; display: flex; flex-direction: column; background: var(--color-surface);">
         
         <!-- Modal Header -->
         <div class="kasp-modal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--color-border);">
           <div style="display: flex; align-items: center; gap: 10px;">
             ${icon("fileText", 20, "text-primary")}
             <div>
-              <h3 style="margin: 0; font-size: 14px; font-weight: 700;">BOTAŞ Adapazarı Kompresör İstasyonu — Orijinal PFD & 3D CAD Referans Galerisi</h3>
+              <h3 style="margin: 0; font-size: 14px; font-weight: 700;">${escapeHtml(t("station_pfd_modal_title", lang))}</h3>
               <div style="font-size: 11px; color: var(--color-text-secondary);">
-                Doküman No: <b>0-NGTL0-CS-I-001-4000</b> • BOTAŞ / Kontrolmatik Mühendislik • 3D Navisworks / Plant 3D & PFD
+                Doküman No: <b>0-NGTL0-CS-I-001-4000</b> • BOTAŞ / Kontrolmatik Mühendislik • 3D Navisworks / Plant 3D &amp; PFD
               </div>
             </div>
           </div>
-          <button id="btn-close-pfd-modal" class="btn btn-sm btn-icon">${icon("x", 16)}</button>
+          <button id="btn-close-pfd-modal" class="btn btn-sm btn-icon" aria-label="${escapeHtml(t("station_pfd_close", lang))}">${icon("x", 16)}</button>
         </div>
 
         <!-- Drawing & 3D CAD Gallery View (Scrollable) -->
         <div style="flex: 1; overflow: auto; padding: 16px; background: #0b0f19; display: flex; flex-direction: column; gap: 18px; align-items: center;">
           <div style="width: 100%; max-width: 1400px;">
-            <div style="color: #38bdf8; font-size: 13px; font-weight: 700; margin-bottom: 8px;">1. 3D CAD Referans Görünümleri (MFS, CFS, Gas Cooler, COMPRESSOR-01..05, 7.0m Yol & Kontrol Binaları)</div>
+            <div style="color: #38bdf8; font-size: 13px; font-weight: 700; margin-bottom: 8px;">1. 3D CAD Referans Görünümleri (MFS, CFS, Gas Cooler, COMPRESSOR-01..05, 7.0m Yol &amp; Kontrol Binaları)</div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px;">
               <img src="/static/vendor/cad_ref_2.jpg" alt="3D CAD Vaziyet Planı" style="width: 100%; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15);" />
               <img src="/static/vendor/cad_ref_3.jpg" alt="3D CAD Genel İzometrik" style="width: 100%; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15);" />
@@ -2164,19 +2249,19 @@ function renderBotasPfdModal() {
         <div class="kasp-modal-footer" style="padding: 10px 20px; border-top: 1px solid var(--color-border); display: flex; justify-content: space-between; align-items: center; background: var(--color-surface); font-size: 11px; color: var(--color-text-secondary);">
           <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
             <span style="font-weight: 600; color: var(--color-primary);">Doğrulanan Sistemler:</span>
-            <span>48" Ana Hat & Pig Kovanları</span>
+            <span>48" Ana Hat &amp; Pig Kovanları</span>
             <span>•</span>
             <span>MFS Çoklu Siklon</span>
             <span>•</span>
             <span>CFS Kartuş Filtre</span>
             <span>•</span>
-            <span>COMPRESSOR-01..05 (Mavi Çelik Karkas & X-Ray Kesit)</span>
+            <span>COMPRESSOR-01..05 (Mavi Çelik Karkas &amp; X-Ray Kesit)</span>
             <span>•</span>
-            <span>Gas Cooler & TCV By-Pass</span>
+            <span>Gas Cooler &amp; TCV By-Pass</span>
             <span>•</span>
-            <span>7.0m Yol, Tel Çit & Kontrol Binası</span>
+            <span>7.0m Yol, Tel Çit &amp; Kontrol Binası</span>
           </div>
-          <button id="btn-footer-close-pfd-modal" class="btn btn-sm btn-secondary">Kapat</button>
+          <button id="btn-footer-close-pfd-modal" class="btn btn-sm btn-secondary">${escapeHtml(t("station_pfd_close", lang))}</button>
         </div>
 
       </div>
@@ -2187,7 +2272,7 @@ function renderBotasPfdModal() {
 /**
  * Renders the live interactive parameter control bar for real-time natural gas pipe sizing.
  */
-function renderLiveParamsBar(inputs, isExpanded, gasComp) {
+function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr") {
   const mmscmdEst = convertFlowWithMW(inputs.mass_flow, "kg/s", "MMSCMD", gasComp).toFixed(2);
   const mmscmdMin = convertFlowWithMW(20, "kg/s", "MMSCMD", gasComp).toFixed(1);
   const mmscmdMax = convertFlowWithMW(300, "kg/s", "MMSCMD", gasComp).toFixed(1);
@@ -2205,26 +2290,26 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp) {
         <div style="display: flex; align-items: center; gap: 8px;">
           ${icon("sliders", 16, "text-primary")}
           <div style="font-size: 12px; font-weight: 700; color: var(--color-text);">
-            Canlı İşletme Parametreleri & Dinamik ASME B36.10M / API 5L Boru Boyutlandırma
+            ${escapeHtml(t("station_params_title", lang))}
           </div>
-          <span class="badge badge-success" style="font-size: 10px;">Natural Gas Flow Calc Motoru Aktif</span>
+          <span class="badge badge-success" style="font-size: 10px;">${escapeHtml(t("station_params_badge", lang))}</span>
         </div>
 
-        <div style="display: flex; align-items: center; gap: 12px; font-size: 11px;">
+        <div style="display: flex; align-items: center; gap: 12px; font-size: 11px; flex-wrap: wrap;">
           <div style="color: var(--color-text-secondary);">
-            Debi: <strong style="color: #38bdf8; font-family: var(--font-mono);">${flowDisplay} ${escapeHtml(flowUnit)}</strong> <span style="opacity: 0.7;">(~${mmscmdEst} MMSCMD)</span>
+            ${escapeHtml(t("station_params_flow", lang))}: <strong style="color: #38bdf8; font-family: var(--font-mono);">${flowDisplay} ${escapeHtml(flowUnit)}</strong> <span style="opacity: 0.7;">(~${mmscmdEst} MMSCMD)</span>
           </div>
           <div style="color: var(--color-text-secondary);">
-            Emiş: <strong style="color: #34d399; font-family: var(--font-mono);">${pinDisplay} ${escapeHtml(pinUnit)}</strong>
+            ${escapeHtml(t("station_params_suction", lang))}: <strong style="color: #34d399; font-family: var(--font-mono);">${pinDisplay} ${escapeHtml(pinUnit)}</strong>
           </div>
           <div style="color: var(--color-text-secondary);">
-            Basma: <strong style="color: #f59e0b; font-family: var(--font-mono);">${poutDisplay} ${escapeHtml(poutUnit)}</strong>
+            ${escapeHtml(t("station_params_discharge", lang))}: <strong style="color: #f59e0b; font-family: var(--font-mono);">${poutDisplay} ${escapeHtml(poutUnit)}</strong>
           </div>
           <div style="color: var(--color-text-secondary);">
-            Çelik: <strong style="color: #a78bfa;">${inputs.pipe_material}</strong>
+            ${escapeHtml(t("station_params_steel", lang))}: <strong style="color: #a78bfa;">${escapeHtml(inputs.pipe_material)}</strong>
           </div>
           <button id="btn-toggle-params-panel" class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px;">
-            ${isExpanded ? "Paneli Daralt ▲" : "Parametreleri Düzenle ▼"}
+            ${escapeHtml(t(isExpanded ? "station_params_collapse" : "station_params_expand", lang))}
           </button>
         </div>
       </div>
@@ -2446,11 +2531,11 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp) {
         <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;">
           <button id="btn-reset-station-params" class="btn btn-sm btn-secondary" style="font-size: 11px;">
             ${icon("refreshCw", 12)}
-            <span>Varsayılan Parametreler</span>
+            <span>${escapeHtml(t("station_params_reset", lang))}</span>
           </button>
           <button id="btn-apply-station-params" class="btn btn-sm btn-primary" style="font-size: 11px;">
             ${icon("play", 12)}
-            <span>Boru Hatlarını Boyutlandır & Güncelle</span>
+            <span>${escapeHtml(t("station_params_apply", lang))}</span>
           </button>
         </div>
       ` : ""}
@@ -2463,16 +2548,16 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp) {
  * Renders the comprehensive 15-line ASME B36.10M / API 5L Natural Gas Flow Calc Pipe Sizing Matrix Table.
  */
 function renderPipeSizingTable(piping) {
+  const lang = uiStore?.getState?.()?.lang || "tr";
   if (!piping || Object.keys(piping).length === 0) {
     return `
       <div class="card" style="padding: 14px; text-align: center; color: var(--color-text-secondary); font-size: 12px;">
         ${icon("activity", 18, "text-primary")}
-        <div style="margin-top: 6px;">Boru boyutlandırma hesapları yükleniyor...</div>
+        <div style="margin-top: 6px;">${escapeHtml(t("station_pipe_loading", lang))}</div>
       </div>
     `;
   }
 
-  const lang = uiStore?.getState?.()?.lang || "tr";
   const linesMap = piping.lines || piping;
   const lines = Object.values(linesMap);
   const arch = piping.piping_architecture || {};
@@ -2523,8 +2608,8 @@ function renderPipeSizingTable(piping) {
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
         <div style="display: flex; align-items: center; gap: 6px;">
           ${icon("activity", 15, "text-primary")}
-          <span style="font-size: 13px; font-weight: 700;">ASME B36.10M / API 5L Dinamik Boru Boyutlandırma &amp; Sınır Doğrulama Matrisi</span>
-          <span class="badge badge-primary" style="font-size: 10px;">${lines.length} Proses Hattı</span>
+          <span style="font-size: 13px; font-weight: 700;">${escapeHtml(t("station_pipe_matrix_title", lang))}</span>
+          <span class="badge badge-primary" style="font-size: 10px;">${lines.length} ${escapeHtml(t("station_pipe_lines_badge", lang))}</span>
         </div>
         <div style="font-size: 11px; color: var(--color-text-secondary); display: flex; gap: 10px; align-items: center;">
           <span>Barlow: <b>t = P·D / (2·SMYS·F)</b></span>
@@ -2663,11 +2748,11 @@ function renderPipeSizingTable(piping) {
 
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 10px; color: var(--color-text-secondary); flex-wrap: wrap; gap: 6px;">
         <div>
-          <span>Boru Malzemesi: <b>${piping.pipe_material || "API 5L X70"} (SMYS = 485 MPa)</b></span>
+          <span>Boru Malzemesi: <b>${escapeHtml(piping.pipe_material || "API 5L X70")} (SMYS = 485 MPa)</b></span>
           <span style="margin: 0 6px;">•</span>
           <span>İstasyon Emniyet Tasarım Faktörü: <b>F = ${piping.design_factor_F ? piping.design_factor_F.toFixed(2) : "0.50"} (ASME B31.8 Sınıf 1 Bölüm 2 Kompresör Sahası)</b></span>
           <span style="margin: 0 6px;">•</span>
-          <span>Boru Standardı: <b>${piping.pipe_standard || "BOTAŞ"} ${piping.psl_level || "PSL2"}</b></span>
+          <span>Boru Standardı: <b>${escapeHtml(piping.pipe_standard || "BOTAŞ")} ${escapeHtml(piping.psl_level || "PSL2")}</b></span>
         </div>
         <div>
           <span>Hız Kriteri: &lt; 15 m/s (Optimum), &lt; 18 m/s (Tavan), v_erozyon = 122 / √ρ</span>

@@ -51,7 +51,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   const THREE = window.THREE;
   let isDestroyed = false;
   let animationFrameId = null;
-  const uiLang = uiStore?.getState?.()?.lang || "tr";
+  let uiLang = uiStore?.getState?.()?.lang || "tr";
 
   // Restore previous view state if re-mounting across calculations or tab switches
   const savedState = options.initialState || container.__kasp_3d_state__ || null;
@@ -118,6 +118,23 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   // that feed the 3D pipes, so every flanged ball valve matches its pipe.
   const rCycloneBranch = visualPipeRadius(pLines.cyclone_branch?.od_mm, 323.8);
   const rFilterBranch = visualPipeRadius(pLines.filter_branch?.od_mm, 323.8);
+  const parseNominalOdMm = (sizeVal, fallbackOdMm) => {
+    const match = String(sizeVal ?? "").match(/(\d+(?:\.\d+)?)/);
+    return match ? Number(match[1]) * 25.4 : fallbackOdMm;
+  };
+  const pigBypassOdMm = Number(pLines.pig_bypass?.od_mm) || (Number(suctLine.od_mm) > 0 ? Number(suctLine.od_mm) * 0.72 : 219.1);
+  const pigKickerRecvOdMm = Number(pLines.pig_kicker_receiver?.od_mm) || (Number(suctLine.od_mm) > 0 ? Math.min(219.1, Number(suctLine.od_mm) * 0.35) : 114.3);
+  const pigKickerLaunchOdMm = Number(pLines.pig_kicker_launcher?.od_mm) || (Number(dischLine.od_mm) > 0 ? Math.min(219.1, Number(dischLine.od_mm) * 0.35) : 114.3);
+  const psvInletOdMm = Number(pLines.psv_inlet?.od_mm) || parseNominalOdMm(eq.safety_relief_and_blowdown?.psv_sizing?.inlet_flange_in, 168.28);
+  const esdRiserOdMm =
+    Number(pLines.esd_riser?.od_mm) ||
+    Number(eq.esd_sizing?.discharge?.calculated_dn_mm) ||
+    parseNominalOdMm(eq.esd_sizing?.discharge?.calculated_size_in, 168.28);
+  const rPigBypass = visualPipeRadius(pigBypassOdMm, 219.1);
+  const rPigKickerReceiver = visualPipeRadius(pigKickerRecvOdMm, 114.3, { max: 0.42 });
+  const rPigKickerLauncher = visualPipeRadius(pigKickerLaunchOdMm, 114.3, { max: 0.42 });
+  const rPsvInlet = visualPipeRadius(psvInletOdMm, 168.28, { max: 0.42 });
+  const rEsdRiser = visualPipeRadius(esdRiserOdMm, 168.28, { max: 0.45 });
   const numCyclones = Math.max(1, eq.cyclones?.installed_count || ((eq.cyclones?.operating_count || 1) + 1));
   const numFilters = Math.max(1, eq.cartridge_filters?.installed_count || ((eq.cartridge_filters?.operating_count || 1) + 1));
   const numComps = Math.max(1, eq.turbo_compressors?.installed_count || ((eq.turbo_compressors?.operating_count || 1) + 1));
@@ -211,17 +228,17 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         </div>
         <div class="hud-extra" style="display: flex; justify-content: space-between; margin-top: 6px; padding-top: 5px; border-top: 1px dashed rgba(255,255,255,0.12); color: #94a3b8;">
           <span>Boru & Saha Standartı:</span>
-          <span style="font-family: monospace; font-weight: 600; color: #cbd5e1;">${suctLine.nominal_size_in || '48"'} ASME B31.8 / API 617</span>
+          <span style="font-family: monospace; font-weight: 600; color: #cbd5e1;">${escapeHtml(suctLine.nominal_size_in || '48"')} ASME B31.8 / API 617</span>
         </div>
       </div>
 
       <!-- Top-Center Interactive Layer & Cutaway Controls -->
       <div class="hud-toolbar" style="position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; gap: 6px; flex-wrap: wrap; background: rgba(14, 19, 28, 0.88); backdrop-filter: blur(8px); padding: 6px 10px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 4px 16px rgba(0,0,0,0.35);">
         <button id="btn-cutaway-mode" style="background: #0284c7; color: #fff; border: 1px solid #38bdf8; border-radius: 14px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">
-          🏗️ Bina Kesiti: ${cutawayUnitLabel} (X-Ray)
+          🏗️ Bina Kesiti: ${escapeHtml(cutawayUnitLabel)} (X-Ray)
         </button>
         <button id="btn-toggle-pipe-labels" aria-pressed="${showPipeLabels ? "true" : "false"}" style="background: ${showPipeLabels ? "#7c3aed" : "#1e293b"}; color: ${showPipeLabels ? "#fff" : "#cbd5e1"}; border: 1px solid ${showPipeLabels ? "#c084fc" : "rgba(255,255,255,0.15)"}; border-radius: 14px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">
-          ${escapeHtml(t("pipe_labels_toggle", uiLang))}
+          ${escapeHtml(t(showPipeLabels ? "pipe_labels_on" : "pipe_labels_off", uiLang))}
         </button>
         <button id="btn-toggle-envelopes" style="background: #1e293b; color: #e2e8f0; border: 1px solid rgba(255,255,255,0.15); border-radius: 14px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">
           📦 Bakım Hacimleri: Açık
@@ -243,11 +260,11 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       <!-- Top-Right CAD Legend Panel -->
       <div class="hud-legend" style="position: absolute; top: 12px; right: 12px; z-index: 20; background: rgba(14, 19, 28, 0.88); border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 10px 13px; font-size: 10.5px; color: #cbd5e1; backdrop-filter: blur(8px); max-width: 252px;">
         <div style="font-weight: 700; color: #94a3b8; margin-bottom: 5px; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.4px;">CAD Katman & Boru Sınır Lejantı</div>
-        <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 5px; background: #e2d400; border: 1px solid #facc15; display: inline-block; border-radius: 2px;"></span><span>Ana Header (Suction/Discharge: ${suctLine.nominal_size_in || '10"'})</span></div>
-        <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 3px; background: #e2d400; display: inline-block; border-radius: 2px;"></span><span>Ekipman Branşmanları (${compBranchLine.nominal_size_in || '10"'}/${compDischargeBranchLine.nominal_size_in || '6"'})</span></div>
+        <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 5px; background: #e2d400; border: 1px solid #facc15; display: inline-block; border-radius: 2px;"></span><span>Ana Header (Suction/Discharge: ${escapeHtml(suctLine.nominal_size_in || '10"')})</span></div>
+        <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 3px; background: #e2d400; display: inline-block; border-radius: 2px;"></span><span>Ekipman Branşmanları (${escapeHtml(compBranchLine.nominal_size_in || '10"')}/${escapeHtml(compDischargeBranchLine.nominal_size_in || '6"')})</span></div>
         <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 4px; background: #f59e0b; display: inline-block; border-radius: 2px;"></span><span>PIG-R ➔ TC ➔ PIG-L Sınır Plakaları</span></div>
         <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 4px; background: #00f0ff; display: inline-block; border-radius: 2px;"></span><span>Boru İçi Gaz Akış Yönü & Tıklanabilir Hat</span></div>
-        <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 4px; background: #5c3a21; display: inline-block; border-radius: 2px;"></span><span>Yeraltı Ana İletim Sınır Hattı (${mainlineInletLine.nominal_size_in || suctLine.nominal_size_in || '10"'})</span></div>
+        <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 4px; background: #5c3a21; display: inline-block; border-radius: 2px;"></span><span>Yeraltı Ana İletim Sınır Hattı (${escapeHtml(mainlineInletLine.nominal_size_in || suctLine.nominal_size_in || '10"')})</span></div>
         <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 4px; background: #0077be; display: inline-block; border-radius: 2px;"></span><span>Çelik Karkas & Soğutucu Taşıyıcıları</span></div>
         <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 4px; background: #8c735b; display: inline-block; border-radius: 2px;"></span><span>Ünite & Kontrol Binaları Kaplaması</span></div>
         <div style="display: flex; align-items: center; gap: 7px; margin: 3px 0;"><span style="width: 14px; height: 4px; background: #d91414; display: inline-block; border-radius: 2px;"></span><span>Yangın Hidrant Hattı & ESD Vanalar</span></div>
@@ -264,16 +281,16 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
           <button id="btn-close-pipe-section" aria-label="180 derece boru kesit analizini kapat" style="background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 14px;">✕</button>
         </div>
         <div style="font-size: 11px; line-height: 1.5; color: #cbd5e1;">
-          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Station Suction Header (L-102/105):</span><b style="color:#facc15;">${suctLine.nominal_size_in || '10"'} • PIG-R Çıkışı ➔ TC Emiş Header Sonu</b></div>
-          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Station Discharge Header (L-109):</span><b style="color:#fb923c;">${dischLine.nominal_size_in || '10"'} • TC Basma Header ➔ PIG-L Girişi</b></div>
-          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>MFS / CFS Ekipman Branşmanları:</span><b style="color:#fff;">${pLines.cyclone_branch?.nominal_size_in || '8"'} / ${pLines.filter_branch?.nominal_size_in || '8"'} (➔ Station Suction Header)</b></div>
-          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>TC Ünite Emiş / Basma Branşmanı:</span><b style="color:#fff;">${compSuctionBranchLine.nominal_size_in || '10"'} / ${compDischargeBranchLine.nominal_size_in || '6"'} (${compDischargeBranchLine.flow_kgs || 12} kg/s)</b></div>
-          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Anti-Surge (ASV) / Recycle Header:</span><b style="color:#fff;">${antiSurgeLine.nominal_size_in || '5"'} / ${pLines.station_recycle?.nominal_size_in || '6"'} ➔ Suction Header</b></div>
-          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Gaz Soğutucu Giriş / Çıkış / TCV:</span><b style="color:#fff;">${coolerInletLine.nominal_size_in || '6"'} / ${coolerOutletLine.nominal_size_in || '6"'} / ${coolerBypassLine.nominal_size_in || '3 1/2"'} (➔ Discharge Header)</b></div>
-          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Boru Malzemesi / Et Kalınlığı:</span><b style="color:#38bdf8;">${suctLine.pipe_material || 'API 5L X70'} • t = ${suctLine.wall_thickness_mm || 9.5} mm (t_req: ${suctLine.min_required_thickness_mm || 6.4} mm)</b></div>
-          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Ana Header Gaz Hızı &amp; EVR:</span><b style="color:#34d399;">${suctLine.actual_velocity_ms || 14.8} m/s (%${suctLine.erosion_ratio_pct || 72.0} EVR &lt; %100)</b></div>
+          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Station Suction Header (L-102/105):</span><b style="color:#facc15;">${escapeHtml(suctLine.nominal_size_in || '10"')} • PIG-R Çıkışı ➔ TC Emiş Header Sonu</b></div>
+          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Station Discharge Header (L-109):</span><b style="color:#fb923c;">${escapeHtml(dischLine.nominal_size_in || '10"')} • TC Basma Header ➔ PIG-L Girişi</b></div>
+          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>MFS / CFS Ekipman Branşmanları:</span><b style="color:#fff;">${escapeHtml(pLines.cyclone_branch?.nominal_size_in || '8"')} / ${escapeHtml(pLines.filter_branch?.nominal_size_in || '8"')} (➔ Station Suction Header)</b></div>
+          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>TC Ünite Emiş / Basma Branşmanı:</span><b style="color:#fff;">${escapeHtml(compSuctionBranchLine.nominal_size_in || '10"')} / ${escapeHtml(compDischargeBranchLine.nominal_size_in || '6"')} (${escapeHtml(compDischargeBranchLine.flow_kgs || 12)} kg/s)</b></div>
+          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Anti-Surge (ASV) / Recycle Header:</span><b style="color:#fff;">${escapeHtml(antiSurgeLine.nominal_size_in || '5"')} / ${escapeHtml(pLines.station_recycle?.nominal_size_in || '6"')} ➔ Suction Header</b></div>
+          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Gaz Soğutucu Giriş / Çıkış / TCV:</span><b style="color:#fff;">${escapeHtml(coolerInletLine.nominal_size_in || '6"')} / ${escapeHtml(coolerOutletLine.nominal_size_in || '6"')} / ${escapeHtml(coolerBypassLine.nominal_size_in || '3 1/2"')} (➔ Discharge Header)</b></div>
+          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Boru Malzemesi / Et Kalınlığı:</span><b style="color:#38bdf8;">${escapeHtml(suctLine.pipe_material || 'API 5L X70')} • t = ${escapeHtml(suctLine.wall_thickness_mm || 9.5)} mm (t_req: ${escapeHtml(suctLine.min_required_thickness_mm || 6.4)} mm)</b></div>
+          <div style="display: flex; justify-content: space-between; margin: 2px 0;"><span>Ana Header Gaz Hızı &amp; EVR:</span><b style="color:#34d399;">${escapeHtml(suctLine.actual_velocity_ms || 14.8)} m/s (%${escapeHtml(suctLine.erosion_ratio_pct || 72.0)} EVR &lt; %100)</b></div>
           <div style="margin-top: 6px; padding: 5px 8px; background: rgba(16,185,129,0.15); border: 1px solid #10b981; border-radius: 6px; color: #34d399; font-weight: 600; text-align: center;">
-            ✓ ANA HEADER EŞİTLİĞİ (${suctLine.nominal_size_in || '10"'}) &amp; SINIR TANIMLARI DOĞRULANDI
+            ✓ ANA HEADER EŞİTLİĞİ (${escapeHtml(suctLine.nominal_size_in || '10"')}) &amp; SINIR TANIMLARI DOĞRULANDI
           </div>
         </div>
       </div>
@@ -541,6 +558,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       flangeEnds = true,
       equipKey = null,
       lineKey = null,
+      parentLineKey = null,
+      derivedOdMm = null,
+      derivedNps = null,
       segmentTitle = null,
       fromBoundary = null,
       toBoundary = null,
@@ -630,19 +650,24 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       }
     }
 
-    const lineData = lineKey ? (pLines[lineKey] || {}) : {};
+    const directLineData = lineKey ? pLines[lineKey] : null;
+    const inheritedLineData = !directLineData && parentLineKey ? pLines[parentLineKey] : null;
+    const lineData = directLineData || inheritedLineData || {};
     const resolvedPipeMeta = lineKey ? {
       lineKey,
-      lineTag: lineData.tag || lineKey.toUpperCase(),
-      lineName: segmentTitle || lineData.name || lineKey,
-      hierarchyLevel: lineData.hierarchy_level || "equipment_branch",
-      hierarchyLabel: lineData.hierarchy_label || "Proses Borulaması",
-      parentHeader: lineData.parent_header || null,
-      fromBoundary: fromBoundary || lineData.from_boundary || "-",
-      toBoundary: toBoundary || lineData.to_boundary || "-",
-      boundarySummary: lineData.boundary_summary || `${fromBoundary || "-"} ➔ ${toBoundary || "-"}`,
+      parentLineKey: parentLineKey || null,
+      lineTag: directLineData?.tag || lineKey.toUpperCase(),
+      lineName: segmentTitle || directLineData?.name || lineKey,
+      hierarchyLevel: directLineData?.hierarchy_level || "equipment_branch",
+      hierarchyLabel: directLineData?.hierarchy_label || "Proses Borulaması",
+      parentHeader: directLineData?.parent_header || lineData.parent_header || parentLineKey || null,
+      fromBoundary: fromBoundary || directLineData?.from_boundary || lineData.from_boundary || "-",
+      toBoundary: toBoundary || directLineData?.to_boundary || lineData.to_boundary || "-",
+      boundarySummary: directLineData?.boundary_summary || `${fromBoundary || "-"} ➔ ${toBoundary || "-"}`,
       unitLabel: unitLabel || null,
       equipKey: equipKey || null,
+      derivedOdMm: derivedOdMm || null,
+      derivedNps: derivedNps || null,
     } : null;
 
     if (resolvedPipeMeta) {
@@ -659,6 +684,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     pipeRoutes.push({
       equipKey,
       lineKey: resolvedPipeMeta?.lineKey || null,
+      parentLineKey: resolvedPipeMeta?.parentLineKey || null,
       lineTag: resolvedPipeMeta?.lineTag || null,
       lineName: resolvedPipeMeta?.lineName || null,
       hierarchyLevel: resolvedPipeMeta?.hierarchyLevel || null,
@@ -1247,12 +1273,16 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       new THREE.Vector3(-196, 2.2, -96),
       new THREE.Vector3(-190, 2.2, -96),
     ],
-    Math.max(0.5, rMainlineInlet * 0.85),
+    visualPipeRadius(mainlineInletLine.od_mm ? mainlineInletLine.od_mm * 0.85 : pigBypassOdMm, 219.1),
     matYellowPipe,
     {
       equipKey: "pig_receiver",
       lineKey: "pig_bypass",
+      parentLineKey: "suction_header",
+      derivedOdMm: pigBypassOdMm,
       segmentTitle: "PIG-R ➔ Ortak Pig By-Pass Tee Bağlantısı",
+      fromBoundary: "Giriş Pig Kovanı (PIG-R) Tee Branşmanı",
+      toBoundary: "Ortak Pig By-Pass Kolektörü",
     }
   );
   createCadPipeRoute(
@@ -1260,12 +1290,16 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       new THREE.Vector3(-190, 2.2, -48),
       new THREE.Vector3(-196, 2.2, -48),
     ],
-    Math.max(0.5, rMainlineOutlet * 0.85),
+    visualPipeRadius(mainlineOutletLine.od_mm ? mainlineOutletLine.od_mm * 0.85 : pigBypassOdMm, 219.1),
     matYellowPipe,
     {
       equipKey: "pig_launcher",
       lineKey: "pig_bypass",
+      parentLineKey: "discharge_header",
+      derivedOdMm: pigBypassOdMm,
       segmentTitle: "Ortak Pig By-Pass ➔ PIG-L Tee Bağlantısı",
+      fromBoundary: "Ortak Pig By-Pass Kolektörü",
+      toBoundary: "Çıkış Pig Kovanı (PIG-L) Tee Branşmanı",
     }
   );
 
@@ -1376,7 +1410,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
     // Kicker (launcher) / receiver balance connection on the closure side.
     const kickerZ = z + closureSign * 4.2;
-    createValveStation(x - 4.2, 1.7, kickerZ, 0.38, {
+    createValveStation(x - 4.2, 1.7, kickerZ, isLauncher ? rPigKickerLauncher : rPigKickerReceiver, {
       rotationY: Math.PI / 2,
       hasActuator: false,
       hasPlatform: false,
@@ -1409,12 +1443,14 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       new THREE.Vector3(-190, 2.2, -62),
       new THREE.Vector3(-190, 2.2, -48),
     ],
-    Math.max(0.55, rSuctHeader * 0.72),
+    visualPipeRadius(pigBypassOdMm, 219.1),
     matYellowPipe,
     {
       flowArrows: 3,
       equipKey: "pig_receiver",
       lineKey: "pig_bypass",
+      parentLineKey: "suction_header",
+      derivedOdMm: pigBypassOdMm,
       segmentTitle: "PIG-R / PIG-L Ortak Pig By-Pass Kolektörü",
       fromBoundary: "Ana İletim Giriş Hattı & Station Suction Tie-In",
       toBoundary: "Station Discharge Tie-In & Ana İletim Çıkış Hattı",
@@ -1422,7 +1458,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     }
   );
   // Mainline by-pass Line Valve between suction (z = -82) and discharge (z = -62) tie-ins.
-  createValveStation(-190, 2.2, -72, Math.max(0.52, rSuctHeader * 0.78), {
+  createValveStation(-190, 2.2, -72, rPigBypass * 1.08, {
     rotationY: Math.PI / 2,
     hasActuator: true,
     hasPlatform: true,
@@ -1435,17 +1471,19 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       new THREE.Vector3(-190, 2.2, -84),
       new THREE.Vector3(-196, 2.2, -84),
     ],
-    0.34,
+    visualPipeRadius(pigKickerRecvOdMm, 114.3, { max: 0.42 }),
     matYellowPipe,
     {
       equipKey: "pig_receiver",
       lineKey: "pig_kicker_receiver",
+      parentLineKey: "suction_header",
+      derivedOdMm: pigKickerRecvOdMm,
       segmentTitle: "PIG-R Kicker & Receiver Dengeleme Hattı (Pig By-Pass Bağlantısı)",
       fromBoundary: "Ortak Pig By-Pass Hattı",
       toBoundary: "PIG-R Alıcı Kovan Gövdesi",
     }
   );
-  createValveStation(-193, 2.2, -84, 0.35, {
+  createValveStation(-193, 2.2, -84, rPigKickerReceiver * 1.05, {
     rotationY: 0,
     hasActuator: true,
     hasPlatform: false,
@@ -1457,17 +1495,19 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       new THREE.Vector3(-190, 2.2, -60),
       new THREE.Vector3(-196, 2.2, -60),
     ],
-    0.34,
+    visualPipeRadius(pigKickerLaunchOdMm, 114.3, { max: 0.42 }),
     matYellowPipe,
     {
       equipKey: "pig_launcher",
       lineKey: "pig_kicker_launcher",
+      parentLineKey: "discharge_header",
+      derivedOdMm: pigKickerLaunchOdMm,
       segmentTitle: "PIG-L Kicker Hattı (Pig By-Pass Bağlantısı)",
       fromBoundary: "Ortak Pig By-Pass Hattı",
       toBoundary: "PIG-L Atıcı Kovan Gövdesi",
     }
   );
-  createValveStation(-193, 2.2, -60, 0.35, {
+  createValveStation(-193, 2.2, -60, rPigKickerLauncher * 1.05, {
     rotationY: 0,
     hasActuator: true,
     hasPlatform: false,
@@ -1558,11 +1598,14 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         new THREE.Vector3(rx, coolerReturnY, -48),
         new THREE.Vector3(rx, psvRiserTopY, -48),
       ],
-      0.30,
+      visualPipeRadius(psvInletOdMm, 168.28, { max: 0.42 }),
       matYellowPipe,
       {
         equipKey: "safety_relief",
         lineKey: "psv_inlet",
+        parentLineKey: "discharge_header",
+        derivedOdMm: psvInletOdMm,
+        derivedNps: eq.safety_relief_and_blowdown?.psv_sizing?.inlet_flange_in || null,
         segmentTitle: `PSV-10${i + 1} Dikey Giriş Riser Hattı (Discharge Header Üzeri)`,
         fromBoundary: "Station Discharge Header",
         toBoundary: `PSV-10${i + 1} Giriş Flanşı`,
@@ -1640,11 +1683,14 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         new THREE.Vector3(ex, coolerReturnY, -48),
         new THREE.Vector3(ex, esdRiserTopY, -48),
       ],
-      0.32,
+      visualPipeRadius(esdRiserOdMm, 168.28, { max: 0.45 }),
       matYellowPipe,
       {
         equipKey: "esd_valves",
         lineKey: "esd_riser",
+        parentLineKey: "discharge_header",
+        derivedOdMm: esdRiserOdMm,
+        derivedNps: eq.esd_sizing?.discharge?.calculated_size_in ? `${eq.esd_sizing.discharge.calculated_size_in}"` : null,
         segmentTitle: `ESD/BDV-10${i + 1} Dikey Riser Hattı (Discharge Header Üzeri)`,
         fromBoundary: "Station Discharge Header",
         toBoundary: `ESD/BDV-10${i + 1} Acil Boşaltma & Kapatma Vanası`,
@@ -1824,7 +1870,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   ventStackGrp.add(stackBase, stackPipe, stackTip);
   registerClickable(ventStackGrp, "safety_relief");
   scene.add(ventStackGrp);
-  createValveStation(-106, 2.0, -91, 0.55, { hasPlatform: true, equipKey: "safety_relief", valveColorMat: matRedFire });
+  createValveStation(-106, 2.0, -91, rPsvInlet * 1.15, { hasPlatform: true, equipKey: "safety_relief", valveColorMat: matRedFire });
 
   // ══════════════════ 7. NORTH-CENTER FILTRATION & COOLING YARD (MFS, CFS, GAS COOLER) ══════════════════
 
@@ -2416,7 +2462,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
             : "Fin-Fan Tüp Demeti Çıkış Headerı (E-101)",
           toBoundary: idx === 0
             ? "Fin-Fan Tüp Demeti Giriş Headerı (E-101)"
-            : "Gaz Soğutucu Soğuk Çıkış Manifoldu (L-113)",
+            : "Gaz Soğutucu Soğuk Çıkış Manifoldu (L-114)",
           registerParticlePath: r === 0,
         }
       );
@@ -2488,7 +2534,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       flowArrows: 4,
       equipKey: "air_coolers",
       lineKey: "cooler_outlet",
-      segmentTitle: "Gaz Soğutucu Soğuk Çıkış Ekipman Manifoldu (L-113)",
+      segmentTitle: "Gaz Soğutucu Soğuk Çıkış Ekipman Manifoldu (L-114)",
       fromBoundary: "Gaz Soğutucu Bay Çıkış Riser Branşmanları",
       toBoundary: "Station Discharge Header Soğutulmuş Gaz Dönüş Tie-In Noktası",
       registerParticlePath: true,
@@ -2514,7 +2560,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       flowArrows: 2,
       equipKey: "cooler_bypass",
       lineKey: "cooler_bypass",
-      segmentTitle: "Gaz Soğutucu TCV By-Pass Hattı (L-114 • Note 17)",
+      segmentTitle: "Gaz Soğutucu TCV By-Pass Hattı (L-113 • Note 17)",
       fromBoundary: "Gaz Soğutucu Sıcak Giriş Manifoldu (TCV-101 Girişi)",
       toBoundary: "Gaz Soğutucu Soğuk Çıkış Manifoldu / Station Discharge Header Dönüşü",
       registerParticlePath: true,
@@ -3159,14 +3205,17 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   // ══════════════════ 11. UI TOOLBAR & CAMERA PRESET BINDINGS ══════════════════
 
   const cutawayCompX = numComps === 1 ? -60 : compStartX + (cutawayUnitIdx - 1) * compPitch;
+  const manifoldCenterX = (headerWestX + headerEastX) / 2;
+  const cfsCenterX = numFilters === 1 ? -29 : cfsStartX + ((numFilters - 1) * cfsSpacingX) / 2;
+  const coolerCenterX = coolerX0 + coolerWidth / 2;
   const cameraPresets = {
     iso: { pos: new THREE.Vector3(-145, 95, -155), look: new THREE.Vector3(-10, 6, 5) },
     top: { pos: new THREE.Vector3(-5, 255, 6), look: new THREE.Vector3(-5, 0, 5) },
     compCutaway: { pos: new THREE.Vector3(cutawayCompX + 24, 22, -26), look: new THREE.Vector3(cutawayCompX, 6, 12) },
     comp4: { pos: new THREE.Vector3(cutawayCompX + 24, 22, -26), look: new THREE.Vector3(cutawayCompX, 6, 12) },
-    manifold: { pos: new THREE.Vector3(18, 18, -32), look: new THREE.Vector3(-12, 3, -10) },
+    manifold: { pos: new THREE.Vector3(manifoldCenterX + 26, 20, -36), look: new THREE.Vector3(manifoldCenterX, 2.5, -13.6) },
     filtration: { pos: new THREE.Vector3(-45, 36, -118), look: new THREE.Vector3(-45, 4, -68) },
-    cooler: { pos: new THREE.Vector3(24, 30, -30), look: new THREE.Vector3(22, 7, -72) },
+    cooler: { pos: new THREE.Vector3(coolerCenterX + 4, 30, -30), look: new THREE.Vector3(coolerCenterX, 8, -74) },
     tiein: { pos: new THREE.Vector3(-232, 22, -74), look: new THREE.Vector3(-192, 0.2, -72) },
     control: { pos: new THREE.Vector3(-25, 55, 155), look: new THREE.Vector3(-15, 5, 85) },
   };
@@ -3200,12 +3249,18 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   });
 
   // Pipe Labels & Battery-Limit Plaques Toggle
-  container.querySelector("#btn-toggle-pipe-labels")?.addEventListener("click", (e) => {
+  function syncPipeLabelsButton() {
+    const lblBtn = container.querySelector("#btn-toggle-pipe-labels");
+    if (!lblBtn) return;
+    lblBtn.textContent = `🏷️ ${t(showPipeLabels ? "pipe_labels_on" : "pipe_labels_off", uiLang)}`;
+    lblBtn.style.background = showPipeLabels ? "#7c3aed" : "#1e293b";
+    lblBtn.style.color = showPipeLabels ? "#fff" : "#cbd5e1";
+    lblBtn.style.borderColor = showPipeLabels ? "#c084fc" : "rgba(255,255,255,0.15)";
+  }
+  container.querySelector("#btn-toggle-pipe-labels")?.addEventListener("click", () => {
     showPipeLabels = !showPipeLabels;
     pipeLabelMeshes.forEach((m) => (m.visible = showPipeLabels));
-    e.currentTarget.style.background = showPipeLabels ? "#7c3aed" : "#1e293b";
-    e.currentTarget.style.color = showPipeLabels ? "#fff" : "#cbd5e1";
-    e.currentTarget.style.borderColor = showPipeLabels ? "#c084fc" : "rgba(255,255,255,0.15)";
+    syncPipeLabelsButton();
     syncToolbarAria();
   });
 
@@ -3269,12 +3324,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   }
   if (!showPipeLabels) {
     pipeLabelMeshes.forEach((m) => (m.visible = false));
-    const lblBtn = container.querySelector("#btn-toggle-pipe-labels");
-    if (lblBtn) {
-      lblBtn.style.background = "#1e293b";
-      lblBtn.style.color = "#cbd5e1";
-      lblBtn.style.borderColor = "rgba(255,255,255,0.15)";
-    }
+    syncPipeLabelsButton();
   }
   if (!showEnvelopes) {
     envelopeMeshes.forEach((m) => (m.visible = false));
@@ -3320,27 +3370,43 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   let selectionPulsePhase = 0;
 
   const EQUIP_CAMERA_TARGETS = {
-    cyclones: { pos: new THREE.Vector3(-10, 22, -35), look: new THREE.Vector3(-6, 6, -68) },
-    cartridge_filters: { pos: new THREE.Vector3(-18, 18, -42), look: new THREE.Vector3(-12, 4, -68) },
-    turbo_compressors: { pos: new THREE.Vector3(-22, 26, 2), look: new THREE.Vector3(-22, 8, 30) },
-    compressor_building: { pos: new THREE.Vector3(-25, 36, -10), look: new THREE.Vector3(-25, 12, 30) },
-    air_coolers: { pos: new THREE.Vector3(30, 28, -50), look: new THREE.Vector3(30, 10, -80) },
-    station_recycle: { pos: new THREE.Vector3(50, 16, 10), look: new THREE.Vector3(45, 2, -14) },
-    cooler_bypass: { pos: new THREE.Vector3(20, 20, -60), look: new THREE.Vector3(20, 6, -80) },
-    condensate_system: { pos: new THREE.Vector3(25, 12, -45), look: new THREE.Vector3(25, 2, -68) },
-    safety_relief: { pos: new THREE.Vector3(-24, 18, -28), look: new THREE.Vector3(-24, 6, -48) },
-    esd_valves: { pos: new THREE.Vector3(-46, 18, -28), look: new THREE.Vector3(-46, 6, -48) },
-    ultrasonic_meter: { pos: new THREE.Vector3(-74, 15, -30), look: new THREE.Vector3(-74, 4, -48) },
+    cyclones: { pos: new THREE.Vector3(mfsX - 2, 22, -34), look: new THREE.Vector3(mfsX - 2, 5.5, -68) },
+    cartridge_filters: { pos: new THREE.Vector3(cfsCenterX, 18, -40), look: new THREE.Vector3(cfsCenterX, 3.2, -68) },
+    turbo_compressors: { pos: new THREE.Vector3(cutawayCompX + 20, 22, -24), look: new THREE.Vector3(cutawayCompX, 5, bldgCenterZ - 4) },
+    compressor_building: { pos: new THREE.Vector3(cutawayCompX + 26, 30, -28), look: new THREE.Vector3(cutawayCompX, 8, bldgCenterZ) },
+    air_coolers: { pos: new THREE.Vector3(coolerCenterX, 28, -32), look: new THREE.Vector3(coolerCenterX, 9, -76) },
+    station_recycle: { pos: new THREE.Vector3(headerEastX + 18, 16, -30), look: new THREE.Vector3(headerEastX + 4, 2.2, -13.6) },
+    cooler_bypass: { pos: new THREE.Vector3(-1, coolerBypassY + 10, -28), look: new THREE.Vector3(-1, coolerBypassY * 0.75, -50) },
+    condensate_system: { pos: new THREE.Vector3(-86, 12, -32), look: new THREE.Vector3(-73, 1.8, -50) },
+    safety_relief: { pos: new THREE.Vector3(-24, coolerReturnY + 15, -26), look: new THREE.Vector3(-24, coolerReturnY + 4, -48) },
+    esd_valves: { pos: new THREE.Vector3(-46, coolerReturnY + 15, -26), look: new THREE.Vector3(-46, coolerReturnY + 4, -48) },
+    ultrasonic_meter: { pos: new THREE.Vector3(usmX, coolerReturnY + 12, -30), look: new THREE.Vector3(usmX, coolerReturnY + 1, usmZ) },
     pig_receiver: { pos: new THREE.Vector3(-214, 22, -86), look: new THREE.Vector3(-196, 2, -86) },
     pig_launcher: { pos: new THREE.Vector3(-214, 22, -58), look: new THREE.Vector3(-196, 2, -58) },
-    tiein: { pos: new THREE.Vector3(-85, 20, -80), look: new THREE.Vector3(-85, 2, -104) },
-    anti_surge: { pos: new THREE.Vector3(-22, 20, -8), look: new THREE.Vector3(-22, 2, -18) },
-    control_building: { pos: new THREE.Vector3(-30, 24, 60), look: new THREE.Vector3(-30, 8, 90) },
+    tiein: { pos: new THREE.Vector3(-232, 22, -74), look: new THREE.Vector3(-196, 1.2, -72) },
+    anti_surge: { pos: new THREE.Vector3(cutawayCompX + 14, 16, -28), look: new THREE.Vector3(cutawayCompX + 0.5, antiSurgeCrossY * 0.7, -8) },
+    control_building: { pos: new THREE.Vector3(-62, 24, 46), look: new THREE.Vector3(-62, 5, 86) },
     generator_building: { pos: new THREE.Vector3(6, 22, 60), look: new THREE.Vector3(6, 5, 92) },
     air_compressor_building: { pos: new THREE.Vector3(92, 20, 60), look: new THREE.Vector3(92, 5, 88) },
     guard_shelter: { pos: new THREE.Vector3(110, 14, 20), look: new THREE.Vector3(110, 3, 41) },
     admin_building: { pos: new THREE.Vector3(146, 26, 56), look: new THREE.Vector3(146, 6, 92) },
   };
+
+  function resolveEquipmentCameraTarget(key, targetObject = null) {
+    if (EQUIP_CAMERA_TARGETS[key]) return EQUIP_CAMERA_TARGETS[key];
+    if (!targetObject) return null;
+    const bbox = new THREE.Box3().setFromObject(targetObject);
+    if (bbox.isEmpty()) return null;
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    bbox.getCenter(center);
+    bbox.getSize(size);
+    const span = Math.max(16, Math.hypot(size.x, size.z) * 0.85);
+    return {
+      pos: new THREE.Vector3(center.x - span * 0.5, center.y + Math.max(12, span * 0.55), center.z - span * 0.75),
+      look: center,
+    };
+  }
 
   function buildEquipmentTelemetryHtml(key) {
     let tag = "EKİPMAN";
@@ -3455,7 +3521,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       tag = `PSV-101..10${psv.psv_count || 2} (API 520 / 526)`;
       sub = `Discharge Header Dikey Riser Emniyet Tahliye Vanaları`;
       rows = [
-        ["Gaz Bileşimi (Programdan):", `${escapeHtml(compStr)} • MW ${auto.mw || sm.gas_mw || 18.95} g/mol`],
+        ["Gaz Bileşimi (Programdan):", `${compStr} • MW ${auto.mw || sm.gas_mw || 18.95} g/mol`],
         ["EOS / Z / k (Programdan):", `${String(auto.eos_model || sm.eos_model || "coolprop").toUpperCase()} • Z=${auto.z ?? psvSizing.z_used ?? 0.87} • k=${auto.k ?? psvSizing.k_used ?? 1.55}`],
         ["Vana Giriş P / T (Programdan):", `${auto.p_upstream_bar || sm.discharge_pressure_bar || 75} bar(a) • ${auto.t_relieving_c || eq.air_coolers?.inlet_temp_c || 50} °C`],
         ["Toplam Tahliye Debisi:", `${auto.mass_flow_total_kgs || sm.total_mass_flow_kgs || 441.8} kg/s`],
@@ -3479,7 +3545,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       tag = `ESD / BDV-101..10${esd.esd_count || 2} (IEC 60534)`;
       sub = `Discharge Header Dikey Riser & Hat Acil Kapatma Vanaları`;
       rows = [
-        ["Gaz Bileşimi (Programdan):", `${escapeHtml(compStr)} • MW ${auto.mw || sm.gas_mw || 18.95} g/mol`],
+        ["Gaz Bileşimi (Programdan):", `${compStr} • MW ${auto.mw || sm.gas_mw || 18.95} g/mol`],
         ["Basma Giriş P / T (Programdan):", `${auto.discharge_p_in_bar || sm.discharge_pressure_bar || 74.6} bar(a) • ${auto.discharge_t_c || 45.0} °C`],
         ["Emiş Giriş P / T (Programdan):", `${auto.suction_p_in_bar || sm.suction_pressure_bar || 50.7} bar(a) • ${auto.suction_t_c || 19.0} °C`],
         ["Vana Başına / Toplam Debi:", `${disch.flow_per_valve_kgs || sm.total_mass_flow_kgs || 441.8} kg/s / ${auto.mass_flow_total_kgs || sm.total_mass_flow_kgs || 441.8} kg/s`],
@@ -3646,15 +3712,15 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
             </label>
             <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
               Set Basıncı (bar g)
-              <input type="number" id="hud-psv-set" step="0.5" value="${psvSetVal}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+              <input type="number" id="hud-psv-set" step="0.5" value="${escapeHtml(psvSetVal)}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
             </label>
             <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
               Aşırı Basınç (%)
-              <input type="number" id="hud-psv-over" step="1" min="1" max="25" value="${psvOverVal}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+              <input type="number" id="hud-psv-over" step="1" min="1" max="25" value="${escapeHtml(psvOverVal)}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
             </label>
             <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
               Karşı Basınç (bar a)
-              <input type="number" id="hud-psv-back" step="0.05" value="${psvBackVal}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+              <input type="number" id="hud-psv-back" step="0.05" value="${escapeHtml(psvBackVal)}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
             </label>
             <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
               PSV Vana Tipi
@@ -3697,7 +3763,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
             </label>
             <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
               İzin Verilen ΔP (bar)
-              <input type="number" id="hud-esd-dp" step="0.05" min="0.05" value="${esdDpVal}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+              <input type="number" id="hud-esd-dp" step="0.05" min="0.05" value="${escapeHtml(esdDpVal)}" style="background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
             </label>
             <label style="color:#cbd5e1; display:flex; flex-direction:column; gap:2px;">
               ESD Vana Tipi
@@ -3710,7 +3776,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
             </label>
             <label style="grid-column: 1 / -1; color:#cbd5e1; display:flex; justify-content:space-between; align-items:center; gap:6px;">
               <span>Hedef Boşaltma Süresi (dk, API 521)</span>
-              <input type="number" id="hud-esd-bdv-time" step="1" min="1" max="60" value="${bdvTimeVal}" style="width:70px; background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
+              <input type="number" id="hud-esd-bdv-time" step="1" min="1" max="60" value="${escapeHtml(bdvTimeVal)}" style="width:70px; background:#0f172a; color:#f8fafc; border:1px solid #334155; border-radius:4px; padding:2px 4px; font-size:10px; font-family:monospace;" />
             </label>
           </div>
           <button id="btn-hud-calc-esd" style="margin-top: 7px; width: 100%; background: #dc2626; color: #fff; border: 1px solid #f87171; border-radius: 5px; padding: 5px 8px; font-size: 10.5px; font-weight: 700; cursor: pointer;">
@@ -3723,8 +3789,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     return `
       <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.12); padding-bottom: 6px;">
         <div>
-          <div style="font-size: 13px; font-weight: 800; color: #38bdf8; letter-spacing: 0.5px;">${tag}</div>
-          <div style="font-size: 10.5px; color: #94a3b8; margin-top: 1px;">${sub}</div>
+          <div style="font-size: 13px; font-weight: 800; color: #38bdf8; letter-spacing: 0.5px;">${escapeHtml(tag)}</div>
+          <div style="font-size: 10.5px; color: #94a3b8; margin-top: 1px;">${escapeHtml(sub)}</div>
         </div>
         <div style="display: flex; align-items: center; gap: 6px;">
           ${statusBadge}
@@ -3737,8 +3803,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
           <tbody>
             ${rows.map(([lbl, val]) => `
               <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                <td style="padding: 3px 0; color: #94a3b8;">${lbl}</td>
-                <td style="padding: 3px 0; text-align: right; font-family: monospace; font-weight: 600; color: #f8fafc;">${val}</td>
+                <td style="padding: 3px 0; color: #94a3b8;">${escapeHtml(lbl)}</td>
+                <td style="padding: 3px 0; text-align: right; font-family: monospace; font-weight: 600; color: #f8fafc;">${escapeHtml(val)}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -3756,8 +3822,26 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     `;
   }
 
+  const AUX_PIPE_PARENT_MAP = {
+    pig_bypass: "suction_header",
+    pig_kicker_receiver: "suction_header",
+    pig_kicker_launcher: "discharge_header",
+    psv_inlet: "discharge_header",
+    esd_riser: "discharge_header",
+  };
+
   function buildPipeTelemetryHtml(pipeMeta) {
-    const lineData = pLines[pipeMeta?.lineKey] || {};
+    const directLine = pLines[pipeMeta?.lineKey] || null;
+    const parentKey = pipeMeta?.parentLineKey || AUX_PIPE_PARENT_MAP[pipeMeta?.lineKey] || null;
+    const parentLine = parentKey ? pLines[parentKey] : null;
+    const lineData = directLine || parentLine || {};
+    const isDischSide =
+      parentKey === "discharge_header" ||
+      String(pipeMeta?.lineKey || "").includes("disch") ||
+      String(pipeMeta?.lineKey || "").includes("cooler") ||
+      pipeMeta?.lineKey === "psv_inlet" ||
+      pipeMeta?.lineKey === "esd_riser";
+
     const tag = escapeHtml(pipeMeta?.lineTag || lineData.tag || "L-100");
     const unitSuffix = pipeMeta?.unitLabel ? ` • ${escapeHtml(pipeMeta.unitLabel)}` : "";
     const sub = `${escapeHtml(pipeMeta?.lineName || lineData.name || "Proses Borulaması")}${unitSuffix}`;
@@ -3778,16 +3862,51 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       (level === "main_header" ? "Ana İstasyon Kollektör Omurgası (Suction = Discharge Ortak NPS)" : "Ana İletim Tie-In")
     );
 
-    const nps = escapeHtml(lineData.nominal_size_in || "-");
-    const od = Number(lineData.od_mm || 0);
-    const sch = escapeHtml(lineData.schedule || "-");
-    const thick = Number(lineData.wall_thickness_mm || 0);
-    const treq = Number(lineData.min_required_thickness_mm || 0);
-    const flow = Number(lineData.flow_kgs || 0);
-    const press = Number(lineData.pressure_bar || 0);
-    const vel = Number(lineData.actual_velocity_ms || 0);
-    const evr = Number(lineData.erosion_ratio_pct || 0);
-    const dp = Number(lineData.pressure_drop_bar_per_100m || 0);
+    const od = directLine
+      ? Number(directLine.od_mm || 0)
+      : Number(pipeMeta?.derivedOdMm || lineData.od_mm || (isDischSide ? dischHeaderOdMm : suctHeaderOdMm) || 0);
+    const computedNps = od > 0 ? `${Math.max(1, Math.round(od / 25.4))}"` : "-";
+    const nps = escapeHtml(
+      directLine
+        ? directLine.nominal_size_in || computedNps
+        : pipeMeta?.derivedNps || computedNps
+    );
+    const sch = escapeHtml(
+      directLine
+        ? directLine.schedule || "-"
+        : lineData.schedule || (isDischSide ? "Sch 80" : "Sch 40")
+    );
+    const odRatio = parentLine && Number(parentLine.od_mm) > 0 && od > 0 ? od / Number(parentLine.od_mm) : 1;
+    const thick = directLine
+      ? Number(directLine.wall_thickness_mm || 0)
+      : Number(
+          (parentLine?.wall_thickness_mm
+            ? Number(parentLine.wall_thickness_mm) * Math.max(0.45, Math.min(1.0, odRatio))
+            : 0) || (od > 0 ? Math.max(6.35, od * 0.022) : 0)
+        );
+    const treq = directLine
+      ? Number(directLine.min_required_thickness_mm || 0)
+      : Number(
+          (parentLine?.min_required_thickness_mm
+            ? Number(parentLine.min_required_thickness_mm) * Math.max(0.45, Math.min(1.0, odRatio))
+            : 0) || (thick > 0 ? thick * 0.78 : 0)
+        );
+    const baseFlow = Number(lineData.flow_kgs || sm.total_mass_flow_kgs || 120.0);
+    const flow = directLine
+      ? Number(directLine.flow_kgs || 0)
+      : Number((baseFlow * Math.max(0.08, Math.min(1.0, odRatio * odRatio))).toFixed(1));
+    const press = directLine
+      ? Number(directLine.pressure_bar || 0)
+      : Number(lineData.pressure_bar || (isDischSide ? sm.discharge_pressure_bar || 75.0 : sm.suction_pressure_bar || 45.0));
+    const vel = directLine
+      ? Number(directLine.actual_velocity_ms || 0)
+      : Number(lineData.actual_velocity_ms || (isDischSide ? 14.5 : 12.8));
+    const evr = directLine
+      ? Number(directLine.erosion_ratio_pct || 0)
+      : Number(lineData.erosion_ratio_pct || 42.0);
+    const dp = directLine
+      ? Number(directLine.pressure_drop_bar_per_100m || 0)
+      : Number(lineData.pressure_drop_bar_per_100m || 0.035);
 
     const rows = [
       ["Anma Çapı & OD:", `${nps} (${od ? od.toFixed(1) + " mm" : "-"} • Sch ${sch})`],
@@ -3821,7 +3940,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
           <tbody>
             ${rows.map(([lbl, val]) => `
               <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                <td style="padding: 3px 0; color: #94a3b8;">${lbl}</td>
+                <td style="padding: 3px 0; color: #94a3b8;">${escapeHtml(lbl)}</td>
                 <td style="padding: 3px 0; text-align: right; font-family: monospace; font-weight: 600; color: #f8fafc;">${val}</td>
               </tr>
             `).join("")}
@@ -3838,6 +3957,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     `;
   }
 
+  let activeInspectedPipe = null;
+
   function ensureSelectionHighlightBox() {
     if (!selectedHighlightBox) {
       const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -3852,6 +3973,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   function selectAndInspectPipe(pipeMeta, targetObject = null) {
     if (!pipeMeta || !pipeMeta.lineKey) return false;
+    activeInspectedPipe = { pipeMeta, targetObject };
 
     ensureSelectionHighlightBox();
 
@@ -3892,6 +4014,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       rootEl?.setAttribute("data-inspect", "1");
 
       hudEl.querySelector("#btn-close-telemetry-hud")?.addEventListener("click", () => {
+        activeInspectedPipe = null;
         hudEl.style.display = "none";
         rootEl?.removeAttribute("data-inspect");
         if (selectedHighlightBox) selectedHighlightBox.visible = false;
@@ -3921,6 +4044,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   function selectAndInspectEquipment(key, targetObject) {
     if (!key) return;
+    activeInspectedPipe = null;
 
     // 1. Calculate / Update 3D Selection Highlight Box
     let rootGroup = targetObject;
@@ -3957,7 +4081,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       });
 
       hudEl.querySelector("#btn-telemetry-flyto")?.addEventListener("click", () => {
-        const camTarget = EQUIP_CAMERA_TARGETS[key];
+        const camTarget = resolveEquipmentCameraTarget(key, target);
         if (camTarget) {
           flyToCamera(camTarget.pos, camTarget.look);
         }
@@ -4161,7 +4285,23 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     }
   }
 
+  const fullscreenBtn = container.querySelector("#btn-toggle-3d-fullscreen");
+
   const unsubUi = uiStore ? uiStore.subscribe((ui) => {
+    if (ui.lang && ui.lang !== uiLang) {
+      uiLang = ui.lang;
+      syncPipeLabelsButton();
+      if (fullscreenBtn && rootEl) {
+        const isExp = rootEl.classList.contains("station-3d-expanded");
+        fullscreenBtn.textContent = isExp
+          ? `⛶ ${t("btn_3d_exit_fullscreen", uiLang)}`
+          : `⛶ ${t("btn_3d_fullscreen", uiLang)}`;
+      }
+      if (activeInspectedPipe) {
+        selectAndInspectPipe(activeInspectedPipe.pipeMeta, activeInspectedPipe.targetObject);
+      }
+      syncToolbarAria();
+    }
     if (ui.activeTab === "station") {
       resumeAnimation();
     }
@@ -4179,7 +4319,6 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   // ══════════════════ 13b. KLAVYE ERGONOMİSİ & TAM EKRAN ══════════════════
   // 1-8: kamera ön ayarları • R: izometrik sıfırla • F: tam ekran • Esc: tam ekrandan çık / seçimi kapat
   const KEY_PRESETS = ["iso", "top", "compCutaway", "manifold", "filtration", "cooler", "tiein", "control"];
-  const fullscreenBtn = container.querySelector("#btn-toggle-3d-fullscreen");
   function set3dFullscreen(expanded) {
     if (!rootEl) return;
     const isExp = !!expanded;
@@ -4191,6 +4330,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         : `⛶ ${t("btn_3d_fullscreen", uiLang)}`;
       fullscreenBtn.style.background = isExp ? "#0284c7" : "#1e293b";
       fullscreenBtn.style.borderColor = isExp ? "#38bdf8" : "rgba(255,255,255,0.15)";
+      fullscreenBtn.title = fullscreenBtn.textContent.replace(/\s+/g, " ").trim();
     }
     requestAnimationFrame(() => onResize());
   }
@@ -4199,10 +4339,29 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   });
 
   function onRootPointerDown(ev) {
-    if (!ev.target.closest("button, #equip-telemetry-hud, #pipe-section-overlay")) rootEl.focus({ preventScroll: true });
+    if (
+      ev.target &&
+      typeof ev.target.closest === "function" &&
+      !ev.target.closest("button, input, textarea, select, label, [contenteditable='true'], #equip-telemetry-hud, #pipe-section-overlay")
+    ) {
+      rootEl.focus({ preventScroll: true });
+    }
   }
   function onRootKeyDown(ev) {
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const tgt = ev.target;
+    if (
+      tgt &&
+      (tgt.tagName === "INPUT" ||
+        tgt.tagName === "TEXTAREA" ||
+        tgt.tagName === "SELECT" ||
+        tgt.isContentEditable ||
+        (typeof tgt.closest === "function" &&
+          tgt.closest("input, textarea, select, [contenteditable='true']")))
+    ) {
+      return;
+    }
+    if (document.getElementById("kasp-equipment-teardown")) return;
     const k = ev.key;
     if (/^[1-8]$/.test(k) || k === "r" || k === "R") {
       const name = k === "r" || k === "R" ? "iso" : KEY_PRESETS[Number(k) - 1];
@@ -4219,6 +4378,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         ev.preventDefault();
         return;
       }
+      activeInspectedPipe = null;
       const hudEl = container.querySelector("#equip-telemetry-hud");
       if (hudEl) hudEl.style.display = "none";
       rootEl.removeAttribute("data-inspect");
@@ -4295,6 +4455,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     audit: () => pipeRoutes.map((route) => ({
       equipKey: route.equipKey,
       lineKey: route.lineKey,
+      parentLineKey: route.parentLineKey || null,
       lineTag: route.lineTag,
       lineName: route.lineName,
       hierarchyLevel: route.hierarchyLevel,
@@ -4323,6 +4484,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   return {
     destroy: () => {
       isDestroyed = true;
+      activeInspectedPipe = null;
       // Tear down any open exploded-view overlay before disposing the main scene.
       closeEquipmentTeardown();
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
@@ -4331,6 +4493,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("resize", onResize);
       if (rootEl) {
+        rootEl.classList.remove("station-3d-expanded");
         rootEl.removeEventListener("click", syncToolbarAria);
         rootEl.removeEventListener("pointerdown", onRootPointerDown);
         rootEl.removeEventListener("keydown", onRootKeyDown);
@@ -4354,10 +4517,11 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       // Save state before disposal
       container.__kasp_3d_state__ = getCurrentState();
 
-      // Recursive disposal of meshes, lines, points, sprites, geometries and materials
+      // Recursive disposal of meshes, lines, points, sprites, geometries and materials.
+      // Guard !obj.isSprite so Three.js r128 shared singleton Sprite geometry is not disposed.
       scene.traverse((obj) => {
         if (obj.isMesh || obj.isLine || obj.isPoints || obj.isSprite) {
-          if (obj.geometry) {
+          if (obj.geometry && !obj.isSprite) {
             obj.geometry.dispose();
           }
           if (obj.material) {
@@ -4388,13 +4552,14 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         interactiveObjects.find((o) => o.userData?.equipKey === key);
       if (obj) {
         selectAndInspectEquipment(key, obj);
-        const camTarget = EQUIP_CAMERA_TARGETS[key];
+        const camTarget = resolveEquipmentCameraTarget(key, obj);
         if (camTarget) {
           flyToCamera(camTarget.pos, camTarget.look);
         }
       }
     },
     clearSelection: () => {
+      activeInspectedPipe = null;
       const hudEl = container.querySelector("#equip-telemetry-hud");
       if (hudEl) hudEl.style.display = "none";
       rootEl?.removeAttribute("data-inspect");

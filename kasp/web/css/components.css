@@ -537,19 +537,50 @@
 
 .station-inspector-card {
   position: absolute;
-  top: 16px;
-  right: 16px;
+  bottom: 16px;
+  left: 16px;
   width: 320px;
   max-width: calc(100% - 32px);
-  max-height: calc(100% - 32px);
+  max-height: calc(100% - 72px);
   overflow-y: auto;
   background: var(--color-surface);
   border: 1px solid var(--color-primary);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   padding: 16px;
-  z-index: 50;
+  z-index: 20;
   animation: toast-in 150ms ease;
+}
+
+#station-main-viewer[data-view-mode="3d"] .station-inspector-card,
+#station-main-viewer[data-view-mode="split"] .station-inspector-card,
+.station-inspector-card.station-inspector-docked {
+  position: relative;
+  inset: auto;
+  bottom: auto;
+  left: auto;
+  width: 100%;
+  max-width: 100%;
+  max-height: none;
+  margin-top: 10px;
+  z-index: 5;
+}
+
+.is-station-busy {
+  cursor: progress;
+}
+
+@media (max-width: 768px) {
+  .station-inspector-card {
+    position: relative;
+    inset: auto;
+    bottom: auto;
+    left: auto;
+    width: 100%;
+    max-width: 100%;
+    max-height: none;
+    margin-top: 10px;
+  }
 }
 
 /* ────────────────────────── UX Döngü 1: Erişilebilirlik tabanı ────────────────────────── */

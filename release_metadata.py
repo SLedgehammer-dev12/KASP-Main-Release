@@ -32,3 +32,21 @@ LOCAL_EXE_NAME = f"{LOCAL_EXE_STEM}.exe"
 LOCAL_SPEC_FILENAME = "KASP_release_local.spec"
 LOCAL_BUILD_SCRIPT = "build_release_local.bat"
 LOCAL_BUILD_COMMAND = f"pyinstaller --clean {LOCAL_SPEC_FILENAME}"
+
+# ── Web Edition release metadata ────────────────────────────────────────
+WEB_RELEASE_VERSION = "4.1.0-web"
+WEB_CFBUNDLE_VERSION = WEB_RELEASE_VERSION.split("-", 1)[0]
+WEB_RELEASE_TAG = f"web-v{WEB_CFBUNDLE_VERSION}"
+WEB_EXE_STEM = f"KASP Web v{WEB_RELEASE_VERSION}"
+WEB_EXE_NAME = f"{WEB_EXE_STEM}.exe"
+WEB_SPEC_FILENAME = f"KASP_Web_v{WEB_RELEASE_VERSION}.spec"
+WEB_BUILD_COMMAND = f"pyinstaller --clean {WEB_SPEC_FILENAME}"
+
+WEB_MAC_APP_STEM = f"KASP Web v{WEB_RELEASE_VERSION}"
+WEB_MAC_APP_NAME = f"{WEB_MAC_APP_STEM}.app"
+WEB_MAC_DMG_NAME = f"{WEB_MAC_APP_STEM}.dmg"
+WEB_MAC_SPEC_FILENAME = f"KASP_Web_v{WEB_RELEASE_VERSION}_mac.spec"
+WEB_MAC_BUILD_COMMAND = f"pyinstaller --clean {WEB_MAC_SPEC_FILENAME}"
+WEB_MAC_DMG_SCRIPT = "package_web_mac_dmg.sh"
+WEB_ICON_ICO = "resources/web_icon.ico"
+WEB_ICON_ICNS = "resources/web_icon.icns"

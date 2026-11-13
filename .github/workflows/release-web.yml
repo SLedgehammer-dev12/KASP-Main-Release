@@ -1,0 +1,114 @@
+name: Release KASP Web (Windows exe & macOS dmg)
+
+on:
+  push:
+    tags:
+      - 'web-v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Web release tag (or leave default to use WEB_RELEASE_TAG)'
+        required: false
+      build_ref:
+        description: 'Branch, tag, or SHA to build'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Windows .exe ───────────────────────────────────────────────────────
+  release-web-win:
+    name: Build Web Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build Web EXE
+        run: |
+          python -c "from release_metadata import WEB_SPEC_FILENAME; import subprocess; subprocess.run(['pyinstaller', '--clean', WEB_SPEC_FILENAME], check=True)"
+
+      - name: Identify Asset & Tag
+        shell: bash
+        run: |
+          EXE_NAME=$(python -c "from release_metadata import WEB_EXE_NAME; print(WEB_EXE_NAME)")
+          DEFAULT_TAG=$(python -c "from release_metadata import WEB_RELEASE_TAG; print(WEB_RELEASE_TAG)")
+          echo "EXE_PATH=dist/${EXE_NAME}" >> $GITHUB_ENV
+          echo "TARGET_TAG=${{ inputs.tag_name || github.ref_name || '' }}" >> $GITHUB_ENV
+          echo "DEFAULT_TAG=${DEFAULT_TAG}" >> $GITHUB_ENV
+
+      - name: Upload Windows Web Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kasp-web-windows
+          path: ${{ env.EXE_PATH }}
+
+      - name: Upload to GitHub Release (if tag)
+        if: startsWith(github.ref, 'refs/tags/web-v') || inputs.tag_name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: "KASP Web ${{ inputs.tag_name || github.ref_name }}"
+          files: ${{ env.EXE_PATH }}
+          generate_release_notes: true
+
+  # ── macOS .app → .dmg ──────────────────────────────────────────────────
+  release-web-mac:
+    name: Build Web macOS dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build Web .app with PyInstaller
+        run: |
+          SPEC=$(python3 -c "from release_metadata import WEB_MAC_SPEC_FILENAME; print(WEB_MAC_SPEC_FILENAME)")
+          pyinstaller --clean "${SPEC}"
+
+      - name: Package Web .dmg
+        run: |
+          chmod +x package_web_mac_dmg.sh
+          ./package_web_mac_dmg.sh
+          DMG_NAME=$(python3 -c "from release_metadata import WEB_MAC_DMG_NAME; print(WEB_MAC_DMG_NAME)")
+          echo "DMG_PATH=dist/${DMG_NAME}" >> $GITHUB_ENV
+
+      - name: Upload macOS Web Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kasp-web-macos
+          path: ${{ env.DMG_PATH }}
+
+      - name: Upload to GitHub Release (if tag)
+        if: startsWith(github.ref, 'refs/tags/web-v') || inputs.tag_name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: "KASP Web ${{ inputs.tag_name || github.ref_name }}"
+          files: ${{ env.DMG_PATH }}
+          generate_release_notes: true
