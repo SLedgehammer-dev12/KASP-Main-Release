@@ -78,7 +78,7 @@ def _get_web_version() -> str:
         from release_metadata import WEB_RELEASE_VERSION
         return WEB_RELEASE_VERSION
     except Exception:
-        return "4.1.1-web"
+        return "4.2.0-web"
 
 
 def main(argv=None) -> None:
