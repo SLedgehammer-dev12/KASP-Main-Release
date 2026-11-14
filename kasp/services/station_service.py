@@ -381,6 +381,664 @@ def _size_esd_blowdown_section(
         return None, [f"{path} ESD/BDV vana boyutlandırma hatası: {exc}"]
 
 
+def _size_mfs_cyclone_group(
+    mass_flow_kgs: float,
+    rho_in_kgm3: float,
+    ambient_temp_c: float,
+    user_cyclone_op: Any = None,
+) -> Dict[str, Any]:
+    """Dynamically size MFS multi-cyclone separators per PFD 4000, Özel §4.8.2, 5260 & 4500 §5.2."""
+    if user_cyclone_op:
+        try:
+            cyclone_op_count = max(1, min(12, int(user_cyclone_op)))
+            count_source = "user_input"
+        except (TypeError, ValueError):
+            cyclone_op_count = 2
+            count_source = "station_3d_calc"
+    else:
+        # PFD 1-NGTL-0-CS-P-001-4000 & Özel Şartname §4.8.2: 3 units (2 duty + 1 standby, 50% each)
+        cyclone_op_count = 2
+        count_source = "station_3d_calc"
+
+    cyclone_standby_count = 1
+    cyclone_total_count = cyclone_op_count + cyclone_standby_count
+    flow_per_cyclone = float(mass_flow_kgs) / cyclone_op_count
+    unit_capacity_pct = round(100.0 / cyclone_op_count, 1)
+    unit_design_capacity_kgs = round(flow_per_cyclone, 2)
+
+    rho_safe = max(1.0, float(rho_in_kgm3))
+    q_act_m3s = flow_per_cyclone / rho_safe
+
+    # Vessel barrel ID sized from actual volumetric flux (always > 508 mm for ASME VIII > 20" manway)
+    d_calc_mm = max(600.0, math.sqrt((4.0 * q_act_m3s) / (math.pi * 2.4)) * 1000.0)
+    standard_barrels_mm = [600, 750, 900, 1050, 1200, 1350, 1500, 1650, 1800, 2000, 2200, 2400]
+    vessel_diameter_mm = next((d for d in standard_barrels_mm if d >= d_calc_mm), int(math.ceil(d_calc_mm / 100.0) * 100))
+
+    # Internal multi-cyclone elements (80 mm swirl tubes) sized to maintain clean ΔP <= 400 mbar
+    a_tube_m2 = math.pi * (0.04 ** 2)
+    v_tube_design = min(19.5, 14.0 / math.sqrt(max(8.0, rho_safe) / 25.0))
+    q_tube_design = max(1e-4, a_tube_m2 * v_tube_design)
+    raw_tubes = max(4, math.ceil(q_act_m3s / q_tube_design))
+    # 80 mm cyclone tubes on 115 mm triangular pitch inside vessel up to 2400 mm max barrel (~220 tubes)
+    internal_cyclone_elements = min(220, raw_tubes)
+    v_tube_ms = q_act_m3s / (internal_cyclone_elements * a_tube_m2)
+
+    # Euler clean ΔP loss (~12 dynamic heads across multi-cyclone bundle & nozzles)
+    dp_cyclone_bar = round(max(0.05, min(0.85, 12.0 * 0.5 * rho_safe * (v_tube_ms ** 2) / 1e5)), 3)
+    max_clean_dp_bar = 0.400
+    dirty_alarm_dp_bar = 0.700
+
+    # Spec 4500 §5.2 horizontal blow-flask directly below each MFS barrel
+    bf_diam_mm = max(450, int(round((vessel_diameter_mm * 0.48) / 50.0) * 50))
+    bf_len_mm = max(1400, int(round((bf_diam_mm * 3.0) / 100.0) * 100))
+    bf_total_vol_m3 = round(math.pi * ((bf_diam_mm / 1000.0) / 2.0) ** 2 * (bf_len_mm / 1000.0), 3)
+    bf_dump_vol_m3 = round(max(0.20, bf_total_vol_m3 * 0.55), 3)
+    min_dump_tank_volume_m3 = round(max(3.0, 15.0 * bf_dump_vol_m3), 2)
+
+    freeze_risk_active = bool(float(ambient_temp_c) < 2.0)
+    warnings: List[str] = []
+    if dp_cyclone_bar > max_clean_dp_bar:
+        warnings.append(
+            f"Temiz basınç kaybı ({dp_cyclone_bar:.3f} bar = {dp_cyclone_bar * 1000:.0f} mbar), "
+            f"Spec 5260 sınırını (≤ 400 mbar) aşıyor; çalışan siklon sayısını artırın."
+        )
+    if freeze_risk_active:
+        warnings.append(
+            f"Ortam sıcaklığı ({float(ambient_temp_c):.1f} °C < 2 °C): Blow-flask ve yerüstü sıvı hatlarında "
+            "≥ 2 °C elektrikli heat tracing & izolasyon zorunludur (Spec 4500 §5.2)."
+        )
+
+    return {
+        "operating_count": cyclone_op_count,
+        "standby_count": cyclone_standby_count,
+        "installed_count": cyclone_total_count,
+        "count_source": count_source,
+        "unit_capacity_pct": unit_capacity_pct,
+        "unit_design_capacity_kgs": unit_design_capacity_kgs,
+        "flow_per_unit_kgs": round(flow_per_cyclone, 2),
+        "actual_vol_flow_m3s_per_unit": round(q_act_m3s, 3),
+        "pressure_drop_bar": dp_cyclone_bar,
+        "clean_dp_mbar": round(dp_cyclone_bar * 1000.0, 1),
+        "max_clean_dp_bar": max_clean_dp_bar,
+        "dirty_alarm_dp_bar": dirty_alarm_dp_bar,
+        "vessel_diameter_mm": vessel_diameter_mm,
+        "internal_cyclone_elements": internal_cyclone_elements,
+        "efficiency_8um_pct": 100.0,
+        "efficiency_4um_pct": 90.0,
+        "liquid_knockout_pct": 100.0,
+        "corrosion_allowance_mm": 1.6,
+        "head_type": "Spherical Fixed",
+        "internal_bolts_material": "Stainless Steel",
+        "design_code": "ASME BPVC Sec. VIII & IX",
+        "has_manway": vessel_diameter_mm > 508,
+        "blow_flask": {
+            "orientation": "horizontal",
+            "located_below_barrel": True,
+            "diameter_mm": bf_diam_mm,
+            "length_mm": bf_len_mm,
+            "total_volume_m3": bf_total_vol_m3,
+            "dump_volume_m3": bf_dump_vol_m3,
+        },
+        "level_instrumentation": {
+            "bottles_count": 2,
+            "online_isolatable": True,
+            "instruments": ["LG (Seviye Göstergesi)", "LT (Seviye Transmiteri)", "LSH / LSL (Yüksek/Düşük Seviye Şalteri)", "PDI / PDT / PDSH"],
+            "connection_note": "Seperatör–blow-flask nozulundan uzak ayrı üst/alt izolasyon vanalı 2 adet seviye şişesi",
+        },
+        "dump_system": {
+            "auto_dump_header": "Ortak Otomatik Drenaj Headerı (blow-flask altı -> yalnızca sıvı)",
+            "manual_dump_header": "Ortak Manuel Drenaj Headerı (seperatör/blow-flask bağlantısı hemen altı)",
+            "atmospheric_cyclone_with_flame_arrestor": True,
+            "inter_separator_purge_line": True,
+            "min_dump_tank_volume_m3": min_dump_tank_volume_m3,
+        },
+        "heat_tracing": {
+            "insulated": True,
+            "electrical_traced": True,
+            "min_temp_c": 2.0,
+            "ambient_temp_c": round(float(ambient_temp_c), 1),
+            "freeze_risk_active": freeze_risk_active,
+        },
+        "design_warnings": warnings,
+    }
+
+
+def _size_cfs_filter_group(
+    mass_flow_kgs: float,
+    rho_cfs_in_kgm3: float,
+    ambient_temp_c: float,
+    user_filter_op: Any = None,
+) -> Dict[str, Any]:
+    """Dynamically size CFS cartridge filter separators per PFD 4000, Ozel §4.8.2 & Spec 5210."""
+    if user_filter_op:
+        try:
+            filter_op_count = max(1, min(12, int(user_filter_op)))
+            count_source = "user_input"
+        except (TypeError, ValueError):
+            filter_op_count = 2
+            count_source = "station_3d_calc"
+    else:
+        # PFD 1-NGTL-0-CS-P-001-4000 & Özel Şartname §4.8.2: 3 units (2 duty + 1 standby, 50% each)
+        filter_op_count = 2
+        count_source = "station_3d_calc"
+
+    filter_standby_count = 1
+    filter_total_count = filter_op_count + filter_standby_count
+    flow_per_filter = float(mass_flow_kgs) / filter_op_count
+    unit_capacity_pct = round(100.0 / filter_op_count, 1)
+    unit_design_capacity_kgs = round(flow_per_filter, 2)
+
+    rho_safe = max(1.0, float(rho_cfs_in_kgm3))
+    q_act_m3s = flow_per_filter / rho_safe
+
+    # Horizontal coalescing vessel ID & length sized dynamically from actual volumetric flow
+    d_calc_mm = max(750.0, math.sqrt((4.0 * q_act_m3s) / (math.pi * 1.5)) * 1000.0)
+    standard_barrels_mm = [750, 900, 1050, 1200, 1350, 1500, 1650, 1800, 2000, 2200, 2400, 2600]
+    vessel_diameter_mm = next((d for d in standard_barrels_mm if d >= d_calc_mm), int(math.ceil(d_calc_mm / 100.0) * 100))
+    vessel_length_mm = max(2800, int(round((vessel_diameter_mm * 3.5) / 100.0) * 100))
+
+    # Cartridge elements sized dynamically so clean ΔP <= 140 mbar (Spec 5210 §4.3)
+    q_cart_design = max(1e-4, 0.095 / math.sqrt(max(8.0, rho_safe) / 25.0))
+    raw_cartridges = max(4, math.ceil(q_act_m3s / q_cart_design))
+    cartridge_elements_count = min(220, raw_cartridges)
+    loading_ratio = q_act_m3s / (cartridge_elements_count * q_cart_design)
+
+    max_clean_dp_bar = 0.140
+    dirty_changeout_dp_bar = 0.300
+    element_burst_pressure_bar = 3.0
+    dp_filter_bar = round(max(0.030, min(0.600, 0.105 * (loading_ratio ** 1.55))), 3)
+
+    # Below-barrel horizontal Blow-Flask + heat tracing (Spec 5210 §4.1 & Özel §4.8.2)
+    bf_diam_mm = max(450, int(round((vessel_diameter_mm * 0.42) / 50.0) * 50))
+    bf_len_mm = max(1400, int(round((bf_diam_mm * 3.0) / 100.0) * 100))
+    bf_total_vol_m3 = round(math.pi * ((bf_diam_mm / 1000.0) / 2.0) ** 2 * (bf_len_mm / 1000.0), 3)
+    bf_dump_vol_m3 = round(max(0.20, bf_total_vol_m3 * 0.55), 3)
+
+    freeze_risk_active = bool(float(ambient_temp_c) < 2.0)
+    warnings: List[str] = []
+    if dp_filter_bar > max_clean_dp_bar:
+        warnings.append(
+            f"Temiz filtre basınç kaybı ({dp_filter_bar:.3f} bar = {dp_filter_bar * 1000:.0f} mbar), "
+            "Spec 5210 §4.3 sınırını (≤ 140 mbar) aşıyor; çalışan kartuş filtre sayısını artırın."
+        )
+    if freeze_risk_active:
+        warnings.append(
+            f"Ortam sıcaklığı ({float(ambient_temp_c):.1f} °C < 2 °C): CFS blow-flask ve enstrüman şişelerinde "
+            "kendinden regüleli ≥ 2 °C elektrikli heat tracing & izolasyon aktif olmalıdır (Spec 5210 §4.1 / Özel §4.8.2)."
+        )
+
+    return {
+        "operating_count": filter_op_count,
+        "standby_count": filter_standby_count,
+        "installed_count": filter_total_count,
+        "count_source": count_source,
+        "unit_capacity_pct": unit_capacity_pct,
+        "unit_design_capacity_kgs": unit_design_capacity_kgs,
+        "flow_per_unit_kgs": round(flow_per_filter, 2),
+        "actual_vol_flow_m3s_per_unit": round(q_act_m3s, 3),
+        "clean_dp_bar": dp_filter_bar,
+        "clean_dp_mbar": round(dp_filter_bar * 1000.0, 1),
+        "max_clean_dp_bar": max_clean_dp_bar,
+        "dirty_changeout_dp_bar": dirty_changeout_dp_bar,
+        "element_burst_pressure_bar": element_burst_pressure_bar,
+        "efficiency_solid_3um_pct": 99.8,
+        "efficiency_liquid_10um_pct": 99.8,
+        "filter_efficiency_micron": "≥ 3 µm (%99.8 katı) · ≥ 10 µm (sıvı)",
+        "vessel_diameter_mm": vessel_diameter_mm,
+        "vessel_length_mm": vessel_length_mm,
+        "cartridge_elements_count": cartridge_elements_count,
+        "closure_type": "QOC (Quick Opening Closure) + Davit",
+        "design_code": "ASME BPVC Sec. VIII Div. 1 & IX · CE",
+        "hydro_test_factor": 1.5,
+        "noise_limit": "ISO NR 80",
+        "spare_sets_required": "3 set yedek filtre + 3 set QOC kapak contası",
+        "blow_flask": {
+            "orientation": "horizontal",
+            "located_below_barrel": True,
+            "diameter_mm": bf_diam_mm,
+            "length_mm": bf_len_mm,
+            "total_volume_m3": bf_total_vol_m3,
+            "dump_volume_m3": bf_dump_vol_m3,
+        },
+        "instrumentation": {
+            "differential_pressure": "PDT / PDI / PDSH (300 mbar değişim alarmı)",
+            "level_controls": "LG / LT / LSH / LSL (enstrüman şişeleri) + LCV oto/man drenaj",
+            "auxiliaries": "Restriction orifice + Vent (kör flanşlı) + Self-contained instrument gas",
+        },
+        "heat_tracing": {
+            "insulated": True,
+            "insulation_brackets_factory_installed": True,
+            "electrical_traced": True,
+            "self_regulating": True,
+            "min_temp_c": 2.0,
+            "ambient_temp_c": round(float(ambient_temp_c), 1),
+            "freeze_risk_active": freeze_risk_active,
+        },
+        "design_warnings": warnings,
+    }
+
+
+def _size_compressor_auxiliaries(
+    engine: ThermoEngine,
+    gas_comp: Dict[str, float],
+    comp_op_count: int,
+    comp_total_count: int,
+    flow_per_comp_kgs: float,
+    power_per_unit_kw: float,
+    total_power_kw: float,
+    polytropic_eff_pct: float,
+    mech_eff_pct: float,
+    thermal_eff_pct: float,
+    p_in_bar: float,
+    p_out_bar: float,
+    ambient_temp_c: float,
+) -> Dict[str, Any]:
+    """Size turbo-compressor unit auxiliaries per Spec 4500 §5.5-5.8, §6.x, §8.x & Ozel §4.8, §6.1."""
+    warnings: List[str] = []
+
+    # 1. Overhead crane scaled realistically to GT + API 617 compressor casing/bundle lift
+    if power_per_unit_kw > 25000.0:
+        crane_tons = 35.0
+    elif power_per_unit_kw > 15000.0:
+        crane_tons = 25.0
+    elif power_per_unit_kw > 8000.0:
+        crane_tons = 20.0
+    else:
+        crane_tons = 15.0
+
+    # 2. ISO 6976:2016 real fuel gas thermodynamics & Spec 4500 §8.1-8.5 / Ozel §4.8.5 conditioning
+    try:
+        fuel_props = engine.calculate_fuel_gas_properties(gas_comp, source="iso6976") or {}
+    except Exception:
+        fuel_props = {}
+
+    lhv_kj_kg = float(fuel_props.get("lhv_kj_kg") or 0.0)
+    hhv_kj_kg = float(fuel_props.get("hhv_kj_kg") or 0.0)
+    std_rho_kg_sm3 = float(fuel_props.get("standard_density_kg_sm3") or 0.772)
+    wobbe_mj_sm3 = float(fuel_props.get("wobbe_index_mj_sm3") or 0.0)
+    therm_frac = max(0.15, min(0.65, float(thermal_eff_pct) / 100.0))
+    heat_rate_kj_kwh = round(3600.0 / therm_frac, 1)
+
+    if lhv_kj_kg > 100.0:
+        fuel_per_unit_kgh = round((power_per_unit_kw * heat_rate_kj_kwh) / lhv_kj_kg, 1)
+        fuel_per_unit_sm3h = round(fuel_per_unit_kgh / max(0.05, std_rho_kg_sm3), 1)
+    else:
+        fuel_per_unit_kgh = 0.0
+        fuel_per_unit_sm3h = 0.0
+        warnings.append(
+            "Yakıt gazı alt ısıl değeri (ISO 6976 LHV ≤ 100 kJ/kg) yetersiz/inert gaz; "
+            "türbin yakıt debisi sıfırlandı (0 kg/h)."
+        )
+
+    total_fuel_kgh = round(fuel_per_unit_kgh * comp_op_count, 1)
+    total_fuel_sm3h = round(fuel_per_unit_sm3h * comp_op_count, 1)
+    design_fuel_per_unit_kgh = round(fuel_per_unit_kgh * 1.20, 1)
+    design_total_fuel_kgh = round(total_fuel_kgh * 1.20, 1)
+
+    # 3. Lube oil system sizing via physical shaft mechanical + GT bearing rejection heat balance (4500 §6.7)
+    mech_loss_frac = max(0.005, 1.0 - max(50.0, min(99.5, float(mech_eff_pct))) / 100.0)
+    bearing_heat_kw = power_per_unit_kw * mech_loss_frac + max(45.0, 0.012 * power_per_unit_kw)
+    oil_cp_kj_kgk = 2.0
+    oil_delta_t_k = 18.0
+    oil_rho_kg_m3 = 870.0
+    oil_mass_kgs = bearing_heat_kw / (oil_cp_kj_kgk * oil_delta_t_k)
+    flow_lpm_per_unit = round(max(60.0, (oil_mass_kgs / oil_rho_kg_m3) * 60000.0), 1)
+    min_working_vol_l = round(flow_lpm_per_unit * 5.0, 1)
+    min_surface_area_cm2 = round(flow_lpm_per_unit * 51.0, 1)
+
+    # 4. Operating envelope checks (Ozel §4.8 p.20 high suction overload & choke; §6.1.2 >= 85% poly eff)
+    if p_in_bar >= 65.0:
+        warnings.append(
+            f"Yüksek Emiş Basıncı ({p_in_bar:.1f} bar ≥ 65 bar — Özel §4.8): Start-up overload torku "
+            f"(%120 VFD elektrik marş motoru), yüksek debi (choke) sınırı ve DGS diferansiyel basınç "
+            f"kararlılığı üretici haritasında doğrulanmalıdır."
+        )
+    if polytropic_eff_pct < 85.0:
+        warnings.append(
+            f"Kompresör politropik verimi (%{polytropic_eff_pct:.1f}), Özel §6.1.2 nominal işletme noktası "
+            f"hedefi olan ≥ %85.0 değerinin altındadır."
+        )
+    if float(ambient_temp_c) < 2.0:
+        warnings.append(
+            f"Ortam sıcaklığı ({ambient_temp_c:.1f} °C < 2 °C): Yakıt gazı seperatörü blow-flask ve "
+            f"regülatör pilot hatlarında ≥ 2 °C ısıtma (heat tracing) devrede olmalıdır (Spec 4500 §8.3 / Özel §4.8.5)."
+        )
+
+    return {
+        "crane_capacity_tons": crane_tons,
+        "unit_valves_and_strainer": {
+            "suction_series_valves_count": 2,
+            "discharge_series_valves_count": 2,
+            "valve_type": "Tam Geçişli Ayrık Gövdeli Küresel Vana (Seri Çift Blok & Bleed · Spec 4500 §5.5)",
+            "motor_actuator_stroke_max_s": 30.0,
+            "manual_isolation_valve_series": True,
+            "body_bleed_piped_to_purge": True,
+            "fail_mode_signal_loss": "Fail-Close (Kontrol Sinyali Kaybında Kapanır)",
+            "fail_mode_mcc_loss": "Last Position (MCC Güç Kaybında Son Konum)",
+            "switches": "Open/Close Limit Switch + Torque Switch (Lokal MCC + Uzak SCADA)",
+            "temporary_startup_strainer": True,
+            "temporary_strainer_type": "Geçici Konik Devreye Alma Strainer (Flanşlar Arası + Çıkarılabilir Spacer)",
+            "reducers_adjacent_to_nozzles": True,
+            "discharge_non_slam_check_valve": True,
+            "discharge_check_valve_type": "Flanşlı Nozzle Tip Non-Slam Çek Vana (Spec 4500 §5.7)",
+            "asv_downstream_check_and_shutoff": True,
+            "purge_volume_changes": 7,
+            "purge_min_time_s": 15.0,
+            "pressurize_window_s": "30-60",
+            "vent_max_time_s": 60.0,
+            "vent_silencer_condensate_pit": True,
+        },
+        "dry_gas_seal": {
+            "standard": "API 692 Tandem Çift Yönlü Kuru Gaz Salmastrası (Dry Gas Seal)",
+            "filtration_rating_um": 1.0,
+            "duplex_redundant": True,
+            "filter_config": "1 Aktif + 1 Yedek (Duplex 1 µm Kartuş Filtre)",
+            "control_mode": "Fark Basınç Kontrollü Regülatör (PDCV — Sabit Orifis Kontrolü Yok)",
+            "seal_gas_heater_included": True,
+            "separation_seal": "Karbon Ringli Min. Hava Tüketimli Separation (Buffer) Seal",
+            "vent_test_tee_with_blind": True,
+            "spare_sets_required": "2 set yedek DGS filtresi + 1 adet sandıklı yedek çift yönlü DGS kartuşu + montaj/demontaj toolları",
+        },
+        "fuel_gas_system": {
+            "takeoff_location": "Ana CFS Kartuş Filtre Çıkışı Sonrası / Gaz Soğutucu Girişi Öncesi (Özel §4.8.5 · P&ID 4005)",
+            "takeoff_downstream_of_main_filters": True,
+            "takeoff_upstream_of_gas_cooler": True,
+            "thermal_efficiency_pct": round(therm_frac * 100.0, 2),
+            "heat_rate_kj_kwh": heat_rate_kj_kwh,
+            "lhv_kj_kg": round(lhv_kj_kg, 1),
+            "hhv_kj_kg": round(hhv_kj_kg, 1),
+            "standard_density_kg_sm3": round(std_rho_kg_sm3, 4),
+            "wobbe_index_mj_sm3": round(wobbe_mj_sm3, 2),
+            "fuel_per_unit_kgh": fuel_per_unit_kgh,
+            "fuel_per_unit_sm3h": fuel_per_unit_sm3h,
+            "total_fuel_kgh": total_fuel_kgh,
+            "total_fuel_sm3h": total_fuel_sm3h,
+            "design_factor_pct": 120.0,
+            "design_fuel_per_unit_kgh": design_fuel_per_unit_kgh,
+            "design_total_fuel_kgh": design_total_fuel_kgh,
+            "separator_filtration_um": 1.0,
+            "separator_efficiency_pct": 99.8,
+            "separator_heat_tracing_min_c": 2.0,
+            "heat_exchanger_redundancy": "1+1 (%100 + %100) Gaz/Glikol Eşanjör + Tüp Patlama PSV",
+            "heat_exchanger_outlet_c": "20 °C (±5 °C)",
+            "regulator_config": "2×100% Paralel Regülatör + Kısıtlayıcı Orifis + Isıtmalı Pilot (≥ 2 °C) + PSV (%110) + 40 Mesh Y-Strainer",
+            "metering_type": "P/T Kompanzasyonlu Rotary / Türbin Sayaç + Konik Start-Up Screen",
+            "pipe_material": "316 Paslanmaz Çelik (Yeraltı Kaplamalı + Katodik Korumalı)",
+            "spare_sets_required": "2 set yedek yakıt gazı filtresi / istasyon",
+        },
+        "lube_oil_system": {
+            "oil_type": "Ortak Mineral Yağlama Yağı (GG + Güç Türbini + API 617 Kompresör)",
+            "flow_lpm_per_unit": flow_lpm_per_unit,
+            "bearing_heat_rejection_kw": round(bearing_heat_kw, 1),
+            "reservoir_min_retention_min": 5.0,
+            "reservoir_min_working_volume_l": min_working_vol_l,
+            "reservoir_min_surface_area_cm2": min_surface_area_cm2,
+            "reservoir_surface_rule": "≥ 51 cm² / (L/min) (Spec 4500 §6.7)",
+            "reservoir_heaters_thermostatic": True,
+            "oil_demister_ups_backed": True,
+            "filter_nominal_um": 10.0,
+            "duplex_online_replaceable": True,
+            "cold_oil_dp_design_temp_c": 20.0,
+            "pumps": "Şaft/Ana AC Pompa + Yardımcı Ex-Proof AC Pompa + Acil DC/UPS Pompa + Bekleme Sirkülasyon",
+            "ups_dc_emergency_pump": True,
+            "aerial_cooler_fans": 2,
+            "aerial_cooler_3way_bypass": True,
+            "aerial_cooler_desc": "Bina Dışı Hava Soğutucu (2× Elektrik Motorlu Fan + 3 Yollu Termostatik Baypas)",
+            "piping_material": "Paslanmaz Çelik Borulama + Alüminyum İzolasyon Kaplaması",
+            "magnetic_chip_detectors": True,
+            "spare_sets_required": "2 set yedek yağ filtresi + 2 set oil demister filtresi",
+        },
+        "air_intake_and_enclosure": {
+            "driver_type": "Endüstriyel Ağır Hizmet Gaz Türbini (Aero-türev Hariç · Spec 4500 §6.1)",
+            "compressor_type": "API 617 Santrifüj Kompresör (≥ 3.2 mm CA, 70–105% Sürekli Hız)",
+            "starter_system": "Ex-Proof 380V VFD Elektrik Motorlu Soft-Starter (%120 Tork, Gazlı Başlatma Yok)",
+            "air_intake_filter_type": "Kendini Temizleyen Ters Darbeli (Self-Cleaning) Filtre + Absorptif Susturucu + 316 SS Kanal",
+            "air_intake_clean_dp_max_mbar": 8.0,
+            "air_intake_dirty_dp_mbar": 7.5,
+            "air_intake_fuel_calc_dp_mbar": 10.0,
+            "air_intake_trip_dp_mbar": 12.5,
+            "air_intake_collapse_dp_mbar": 37.5,
+            "exhaust_max_dp_mbar": 10.0,
+            "exhaust_max_surface_temp_c": 55.0,
+            "enclosure_noise_limit": "≤ ISO NR 80 / 85 dBA @ 1m",
+            "enclosure_max_temp_c": 80.0,
+            "enclosure_ventilation_ups": True,
+            "fire_and_gas": "%10 LEL Alarm / %20 LEL Trip + Alev/Isı Dedektörleri + Otomatik CO₂/İnert Söndürme",
+            "spare_intake_sets_per_unit": 1,
+        },
+        "design_warnings": warnings,
+    }
+
+
+def _estimate_cooler_bundle_and_specs(
+    mass_flow_kgs: float,
+    cooler_bays_count: int,
+    p_out_bar: float,
+    t_inlet_c: float,
+    t_outlet_c: float,
+    cooler_air_temp_c: float,
+    heat_duty_mw: float,
+    rho_gas_kgm3: float,
+    mu_gas_pas: float,
+) -> Dict[str, Any]:
+    """Compute Fin-Fan tube-bundle gas ΔP (Darcy-Haaland) and Spec 5234 / 4500 §5.14 / Özel §4.8.4 data."""
+    bays = max(2, int(cooler_bays_count))
+    flow_per_bay = max(0.1, float(mass_flow_kgs) / bays)
+    rho_safe = max(1.0, float(rho_gas_kgm3))
+    mu_safe = max(5e-6, float(mu_gas_pas))
+
+    # Spec 5234 App. D / API 661 standard finned tube geometry (1" OD = 25.4 mm, 12 BWG = 2.77 mm wall)
+    tube_od_m = 0.0254
+    tube_wall_m = 0.00277
+    tube_id_m = tube_od_m - 2.0 * tube_wall_m  # 19.86 mm ID
+    tube_rows = 4
+    tube_passes = 2
+    tube_length_m = 6.0
+    path_length_m = tube_length_m * tube_passes
+
+    # Size parallel tubes per row per bay so gas inside-tube velocity stays near ~8-14 m/s
+    q_bay_m3s = flow_per_bay / rho_safe
+    target_v_ms = 10.5
+    area_one_tube_m2 = math.pi * (tube_id_m ** 2) / 4.0
+    tubes_per_pass_per_bay = max(24, min(480, math.ceil(q_bay_m3s / (target_v_ms * area_one_tube_m2))))
+    total_tubes_per_bay = tubes_per_pass_per_bay * tube_passes
+    tubes_per_row = max(12, math.ceil(total_tubes_per_bay / tube_rows))
+    tubes_per_pass_actual = max(12, (tubes_per_row * tube_rows) // tube_passes)
+
+    flow_area_m2 = tubes_per_pass_actual * area_one_tube_m2
+    tube_velocity_ms = q_bay_m3s / max(1e-6, flow_area_m2)
+    reynolds = (rho_safe * tube_velocity_ms * tube_id_m) / mu_safe
+    rel_roughness = 0.000045 / tube_id_m
+    if reynolds > 2300.0:
+        inv_sqrt_f = -1.8 * math.log10((rel_roughness / 3.7) ** 1.11 + (6.9 / reynolds))
+        f_darcy = 1.0 / max(1e-6, inv_sqrt_f ** 2)
+    else:
+        f_darcy = 64.0 / max(100.0, reynolds)
+
+    k_header_return = 2.8  # nozzle entrance + U-turn pass bend + outlet box exit
+    dp_pa = (f_darcy * (path_length_m / tube_id_m) + k_header_return) * 0.5 * rho_safe * (tube_velocity_ms ** 2)
+    dp_cooler_bar = round(max(0.05, min(0.85, dp_pa / 1e5)), 3)
+    allowable_dp_bar = 0.50
+
+    warnings: List[str] = []
+    if float(cooler_air_temp_c) > 40.0:
+        warnings.append(
+            f"Soğutma havası giriş sıcaklığı ({float(cooler_air_temp_c):.1f} °C), Spec 4500 §5.14 / Özel §4.8.4 "
+            "azami referans ortam sınırı olan 40.0 °C değerini aşıyor."
+        )
+    if float(t_outlet_c) > 45.0:
+        warnings.append(
+            f"Gaz soğutucu çıkış sıcaklığı ({float(t_outlet_c):.1f} °C), Spec 4500 §5.14 / Özel §4.8.4 "
+            "azami tasarım çıkış sınırı olan 45.0 °C üzerinde."
+        )
+    if dp_cooler_bar > allowable_dp_bar:
+        warnings.append(
+            f"Fin-Fan gaz tarafı basınç kaybı ({dp_cooler_bar:.3f} bar), Spec 5234 / API 661 "
+            f"tavsiye edilen {allowable_dp_bar:.2f} bar sınırını aşıyor; paralel bay sayısını artırın."
+        )
+
+    return {
+        "dp_cooler_bar": dp_cooler_bar,
+        "allowable_dp_bar": allowable_dp_bar,
+        "tube_velocity_ms": round(tube_velocity_ms, 2),
+        "reynolds": round(reynolds, 0),
+        "tubes_per_row": tubes_per_row,
+        "tubes_per_bay": tubes_per_row * tube_rows,
+        "tube_passes": tube_passes,
+        "tube_length_m": tube_length_m,
+        "tube_wall_bwg": "12 BWG",
+        "nozzle_rating": "ANSI Class 600 RF",
+        "draft_type": "Forced-Draft (API 661 / Spec 5234 §1.1.1)",
+        "fan_blades_min": 4,
+        "max_fan_tip_speed_ms": 50.0,
+        "fan_motor_max_kw": 29.8,
+        "noise_limit_150m_dba": 55.0,
+        "design_reference_ambient_c": 40.0,
+        "max_design_gas_outlet_c": 45.0,
+        "vfd_drive_spec": "VFD (0–100% Hız · IEEE 519 Harmonik · ≥%95 Verim · Soft-Start + Baypaslı · Lokal & SCS 4–20 mA)",
+        "vibration_switches": "Her fan motorunda Murphy tipi titreşim anahtarı (SCADA alarm + oto-stop · ≤2000 mm reset)",
+        "louver_and_sunshade": "2.0 mm ekstrüde alüminyum manuel kumandalı panjurlu güneşlik (Özel §4.8.4 / Spec 5234 §5.2.15)",
+        "isolation_and_drain": "Her bay giriş/çıkış kilitlenebilir manuel izolasyon vanası + 1\" vent/drenaj · 10 mm/m eğim (4500 §5.14)",
+        "tcv_control_spec": "Termostatik ON/OFF Baypas · Gas-over-Oil Hidrolik Aktüatör · Sinyal Kaybında Fail-Open (4500 §5.14)",
+        "warnings": warnings,
+    }
+
+
+def _size_station_utilities_and_relief(
+    p_out_bar: float,
+    p_in_bar: float,
+    p_atm_bar: float,
+    ambient_temp_c: float,
+    cooler_inlet_temp_c: float,
+    cooler_outlet_temp_c: float,
+    mass_flow_kgs: float,
+    comp_total_count: int,
+    cooler_bays_count: int,
+    bdv_depressurization_time_min: float,
+    ultrasonic_meter_sizing: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Size Station Utilities (§7 Power Gas, §9/Özel §4.8.6 Utility Gas, §10/Özel §4.8.7 Compressed Air, §11 Heating, §5.9-5.13)."""
+    p_maop_g = max(75.0, float(p_out_bar) - float(p_atm_bar))
+    pg_design_bar = round(p_maop_g * 1.10, 2)
+    # Hammerschmidt hydrate suppression deltaT = 1297 * W / (M_MeOH * (100 - W)); target >= 10 °C margin
+    methanol_wt_pct = 28.0 if float(ambient_temp_c) < 0.0 else 22.0
+    hammerschmidt_dt_c = round((1297.0 * methanol_wt_pct) / (32.04 * (100.0 - methanol_wt_pct)), 2)
+
+    # Utility Gas (§9 & Özel §4.8.6): Gas Cooler inlet takeoff, min 1485 Sm3/h design skid
+    boiler_demand_sm3h = (55.0 + max(0.0, 20.0 - float(ambient_temp_c)) * 3.8 + comp_total_count * 18.0)
+    preheater_demand_sm3h = max(120.0, float(mass_flow_kgs) * 0.45)
+    calculated_util_demand_sm3h = round(max(1485.0, boiler_demand_sm3h + preheater_demand_sm3h + 1250.0), 1)
+    psv_util_set_bar = round(max(12.0, p_maop_g * 0.16 * 1.10), 2)
+
+    # Compressed Air (§10.1-10.4, Spec 4320/4330, Özel §4.8.7): usage factors + losses + 15% dryer + 10% overdesign
+    base_inst_nm3h = (comp_total_count * 42.0) + (cooler_bays_count * 12.0) + 85.0
+    continuous_nm3h = base_inst_nm3h * 1.00
+    intermittent_nm3h = (base_inst_nm3h * 0.35) * 0.50
+    emergency_nm3h = 30.0 * 0.10
+    maint_nm3h = 45.0 * 0.05
+    air_subtotal = continuous_nm3h + intermittent_nm3h + emergency_nm3h + maint_nm3h
+    air_demand_nm3h = round(air_subtotal * 1.10 * 1.15 * 1.10, 1)  # +10% loss, +15% dryer regen, +10% margin
+    # Receiver >= 25 m3 AND >= 10 min holdup without compressors (Özel §4.8.7 vs Spec 4500 1.0 m3)
+    holdup_min_vol_m3 = (air_demand_nm3h / 60.0) * 10.0 / 6.5 * 1.2
+    receiver_volume_m3 = round(max(25.0, holdup_min_vol_m3), 1)
+    holdup_time_min = round((receiver_volume_m3 * 6.5 / 1.2) / max(0.1, air_demand_nm3h / 60.0), 1)
+
+    # Heating System (§11.0): 90/70 °C 50/50 ethylene glycol-water, 2x70% boilers, 3x50% pumps
+    winter_dt = max(5.0, 22.0 - float(ambient_temp_c))
+    heat_load_kw = round(240.0 + winter_dt * 12.5 + comp_total_count * 65.0, 1)
+
+    esd_60s_compliant = float(bdv_depressurization_time_min) <= 1.0
+    warnings: List[str] = []
+    if not esd_60s_compliant:
+        warnings.append(
+            f"Spec 4500 §5.11: İstasyon ESD blowdown vanası 1 barg basınca ≤ 60 s (1.0 dk) sürede düşürmelidir "
+            f"(mevcut boşaltma süresi: {float(bdv_depressurization_time_min):.1f} dk API 521 modu)."
+        )
+
+    return {
+        "power_gas": {
+            "design_pressure_bar": pg_design_bar,
+            "takeoff": "Ana hat çift blok vana baypas hattından çekvalfli çift bağlantı (4500 §7.1)",
+            "methanol_dehydrator": {
+                "included": True,
+                "wt_pct": methanol_wt_pct,
+                "hammerschmidt_depression_c": hammerschmidt_dt_c,
+                "valving": "İzolasyon + baypas + memba çekvalf + cam seviye göstergesi + vent/drenaj (4500 §7.2)",
+            },
+            "distribution_piping": "1\" düşüş + F×F küresel vana + partikül filtresi + 1/2\" paslanmaz tubing → Gas-over-Oil aktüatörler",
+        },
+        "utility_gas": {
+            "takeoff_location": "Gas Cooler Girişi (Özel §4.8.6) · Alternatif HP Hat (4500 §9.1)",
+            "min_skid_capacity_sm3h": 1485.0,
+            "calculated_demand_sm3h": calculated_util_demand_sm3h,
+            "odorizer_included": True,
+            "electric_heater_external_mcc": True,
+            "preheat_dewpoint_margin_c": 12.0,
+            "preheating": "Double-pipe eşanjör + harici MCC hücre beslemeli elektrikli ısıtıcı (≥ +10 °C çiy noktası marjı) + kokulandırma",
+            "pressure_reduction": f"Çok kademeli regülasyon: 2×%100 paralel PRV + %110 PSV ({psv_util_set_bar} bar g) + ısıtmalı pilot hatlar",
+            "metering": "Türbin / AGA-3 Orifis Sayaç + Hacim Düzeltici",
+            "underground_distribution_material": "Yeraltı PE borulama (Binalar & Jeneratör besleme)",
+        },
+        "compressed_air": {
+            "demand_nm3h": air_demand_nm3h,
+            "compressor_configuration": "1+1 (%100 her biri) Yağsız Vidalı VFD · Eş-Yaşlandırma (Equal Aging) + Entegre Aftercooler + Vibrasyon Hortumu",
+            "dryers": "1+1 (%100) Çift Kuleli Isısız Rejeneratif Desikant Kurutucu (Spec 4330 · 8.7/10.5 barg · Amicon)",
+            "dewpoint_c": -40.0,
+            "high_dewpoint_alarm_c": -20.0,
+            "receiver_tank_spec": "Spec 4320 / Özel §4.8.7 ASME VIII Div 1 & CE Dik Tip Hava Tankı (10.35 bar g)",
+            "receiver_volume_m3": receiver_volume_m3,
+            "holdup_time_min": holdup_time_min,
+            "piping_material": "≥ 304 Paslanmaz Çelik (Özel §4.8.7 · Yeraltı kaplamalı & Katodik Korumalı · 316 SS enstrüman tubing)",
+        },
+        "heating_glycol": {
+            "medium": "90/70 °C (%50/%50 Etilen Glikol - Su)",
+            "heat_load_kw": heat_load_kw,
+            "boilers": "2 × %70 Kapasiteli Çok Geçişli Gaz Kazanı",
+            "pumps": "3 × %50 İnline Sirkülasyon Pompası + Diyaframlı Genleşme Tankı",
+        },
+        "fire_water": {
+            "tank_volume_m3": 300.0,
+            "pumps": "NFPA 20: 1 Elektrikli + 1 Dizel Ana Yangın Pompası + 1 Jockey Pompası",
+            "ring_main_hydrants": "Çevre Ring Hidrant Ağı + Bina İçi F&G (%20 LEL IR / UV-IR Alev Algılama)",
+            "turbine_enclosure_suppression": "Otomatik CO2 / Temiz Gaz Söndürme Sistemi (4500 §14)",
+        },
+        "hvac": {
+            "control_building": "Pozitif Basınçlı Ex-Proof HVAC İklimlendirme (4500 §12-13)",
+            "compressor_building": "UPS Destekli Mekanik Havalandırma (≤ 80 °C Termal Sınır)",
+        },
+        "safety_and_bypass": {
+            "usm_4500": {
+                "tag": (ultrasonic_meter_sizing or {}).get("tag", "FT-401"),
+                "paths_min": 4,
+                "installed_paths": 8,
+                "accuracy_pct": 0.5,
+                "repeatability_pct": 0.1,
+                "flanged_dry_calibrated": True,
+                "zanker_conditioner_optional": True,
+            },
+            "psv_4500": {
+                "min_distance_from_buildings_m": 35.0,
+                "choke_flow_sized": True,
+                "dual_outlet_flanged": True,
+                "pilot_size_in": 2.0,
+                "upstream_ball_valve_and_snubber": True,
+                "field_test_connection": True,
+            },
+            "bdv_4500": {
+                "min_distance_from_buildings_m": 35.0,
+                "target_pressure_barg": 1.0,
+                "max_blowdown_time_s": 60.0,
+                "user_configured_time_min": round(float(bdv_depressurization_time_min), 2),
+                "esd_60s_compliant": esd_60s_compliant,
+                "valve_type": "Yağlamalı Flanşlı Plug Vana · Gas-over-Oil (1 sn/inç · Fail-Open · Manuel Reset)",
+            },
+            "loading_line": "4500 §5.12: Ünite Suction MOV baypası (küresel + pozisyon switch'li globe vana)",
+            "station_bypass_check": "4500 §5.13: Ana hat çapında Suction–Discharge Non-Slam Piston/Nozul Çekvalf (Soğutucu sonrası, USM öncesi)",
+        },
+        "warnings": warnings,
+    }
+
+
 def calculate_station_process_model(
     inputs: Dict[str, Any],
     design_results: Optional[Dict[str, Any]] = None,
@@ -538,28 +1196,28 @@ def calculate_station_process_model(
         rho_std = 1.01325e5 / (R_gas * 288.15)
     vol_flow_mmscmd = (mass_flow_kgs * 86400.0) / (rho_std * 1e6)
 
-    # 2. Dynamic Cyclone Separator (Scrubber) Sizing
-    unit_cap_cyclone = 22.0  # kg/s per cyclone vessel
+    # 2. Dynamic MFS Cyclone Separator Sizing (PFD 4000 2+1 %50, Spec 5260 & 4500 §5.2)
+    rho_mfs_in = (
+        float(inlet_state.density)
+        if (inlet_state is not None and inlet_state.density and math.isfinite(inlet_state.density) and inlet_state.density > 0)
+        else max(0.05, (p_in * 1e5) / (R_gas * max(120.0, T_in_K)))
+    )
     user_cyclone_op = inputs.get("cyclone_op_count") or inputs.get("cyclones_count")
-    if user_cyclone_op:
-        cyclone_op_count = max(1, min(12, int(user_cyclone_op)))
-    else:
-        cyclone_op_count = max(1, min(8, math.ceil(mass_flow_kgs / unit_cap_cyclone)))
-    cyclone_total_count = cyclone_op_count + 1  # Standard N+1 sparing
-    flow_per_cyclone = mass_flow_kgs / cyclone_op_count
-    dp_cyclone = round(0.30 * (flow_per_cyclone / unit_cap_cyclone) ** 1.8, 3)  # bar drop
+    mfs_sizing = _size_mfs_cyclone_group(mass_flow_kgs, rho_mfs_in, ambient_temp_c, user_cyclone_op)
+    cyclone_op_count = mfs_sizing["operating_count"]
+    cyclone_total_count = mfs_sizing["installed_count"]
+    flow_per_cyclone = mfs_sizing["flow_per_unit_kgs"]
+    dp_cyclone = mfs_sizing["pressure_drop_bar"]
     p_post_cyclone = round(max(0.5, p_in - dp_cyclone), 2)
 
-    # 3. Dynamic Cartridge Coalescing Filter Sizing
-    unit_cap_filter = 18.0  # kg/s per filter vessel
+    # 3. Dynamic CFS Cartridge Coalescing Filter Sizing (PFD 4000 2+1 %50, Spec 5210 & Özel §4.8.2)
+    rho_cfs_in = max(1.0, rho_mfs_in * (p_post_cyclone / max(0.5, p_in)))
     user_filter_op = inputs.get("filter_op_count") or inputs.get("filters_count")
-    if user_filter_op:
-        filter_op_count = max(1, min(12, int(user_filter_op)))
-    else:
-        filter_op_count = max(1, min(8, math.ceil(mass_flow_kgs / unit_cap_filter)))
-    filter_total_count = filter_op_count + 1  # Standard N+1 sparing
-    flow_per_filter = mass_flow_kgs / filter_op_count
-    dp_filter = round(0.22 * (flow_per_filter / unit_cap_filter) ** 1.5, 3)
+    cfs_sizing = _size_cfs_filter_group(mass_flow_kgs, rho_cfs_in, ambient_temp_c, user_filter_op)
+    filter_op_count = cfs_sizing["operating_count"]
+    filter_total_count = cfs_sizing["installed_count"]
+    flow_per_filter = cfs_sizing["flow_per_unit_kgs"]
+    dp_filter = cfs_sizing["clean_dp_bar"]
     p_comp_inlet = round(max(0.5, p_post_cyclone - dp_filter), 2)
 
     # 4. Dynamic Turbo-Compressor Train Sizing & Real ThermoEngine Coupling
@@ -645,17 +1303,54 @@ def calculate_station_process_model(
         else None
     )
 
-    unit_cap_comp = design_unit_cap if design_unit_cap and design_unit_cap > 0 else 35.0
+    pr_safe_pre = max(1.001, p_out / max(0.5, p_in))
+    k_pre = (
+        float(inlet_state.k)
+        if (inlet_state is not None and getattr(inlet_state, "k", 0) and math.isfinite(inlet_state.k) and inlet_state.k > 1.01)
+        else 1.28
+    )
+    n_pre = ((k_pre - 1.0) / k_pre) / 0.85
+    est_head_kj = max(
+        1.0,
+        (z_in_real * R_gas * max(120.0, T_in_K) * ((pr_safe_pre ** n_pre) - 1.0) / max(1e-4, n_pre)) / 1000.0,
+    )
+    est_total_power_kw = design_power_total or ((mass_flow_kgs * est_head_kj) / (0.85 * 0.98))
+    aero_unit_cap_kgs = max(45.0, min(95.0, 2.2 * rho_suction))
+
     user_comp_op = inputs.get("comp_op_count") or inputs.get("operating_trains") or inputs.get("num_units")
     if user_comp_op:
         try:
             comp_op_count = max(1, min(8, int(user_comp_op)))
         except (TypeError, ValueError):
-            comp_op_count = max(1, min(6, math.ceil(mass_flow_kgs / unit_cap_comp)))
+            comp_op_count = max(
+                1,
+                min(6, max(math.ceil(est_total_power_kw / 12500.0), math.ceil(mass_flow_kgs / aero_unit_cap_kgs))),
+            )
+    elif design_unit_cap and design_unit_cap > 0:
+        comp_op_count = max(1, min(6, math.ceil(mass_flow_kgs / design_unit_cap)))
     else:
-        comp_op_count = max(1, min(6, math.ceil(mass_flow_kgs / unit_cap_comp)))
+        comp_op_count = max(
+            1,
+            min(6, max(math.ceil(est_total_power_kw / 12500.0), math.ceil(mass_flow_kgs / aero_unit_cap_kgs))),
+        )
     comp_total_count = comp_op_count + 1
     flow_per_comp = round(mass_flow_kgs / comp_op_count, 2)
+
+    mech_eff_pct = _first_number(inputs.get("mech_eff"), dr.get("mech_eff"), 98.0) or 98.0
+    if mech_eff_pct <= 1.0:
+        mech_eff_pct *= 100.0
+    mech_eff_pct = max(50.0, min(100.0, mech_eff_pct))
+
+    therm_eff_pct = _first_number(
+        inputs.get("therm_eff"),
+        inputs.get("thermal_eff"),
+        dr.get("driver_thermal_efficiency_pct"),
+        dr.get("therm_eff"),
+        35.0,
+    ) or 35.0
+    if therm_eff_pct <= 1.0:
+        therm_eff_pct *= 100.0
+    therm_eff_pct = max(15.0, min(65.0, therm_eff_pct))
 
     thermo_warnings: List[str] = []
     if (design_head is None or design_t_discharge is None or design_power_per_unit is None) and gas_obj is not None:
@@ -771,6 +1466,23 @@ def calculate_station_process_model(
     shelter_width_m = 24.0
     shelter_length_m = round(14.0 * comp_total_count + 8.0, 1)
     shelter_height_m = 12.5
+
+    fuel_comp_for_aux = inputs.get("fuel_gas_comp") or gas_comp
+    comp_aux = _size_compressor_auxiliaries(
+        engine=engine,
+        gas_comp=fuel_comp_for_aux,
+        comp_op_count=comp_op_count,
+        comp_total_count=comp_total_count,
+        flow_per_comp_kgs=flow_per_comp,
+        power_per_unit_kw=power_per_unit_kw,
+        total_power_kw=total_power_kw,
+        polytropic_eff_pct=polytropic_eff,
+        mech_eff_pct=mech_eff_pct,
+        thermal_eff_pct=therm_eff_pct,
+        p_in_bar=p_in,
+        p_out_bar=p_out,
+        ambient_temp_c=ambient_temp_c,
+    )
 
     # 5. Anti-Surge & Recycle Lines Sizing (with selected eos_model)
     surge_flow_limit = round(0.68 * flow_per_comp, 2)
@@ -892,6 +1604,43 @@ def calculate_station_process_model(
         cooler_bays_count = max(2, min(16, int(float(user_cooler_bays))))
     else:
         cooler_bays_count = max(2, min(16, math.ceil(heat_duty_mw / max(0.3, cooler_bay_capacity_mw)))) if heat_duty_mw > 0 else 2
+
+    rho_cooler_avg = 45.0
+    mu_cooler_avg = 1.35e-5
+    _rho_vals = [
+        float(getattr(st, "density", 0.0))
+        for st in (hot_state, cooled_state)
+        if st is not None and getattr(st, "density", None) and math.isfinite(st.density) and st.density > 0
+    ]
+    if _rho_vals:
+        rho_cooler_avg = sum(_rho_vals) / len(_rho_vals)
+    else:
+        t_cooler_avg_k = max(120.0, ((t_cooler_inlet_c + t_target_pipeline) * 0.5) + 273.15)
+        rho_cooler_avg = max(1.0, (p_out * 1e5) / (max(0.1, z_in_real) * R_gas * t_cooler_avg_k))
+    _mu_vals = [
+        float(getattr(st, "viscosity", 0.0))
+        for st in (hot_state, cooled_state)
+        if st is not None and getattr(st, "viscosity", None) and math.isfinite(st.viscosity) and st.viscosity > 0
+    ]
+    if _mu_vals:
+        mu_cooler_avg = sum(_mu_vals) / len(_mu_vals)
+
+    cooler_bundle_spec = _estimate_cooler_bundle_and_specs(
+        mass_flow_kgs=mass_flow_kgs,
+        cooler_bays_count=cooler_bays_count,
+        p_out_bar=p_out,
+        t_inlet_c=t_cooler_inlet_c,
+        t_outlet_c=t_target_pipeline,
+        cooler_air_temp_c=cooler_air_temp_c,
+        heat_duty_mw=heat_duty_mw,
+        rho_gas_kgm3=rho_cooler_avg,
+        mu_gas_pas=mu_cooler_avg,
+    )
+    dp_cooler = cooler_bundle_spec["dp_cooler_bar"]
+    p_post_cooler = round(max(0.5, p_out - dp_cooler), 2)
+    for _cw in cooler_bundle_spec["warnings"]:
+        if _cw not in air_cooler_warnings:
+            air_cooler_warnings.append(_cw)
 
     air_cooler_design = None
     include_air_cooler_design = bool(inputs.get("include_air_cooler_design", False))
@@ -1042,9 +1791,29 @@ def calculate_station_process_model(
         "mass_flow_total_kgs": round(mass_flow_kgs, 2),
     }
 
-    # 8. Condensate Drain Collection (BOTAŞ PFD Note 14 & 15)
+    # 8. Condensate Drain Collection (Spec 5250 DIN 6608/St37 + Spec 4500 §5.2: >= 15x blow-flask, min 3/5 m3)
     liquid_condensate_rate_m3h = round(0.008 * mass_flow_kgs, 3)
-    condensate_tank_volume_m3 = round(max(10.0, liquid_condensate_rate_m3h * 24.0 * 2.5), 1)
+    standard_flow_sm3h = round((vol_flow_mmscmd * 1e6) / 24.0, 1)
+    if standard_flow_sm3h <= 100000.0:
+        spec_5250_base_tank_m3 = 3.0
+        cond_pump_flow_m3h = 5.0
+        cond_pump_motor_kw = 2.0
+    else:
+        spec_5250_base_tank_m3 = 5.0
+        cond_pump_flow_m3h = 10.0
+        cond_pump_motor_kw = 4.0
+    min_15x_blowflask_m3 = round(
+        max(3.0, mfs_sizing["dump_system"]["min_dump_tank_volume_m3"], 15.0 * cfs_sizing["blow_flask"]["dump_volume_m3"]),
+        2,
+    )
+    condensate_tank_volume_m3 = round(
+        max(
+            spec_5250_base_tank_m3,
+            min_15x_blowflask_m3,
+            liquid_condensate_rate_m3h * 24.0 * 2.5,
+        ),
+        1,
+    )
 
     # 8. Mainline Pigging Units
     mainline_nps = 24 if mass_flow_kgs < 50 else (36 if mass_flow_kgs < 120 else 48)
@@ -1153,6 +1922,10 @@ def calculate_station_process_model(
     cyclone_outlet_pipe_choice = _clean_pipe_choice(inputs.get("cyclone_outlet_pipe_size"))
     filter_inlet_pipe_choice = _clean_pipe_choice(inputs.get("filter_inlet_pipe_size"))
     filter_outlet_pipe_choice = _clean_pipe_choice(inputs.get("filter_outlet_pipe_size"))
+    suct_len_user_override = _has_explicit_value(inputs, "suction_equiv_length_m")
+    disch_len_user_override = _has_explicit_value(inputs, "discharge_equiv_length_m")
+    suction_equiv_length_m = max(1.0, min(50000.0, _user_float("suction_equiv_length_m", 120.0)))
+    discharge_equiv_length_m = max(1.0, min(50000.0, _user_float("discharge_equiv_length_m", 150.0)))
 
     station_piping = PipeSizingService.size_station_network(
         mass_flow_kgs=mass_flow_kgs,
@@ -1181,6 +1954,8 @@ def calculate_station_process_model(
         cyclone_outlet_nominal=cyclone_outlet_pipe_choice,
         filter_inlet_nominal=filter_inlet_pipe_choice,
         filter_outlet_nominal=filter_outlet_pipe_choice,
+        suction_equiv_length_m=suction_equiv_length_m,
+        discharge_equiv_length_m=discharge_equiv_length_m,
     )
     p_lines = station_piping["lines"]
 
@@ -1309,6 +2084,20 @@ def calculate_station_process_model(
         "straight_run_requirement": "10D Giriş (Flow Conditioner ile) / 5D Çıkış",
     }
 
+    station_utilities = _size_station_utilities_and_relief(
+        p_out_bar=p_out,
+        p_in_bar=p_in,
+        p_atm_bar=p_atm_bar,
+        ambient_temp_c=ambient_temp_c,
+        cooler_inlet_temp_c=t_cooler_inlet_c,
+        cooler_outlet_temp_c=t_target_pipeline,
+        mass_flow_kgs=mass_flow_kgs,
+        comp_total_count=comp_total_count,
+        cooler_bays_count=cooler_bays_count,
+        bdv_depressurization_time_min=bdv_depressurization_time_min,
+        ultrasonic_meter_sizing=ultrasonic_meter_sizing,
+    )
+
     # Aggregate unique station-wide engineering warnings across thermo, valves, cooler, PSV, and piping
     station_warnings: List[str] = []
 
@@ -1322,12 +2111,16 @@ def calculate_station_process_model(
                 station_warnings.append(labeled)
 
     _add_warnings("Termodinamik", thermo_warnings)
+    _add_warnings("MFS Siklon", mfs_sizing["design_warnings"])
+    _add_warnings("CFS Kartuş Filtre", cfs_sizing["design_warnings"])
+    _add_warnings("Turbo-Kompresör & Yardımcılar", comp_aux["design_warnings"])
     _add_warnings("ASV", asv_warnings)
     _add_warnings("PCV", pcv_warnings)
     _add_warnings("TCV", tcv_warnings)
     _add_warnings("Hava Soğutucu", air_cooler_warnings)
     _add_warnings("PSV", psv_sizing_warnings)
     _add_warnings("ESD", esd_warnings)
+    _add_warnings("Yardımcı Tesisler", station_utilities.get("warnings", []))
     _add_warnings("Boru Ağı", station_piping.get("warnings", []))
 
     # 11. Pipe Flow Vectors (Dynamic speed factors scaled by actual flow velocities)
@@ -1674,6 +2467,16 @@ def calculate_station_process_model(
                     f"ve ortam sıcaklığı T_atm={ambient_temp_c:.1f} °C ile doğrulandı."
                 ),
             },
+            "spec_4500_piping_compliance": {
+                "verified": bool((station_piping.get("spec_4500_compliance") or {}).get("overall_compliant")),
+                "suction_dp_bar": (station_piping.get("spec_4500_compliance") or {}).get("suction_piping", {}).get("dp_piping_bar"),
+                "discharge_dp_bar": (station_piping.get("spec_4500_compliance") or {}).get("discharge_piping", {}).get("dp_piping_bar"),
+                "summary_tr": (
+                    f"4-NGTL 0-CS-M-002-4500 §5.1 borulama doğrulaması: Emiş ΔP="
+                    f"{((station_piping.get('spec_4500_compliance') or {}).get('suction_piping') or {}).get('dp_piping_bar', '-')} bar (≤ 1.0 bar, scrubber hariç), "
+                    f"Basma ΔP={((station_piping.get('spec_4500_compliance') or {}).get('discharge_piping') or {}).get('dp_piping_bar', '-')} bar (≤ 0.5 bar, soğutucu hariç)."
+                ),
+            },
         },
         "equipment": [
             {
@@ -1694,9 +2497,11 @@ def calculate_station_process_model(
                 "parameters": [
                     {"param": "total_mass_flow_kgs", "label": "Toplam Gaz Debisi", "value": round(mass_flow_kgs, 2), "unit": "kg/s", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Debi Girişi + Gerçek EOS Birim Çevrimi"},
                     {"param": "inlet_pressure_bar", "label": "Giriş Basıncı", "value": round(p_in, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi p_in"},
-                    {"param": "unit_cap_cyclone_kgs", "label": "Birim Siklon Referans Kapasitesi", "value": unit_cap_cyclone, "unit": "kg/s", "source": "fixed_default", "origin_detail": "Sabit Default Referans Kapasite (22.0 kg/s / ünite)"},
-                    {"param": "operating_count", "label": "Çalışan Siklon Sayısı (N)", "value": cyclone_op_count, "unit": "adet", "source": cyc_cnt_src, "origin_detail": "ceil(Debi / 22 kg/s) veya 3D Kullanıcı Seçimi (+1 Yedek)"},
-                    {"param": "pressure_drop_bar", "label": "Siklon Basınç Kaybı (ΔP)", "value": dp_cyclone, "unit": "bar", "source": "station_3d_calc", "origin_detail": "0.30 × (q_ünite / 22)^1.8 dinamik yük kaybı denklemi"},
+                    {"param": "unit_cap_cyclone_kgs", "label": "Birim Siklon Tasarım Kapasitesi", "value": mfs_sizing["unit_design_capacity_kgs"], "unit": "kg/s", "source": "station_3d_calc", "origin_detail": f"Dinamik boyutlandırma: Toplam Debi / N = %{mfs_sizing['unit_capacity_pct']} ünite yükü ({cyclone_op_count} çalışan + 1 yedek)"},
+                    {"param": "operating_count", "label": "Çalışan Siklon Sayısı (N)", "value": cyclone_op_count, "unit": "adet", "source": cyc_cnt_src, "origin_detail": "PFD 4000 & Özel §4.8.2 (2+1 %50) veya 3D Kullanıcı Seçimi (+1 Yedek)"},
+                    {"param": "pressure_drop_bar", "label": "Siklon Temiz Basınç Kaybı (ΔP)", "value": dp_cyclone, "unit": "bar", "source": "station_3d_calc", "origin_detail": f"Çoklu siklon tüp hızı ΔP (Spec 5260: temiz ≤ 400 mbar, kirli alarm 700 mbar)"},
+                    {"param": "efficiency_spec", "label": "Ayırma Hassasiyeti & Mekanik", "value": f"≥ 8 µm %100 · ≥ 4 µm %90 · {mfs_sizing['corrosion_allowance_mm']} mm CA", "unit": "ASME VIII", "source": "fixed_default", "origin_detail": "Spec 4-NGTL 0-GN-P-002-5260 Attachment-I (Spherical Fixed Head, SS iç cıvata)"},
+                    {"param": "heat_tracing_min_c", "label": "Blow-Flask & Heat Tracing", "value": mfs_sizing["heat_tracing"]["min_temp_c"], "unit": "°C min", "source": "fixed_default", "origin_detail": f"Spec 4500 §5.2 yatay blow-flask ({mfs_sizing['blow_flask']['diameter_mm']}×{mfs_sizing['blow_flask']['length_mm']} mm) + 2 seviye şişesi + ≥ 2 °C ısıtma"},
                     {"param": "inlet_pipe_size", "label": "MFS Giriş Bağlantı Çapı", "value": p_lines["cyclone_branch"]["nominal_size_in"], "unit": "NPS", "source": p_lines["cyclone_branch"].get("diameter_source", "station_3d_calc"), "origin_detail": f"L-103 tekil giriş branşmanı (min {p_lines['cyclone_branch'].get('velocity_min_nominal_in')} @ v ≤ {max_velocity_ms:.1f} m/s)"},
                     {"param": "outlet_pipe_size", "label": "MFS Çıkış Bağlantı Çapı", "value": p_lines["cyclone_outlet_branch"]["nominal_size_in"], "unit": "NPS", "source": p_lines["cyclone_outlet_branch"].get("diameter_source", "station_3d_calc"), "origin_detail": f"L-103A tekil çıkış branşmanı (min {p_lines['cyclone_outlet_branch'].get('velocity_min_nominal_in')} @ v ≤ {max_velocity_ms:.1f} m/s)"},
                 ],
@@ -1707,9 +2512,11 @@ def calculate_station_process_model(
                 "name": "Hassas Kartuş / Koaleser Filtreler (CFS)",
                 "parameters": [
                     {"param": "inlet_pressure_bar", "label": "CFS Giriş Basıncı", "value": p_post_cyclone, "unit": "bar(a)", "source": "station_3d_calc", "origin_detail": "p_in − ΔP_siklon dinamik düğüm basıncı (N03)"},
-                    {"param": "unit_cap_filter_kgs", "label": "Birim Filtre Referans Kapasitesi", "value": unit_cap_filter, "unit": "kg/s", "source": "fixed_default", "origin_detail": "Sabit Default Referans Kapasite (18.0 kg/s / ünite)"},
-                    {"param": "operating_count", "label": "Çalışan Filtre Sayısı (N)", "value": filter_op_count, "unit": "adet", "source": flt_cnt_src, "origin_detail": "ceil(Debi / 18 kg/s) veya 3D Kullanıcı Seçimi (+1 Yedek)"},
-                    {"param": "clean_dp_bar", "label": "Temiz Filtre Basınç Kaybı (ΔP)", "value": dp_filter, "unit": "bar", "source": "station_3d_calc", "origin_detail": "0.22 × (q_ünite / 18)^1.5 dinamik yük kaybı denklemi"},
+                    {"param": "unit_cap_filter_kgs", "label": "Birim Filtre Tasarım Kapasitesi", "value": cfs_sizing["unit_design_capacity_kgs"], "unit": "kg/s", "source": "station_3d_calc", "origin_detail": f"Dinamik boyutlandırma: Toplam Debi / N = %{cfs_sizing['unit_capacity_pct']} ünite yükü ({filter_op_count} çalışan + 1 yedek)"},
+                    {"param": "operating_count", "label": "Çalışan Filtre Sayısı (N)", "value": filter_op_count, "unit": "adet", "source": flt_cnt_src, "origin_detail": "PFD 4000 & Özel §4.8.2 (2+1 %50) veya 3D Kullanıcı Seçimi (+1 Yedek)"},
+                    {"param": "clean_dp_bar", "label": "Temiz Filtre Basınç Kaybı (ΔP)", "value": dp_filter, "unit": "bar", "source": "station_3d_calc", "origin_detail": "Kartuş yükü ΔP (Spec 5210 §4.3 temiz ≤ 140 mbar; Özel §4.8.2 değişim 300 mbar / patlama 3 bar)"},
+                    {"param": "efficiency_spec", "label": "Filtrasyon & Kapak / Mekanik", "value": f"≥ 3 µm %99.8 · QOC + Davit · ASME VIII CE", "unit": "1.5× Test", "source": "fixed_default", "origin_detail": "Spec 5210 §4.4 & Özel §4.8.2 (10 µm sıvı, 3 set yedek filtre + conta, ISO NR 80)"},
+                    {"param": "heat_tracing_min_c", "label": "Blow-Flask & Heat Tracing", "value": cfs_sizing["heat_tracing"]["min_temp_c"], "unit": "°C min", "source": "fixed_default", "origin_detail": f"Spec 5210 §4.1 yatay blow-flask ({cfs_sizing['blow_flask']['diameter_mm']}×{cfs_sizing['blow_flask']['length_mm']} mm) + izolasyon braketli ≥ 2 °C ısıtma"},
                     {"param": "inlet_pipe_size", "label": "CFS Giriş Bağlantı Çapı", "value": p_lines["filter_branch"]["nominal_size_in"], "unit": "NPS", "source": p_lines["filter_branch"].get("diameter_source", "station_3d_calc"), "origin_detail": f"L-104 tekil giriş branşmanı (min {p_lines['filter_branch'].get('velocity_min_nominal_in')} @ v ≤ {max_velocity_ms:.1f} m/s)"},
                     {"param": "outlet_pipe_size", "label": "CFS Çıkış Bağlantı Çapı", "value": p_lines["filter_outlet_branch"]["nominal_size_in"], "unit": "NPS", "source": p_lines["filter_outlet_branch"].get("diameter_source", "station_3d_calc"), "origin_detail": f"L-104A tekil çıkış branşmanı (min {p_lines['filter_outlet_branch'].get('velocity_min_nominal_in')} @ v ≤ {max_velocity_ms:.1f} m/s)"},
                 ],
@@ -1723,10 +2530,14 @@ def calculate_station_process_model(
                     {"param": "suction_pressure_bar", "label": "Emiş Basıncı (p_in)", "value": round(p_in, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Giriş Basıncı"},
                     {"param": "discharge_pressure_bar", "label": "Basma Basıncı (p_out)", "value": round(p_out, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Çıkış Basıncı"},
                     {"param": "suction_temp_c", "label": "Emiş Sıcaklığı (t_in)", "value": round(t_in, 1), "unit": "°C", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Giriş Sıcaklığı"},
-                    {"param": "operating_count", "label": "Çalışan Ünite Sayısı", "value": comp_op_count, "unit": "adet", "source": comp_cnt_src, "origin_detail": "Tasarım Sekmesi num_units veya 3D Sekmesi Ünite Seçimi (+1 Yedek)"},
-                    {"param": "polytropic_efficiency_pct", "label": "Politropik Verim", "value": polytropic_eff, "unit": "%", "source": "design_tab" if (_has_explicit_value(inputs, "poly_eff") or design_eff) else "fixed_default", "origin_detail": "Tasarım Sekmesi Politropik Verimi (yoksa %82.5 default)"},
+                    {"param": "operating_count", "label": "Çalışan Ünite Sayısı", "value": comp_op_count, "unit": "adet", "source": comp_cnt_src, "origin_detail": "Tasarım Sekmesi / Gerçek Güç & Debi Zarfı (+1 Yedek)"},
+                    {"param": "polytropic_efficiency_pct", "label": "Politropik Verim", "value": polytropic_eff, "unit": "%", "source": "design_tab" if (_has_explicit_value(inputs, "poly_eff") or design_eff) else "fixed_default", "origin_detail": "Tasarım Sekmesi Politropik Verimi (Özel §6.1.2 hedef ≥ %85)"},
                     {"param": "discharge_temp_c", "label": "Kompresör Çıkış Sıcaklığı (T_out)", "value": t_cooler_inlet_c, "unit": "°C", "source": "station_3d_calc", "origin_detail": "Tasarım Sekmesi / Canlı ThermoEngine Gerçek Gaz Politropik Sıkıştırma Çıkışı"},
                     {"param": "total_power_mw", "label": "Toplam Mil Gücü", "value": round(total_power_kw / 1000.0, 2), "unit": "MW", "source": "station_3d_calc", "origin_detail": "Tasarım Sekmesi / ThermoEngine Mil Gücü Hesabı"},
+                    {"param": "unit_valves_spec", "label": "Ünite Vana & Geçici Strainer", "value": f"2×MOV (≤{comp_aux['unit_valves_and_strainer']['motor_actuator_stroke_max_s']:.0f}s) + Strainer", "unit": "Spec 4500 §5.5", "source": "fixed_default", "origin_detail": "Emiş/Basma seri çift blok ayrık gövde küresel vana + emiş geçici konik strainer + non-slam çek vana"},
+                    {"param": "dgs_spec", "label": "Kuru Gaz Salmastrası (DGS)", "value": f"Duplex 1 µm + PDCV + Carbon Seal", "unit": "API 692", "source": "fixed_default", "origin_detail": comp_aux["dry_gas_seal"]["spare_sets_required"]},
+                    {"param": "lube_oil_spec", "label": "Yağlama Yağı & Tank Tutma", "value": f"{comp_aux['lube_oil_system']['flow_lpm_per_unit']} L/dk ({comp_aux['lube_oil_system']['reservoir_min_working_volume_l']:.0f} L min)", "unit": "10 µm Duplex", "source": "station_3d_calc", "origin_detail": f"≥5 dk tutma + ≥51 cm²/(L/dk) ({comp_aux['lube_oil_system']['reservoir_min_surface_area_cm2']:.0f} cm²) + 2-fan hava soğutucu + UPS DC pompa"},
+                    {"param": "air_intake_spec", "label": "Türbin Hava Emiş & Gürültü", "value": f"≤ 8 mbar (temiz) · 85 dBA", "unit": "NR 80", "source": "fixed_default", "origin_detail": "Kendini temizleyen ters darbe filtre (7.5/12.5 mbar) + %120 VFD elektrik marş motoru"},
                 ],
             },
             {
@@ -1736,7 +2547,19 @@ def calculate_station_process_model(
                 "parameters": [
                     {"param": "installed_units", "label": "Kurulu Tren Sayısı (N+1)", "value": comp_total_count, "unit": "adet", "source": "station_3d_calc", "origin_detail": "Çalışan Kompresör Sayısı + 1 Yedek"},
                     {"param": "length_m", "label": "Bina Uzunluğu", "value": shelter_length_m, "unit": "m", "source": "station_3d_calc", "origin_detail": "14.0 × Kurulu Ünite + 8.0 m dinamik yerleşim formülü"},
-                    {"param": "width_height_m", "label": "Bina Genişlik × Yükseklik", "value": f"{shelter_width_m} × {shelter_height_m}", "unit": "m", "source": "fixed_default", "origin_detail": "Sabit Default Hol Açıklığı (24.0 m × 12.5 m, 15t vinç)"},
+                    {"param": "width_height_m", "label": "Bina Genişlik × Yükseklik", "value": f"{shelter_width_m} × {shelter_height_m}", "unit": "m", "source": "fixed_default", "origin_detail": "Sabit Default Hol Açıklığı (24.0 m × 12.5 m, ≤ 80 °C UPS havalandırma)"},
+                    {"param": "crane_capacity_tons", "label": "Tavan Gezer Vinç Kapasitesi", "value": comp_aux["crane_capacity_tons"], "unit": "ton", "source": "station_3d_calc", "origin_detail": "Ünite mil gücüne bağlı dinamik kaldırma kapasitesi"},
+                ],
+            },
+            {
+                "key": "fuel_gas",
+                "tag": "FG-101",
+                "name": "Yakıt Gazı Şartlandırma & Ölçüm Skidi",
+                "parameters": [
+                    {"param": "takeoff_point", "label": "Yakıt Gazı Çekiş Noktası", "value": "CFS Çıkışı ↔ Soğutucu Girişi", "unit": "Özel §4.8.5", "source": "fixed_default", "origin_detail": comp_aux["fuel_gas_system"]["takeoff_location"]},
+                    {"param": "lhv_kj_kg", "label": "ISO 6976 Alt Isıl Değer (LHV)", "value": comp_aux["fuel_gas_system"]["lhv_kj_kg"], "unit": "kJ/kg", "source": "station_3d_calc", "origin_detail": "Tasarım Sekmesi yakıt gazı kompozisyonu ile ISO 6976:2016 gerçek gaz hesabı"},
+                    {"param": "fuel_per_unit_kgh", "label": "Tren Başına Yakıt Debisi (%100 / %120 Tasarım)", "value": f"{comp_aux['fuel_gas_system']['fuel_per_unit_kgh']} / {comp_aux['fuel_gas_system']['design_fuel_per_unit_kgh']}", "unit": "kg/h", "source": "station_3d_calc", "origin_detail": f"Termal Verim %{comp_aux['fuel_gas_system']['thermal_efficiency_pct']} · Spec 4500 §8.5 (%120 tasarım faktörü)"},
+                    {"param": "conditioning_spec", "label": "1 µm Seperatör + Eşanjör (1+1)", "value": "99.8% @ 1 µm · 20 ± 5 °C", "unit": "316 SS", "source": "fixed_default", "origin_detail": "Yatay sock seperatör + ≥2 °C blow-flask + 1+1 glikol ısıtıcı + 2×100% regülatör + 2 set yedek filtre"},
                 ],
             },
             {
@@ -1749,10 +2572,23 @@ def calculate_station_process_model(
                     {"param": "cooler_air_temp_c", "label": "Soğutma Havası Giriş Sıcaklığı", "value": round(cooler_air_temp_c, 1), "unit": "°C", "source": cooler_air_src, "origin_detail": "3D Kullanıcı Girişi (girilmezse Tasarım Sekmesi Ortam Sıcaklığı ambient_temp)"},
                     {"param": "cooler_max_outlet_temp_c", "label": "Maksimum Gaz Çıkış Sıcaklığı Sınırı", "value": round(cooler_max_outlet_temp_c, 1), "unit": "°C", "source": cooler_max_out_src, "origin_detail": "3D Kullanıcı Girişi (girilmezse 45.0 °C default iletim sınırı)"},
                     {"param": "outlet_temp_c", "label": "Gerçekleşen Gaz Çıkış Sıcaklığı", "value": round(t_target_pipeline, 1), "unit": "°C", "source": "station_3d_calc", "origin_detail": "Maks. gaz çıkış sınırı ile hava sıcaklığı yaklaşım (ΔT_min) kontrolü sonucu"},
-                    {"param": "pressure_drop_bar", "label": "Tüp Demeti Basınç Kaybı (ΔP)", "value": dp_cooler, "unit": "bar", "source": "fixed_default", "origin_detail": "Sabit Default API 661 Tüp Demeti ΔP (0.40 bar)"},
+                    {"param": "pressure_drop_bar", "label": "Tüp Demeti Basınç Kaybı (ΔP)", "value": dp_cooler, "unit": "bar", "source": "station_3d_calc", "origin_detail": f"API 661 / Spec 5234 Dinamik Tüp Demeti ΔP (v={cooler_bundle_spec['tube_velocity_ms']} m/s · {cooler_bundle_spec['tubes_per_bay']} tüp/bay · 12 BWG)"},
                     {"param": "total_heat_duty_mw", "label": "Toplam Soğutma Isıl Yükü (Q)", "value": heat_duty_mw, "unit": "MW", "source": "station_3d_calc", "origin_detail": "m_dot × (h_giriş − h_çıkış) gerçek EOS entalpi farkı"},
                     {"param": "lmtd_c", "label": "Logaritmik Ortalama Sıcaklık Farkı (LMTD)", "value": round(cooler_lmtd_c, 2), "unit": "°C", "source": "station_3d_calc", "origin_detail": "Gaz (T_in→T_out) ve Hava (T_air,in→T_air,out) karşıt akış LMTD hesabı"},
                     {"param": "bay_count", "label": "Fin-Fan Bay Sayısı", "value": cooler_bays_count, "unit": "bay", "source": cooler_bays_src, "origin_detail": "Isıl yük ve LMTD düzeltmeli bay kapasitesinden dinamik hesap (veya 3D kullanıcı seçimi)"},
+                    {"param": "cooler_spec_5234", "label": "Fin-Fan & TCV Tasarım Sınırları", "value": "Forced-Draft · VFD IEEE 519 (≥%95) · 50 m/s", "unit": "Spec 5234 / §5.14", "source": "fixed_default", "origin_detail": "40°C/45°C sınır, Murphy titreşim anahtarı, 2.0 mm alüminyum panjurlu güneşlik, ON/OFF Gas-over-Oil Fail-Open TCV"},
+                ],
+            },
+            {
+                "key": "station_utilities",
+                "tag": "UTIL-101..401",
+                "name": "İstasyon Yardımcı Sistemleri (Power/Utility Gas, Hava, Glikol & Emniyet)",
+                "parameters": [
+                    {"param": "power_gas_design_bar", "label": "Power Gas & Metanol Dehidratör", "value": station_utilities["power_gas"]["design_pressure_bar"], "unit": "bar(g) (110% MAOP)", "source": "station_3d_calc", "origin_detail": f"Hammerschmidt ΔT={station_utilities['power_gas']['methanol_dehydrator']['hammerschmidt_depression_c']} °C · 1\" drop + 1/2\" SS tubing"},
+                    {"param": "utility_gas_demand_sm3h", "label": "Kullanım Gazı Skidi (Özel §4.8.6 / 4500 §9)", "value": station_utilities["utility_gas"]["calculated_demand_sm3h"], "unit": "Sm³/h (Min 1485)", "source": "station_3d_calc", "origin_detail": "Gas Cooler giriş çekişi · Double-pipe + Harici MCC Elektrikli Isıtıcı + Odorizer + 2×100% PRV + PE hat"},
+                    {"param": "compressed_air_spec", "label": "Enstrüman Havası & ASME/CE Tank (4320/4330)", "value": f"{station_utilities['compressed_air']['demand_nm3h']} Nm³/h · {station_utilities['compressed_air']['receiver_volume_m3']} m³", "unit": "-40 °C Çiy Noktası", "source": "station_3d_calc", "origin_detail": f"1+1 VFD Eş-Yaşlandırma · Heatless Desikant Kurutucu · ≥10 dk holdup ({station_utilities['compressed_air']['holdup_time_min']} dk) · ≥304 SS"},
+                    {"param": "heating_glycol_kw", "label": "Isıtma Sistemi (4500 §11 · 90/70 °C Glikol)", "value": station_utilities["heating_glycol"]["heat_load_kw"], "unit": "kWth", "source": "station_3d_calc", "origin_detail": "2×70% Gaz Kazanı · 3×50% İnline Pompa · %50/%50 Etilen Glikol-Su"},
+                    {"param": "relief_bdv_bypass_4500", "label": "PSV/BDV (≥35 m / ≤60 s), Loading & Bypass (§5.9-5.13)", "value": "PSV ≥35m · BDV 1 barg/60s · Check Bypass", "unit": "Spec 4500", "source": "fixed_default", "origin_detail": "Dual-Outlet PSV (2\" pilot) · Gas-over-Oil Plug BDV · Suction MOV Loading · Ana Hat Non-Slam Check Bypass"},
                 ],
             },
             {
@@ -1813,11 +2649,41 @@ def calculate_station_process_model(
             {
                 "key": "condensate_system",
                 "tag": "TK-101",
-                "name": "Kondensat Toplama ve Depolama Tankı",
+                "name": "Kondensat Toplama ve Depolama Tankı (Spec 5250 / DIN 6608)",
                 "parameters": [
                     {"param": "mass_flow_kgs", "label": "İstasyon Gaz Debisi", "value": round(mass_flow_kgs, 2), "unit": "kg/s", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Toplam İstasyon Debisi"},
-                    {"param": "specific_condensate_factor", "label": "Özgül Sıvı Tutma Katsayısı", "value": 0.008, "unit": "m³/h / (kg/s)", "source": "fixed_default", "origin_detail": "Sabit Default Tasarım Kabulü (min. 10 m³, 2.5 gün depolama)"},
-                    {"param": "collection_tank_volume_m3", "label": "Kondensat Tank Hacmi", "value": condensate_tank_volume_m3, "unit": "m³", "source": "station_3d_calc", "origin_detail": "max(10.0, q_sıvı × 24 × 2.5) dinamik tank hacmi"},
+                    {"param": "spec_5250_pump", "label": "Ex-Proof Dalgıç Pompa (Spec 5250 / 4190)", "value": f"{cond_pump_flow_m3h}±20% m³/h @ 5 m · {cond_pump_motor_kw} kW", "unit": "DIN 6608 / St37", "source": "station_3d_calc", "origin_detail": f"Spec 5250 ({standard_flow_sm3h} Sm³/h): baz {spec_5250_base_tank_m3} m³ · 15× blow-flask={min_15x_blowflask_m3} m³ · 2 bar hidrostatik test"},
+                    {"param": "collection_tank_volume_m3", "label": "Kondensat Tank Hacmi", "value": condensate_tank_volume_m3, "unit": "m³", "source": "station_3d_calc", "origin_detail": "max(Spec 5250, 15× blow-flask, 2.5 gün depolama) dinamik tank hacmi"},
+                ],
+            },
+            {
+                "key": "pigging",
+                "tag": "PIG-R / PIG-L",
+                "name": "PIG Kovanları, Ana Hat Blok & İstasyon Yan Vanaları (4500 §5.4, §5.12–13)",
+                "parameters": [
+                    {"param": "dp_interlock_barg", "label": "ΔP Açılma Kilidi & Aktüatör", "value": "0.5–4.0 barg · Gas-over-Oil", "unit": "Spec 4500 §5.4", "source": "fixed_default", "origin_detail": "İstasyon yan vanaları Fail-Closed · Ana hat blok vanası Fail-Open · ≥%50 branşmanda scraper-barred tee"},
+                    {"param": "loading_and_bypass", "label": "Loading Line & Station Bypass Check", "value": "Loading (Globe+Ball) · Non-Slam Check Bypass", "unit": "§5.12–§5.13", "source": "fixed_default", "origin_detail": "Suction MOV Loading baypası + Ana hat çapında soğutucu sonrası/USM öncesi Non-Slam Piston/Nozul çekvalf"},
+                ],
+            },
+            {
+                "key": "fire_water",
+                "tag": "FW-101",
+                "name": "Yangın Suyu, F&G Algılama & HVAC Sistemi (4500 §12–14)",
+                "parameters": [
+                    {"param": "tank_volume_m3", "label": "Yangın Suyu Depolama Tankı", "value": 300.0, "unit": "m³", "source": "fixed_default", "origin_detail": "NFPA 20 (1 Elektrikli + 1 Dizel + Jockey) · Çevre Ring Hidrant · Türbin kabini otomatik CO2"},
+                ],
+            },
+            {
+                "key": "spec_4500_piping_compliance",
+                "tag": "4500 §5.1",
+                "name": "Borulama Hidroliği, ANSI B31.3/B31.8 & Akustik Doğrulama",
+                "parameters": [
+                    {"param": "suction_equiv_length_m", "label": "Emiş Eşdeğer Boru Metrajı", "value": round(suction_equiv_length_m, 1), "unit": "m", "source": "user_input" if suct_len_user_override else "fixed_default", "origin_detail": "3D Sekmesi Kullanıcı Girişi (yoksa 120.0 m default eşdeğer uzunluk)"},
+                    {"param": "discharge_equiv_length_m", "label": "Basma Eşdeğer Boru Metrajı", "value": round(discharge_equiv_length_m, 1), "unit": "m", "source": "user_input" if disch_len_user_override else "fixed_default", "origin_detail": "3D Sekmesi Kullanıcı Girişi (yoksa 150.0 m default eşdeğer uzunluk)"},
+                    {"param": "suction_dp_piping_bar", "label": "Emiş Borulama ΔP (Scrubber Hariç)", "value": ((station_piping.get("spec_4500_compliance") or {}).get("suction_piping") or {}).get("dp_piping_bar"), "unit": "bar", "source": "station_3d_calc", "origin_detail": "Natural Gas Flow Calc 20-segment compressible Darcy-Weisbach + Churchill (sınır ≤ 1.0 bar)"},
+                    {"param": "discharge_dp_piping_bar", "label": "Basma Borulama ΔP (Soğutucu Hariç)", "value": ((station_piping.get("spec_4500_compliance") or {}).get("discharge_piping") or {}).get("dp_piping_bar"), "unit": "bar", "source": "station_3d_calc", "origin_detail": "Sıcak+Soğuk 20-segment compressible Darcy-Weisbach + Churchill (sınır ≤ 0.5 bar)"},
+                    {"param": "stress_b313_b318_pct_smys", "label": "B31.8 Çember Gerilmesi / B31.3 Sürdürülen", "value": ((station_piping.get("spec_4500_compliance") or {}).get("stress_b313_b318") or {}).get("b318_max_hoop_pct_smys"), "unit": "% SMYS", "source": "station_3d_calc", "origin_detail": "ASME B31.8 (P tasarım) + ANSI B31.3 (sürdürülen & ısıl gerilme + destek aralığı)"},
+                    {"param": "acoustic_max_mach", "label": "Akustik Maks. Mach & FIV Mom. Akısı", "value": ((station_piping.get("spec_4500_compliance") or {}).get("acoustic_pulsation") or {}).get("max_mach"), "unit": "Ma", "source": "station_3d_calc", "origin_detail": "EOS ses hızı Mach + ρ·v² EI FIV + Strouhal vorteks taraması"},
                 ],
             },
         ],
@@ -1855,13 +2721,8 @@ def calculate_station_process_model(
         },
         "equipment_sizing": {
             "cyclones": {
-                "operating_count": cyclone_op_count,
-                "installed_count": cyclone_total_count,
-                "configuration": f"{cyclone_op_count} Çalışan + 1 Yedek",
-                "flow_per_unit_kgs": round(flow_per_cyclone, 2),
-                "pressure_drop_bar": dp_cyclone,
-                "vessel_diameter_mm": 1200,
-                "liquid_knockout_pct": 99.5,
+                **mfs_sizing,
+                "configuration": f"{cyclone_op_count} Çalışan + 1 Yedek ({cyclone_total_count} x %{mfs_sizing['unit_capacity_pct']})",
                 "inlet_pipe_size": p_lines["cyclone_branch"]["nominal_size_in"],
                 "inlet_velocity_ms": p_lines["cyclone_branch"]["actual_velocity_ms"],
                 "inlet_min_pipe_size": p_lines["cyclone_branch"]["velocity_min_nominal_in"],
@@ -1874,12 +2735,8 @@ def calculate_station_process_model(
                 "outlet_pipe_source": p_lines["cyclone_outlet_branch"]["diameter_source"],
             },
             "cartridge_filters": {
-                "operating_count": filter_op_count,
-                "installed_count": filter_total_count,
-                "configuration": f"{filter_op_count} Çalışan + 1 Yedek",
-                "flow_per_unit_kgs": round(flow_per_filter, 2),
-                "clean_dp_bar": dp_filter,
-                "filter_efficiency_micron": "0.3 µm (%99.98)",
+                **cfs_sizing,
+                "configuration": f"{filter_op_count} Çalışan + 1 Yedek ({filter_total_count} x %{cfs_sizing['unit_capacity_pct']})",
                 "inlet_pipe_size": p_lines["filter_branch"]["nominal_size_in"],
                 "inlet_velocity_ms": p_lines["filter_branch"]["actual_velocity_ms"],
                 "inlet_min_pipe_size": p_lines["filter_branch"]["velocity_min_nominal_in"],
@@ -1911,14 +2768,28 @@ def calculate_station_process_model(
                 "surge_limit_flow_kgs": surge_flow_limit,
                 "anti_surge_valve_sizing": asv_sizing,
                 "anti_surge_valve_warnings": asv_warnings,
+                "unit_valves_and_strainer": comp_aux["unit_valves_and_strainer"],
+                "dry_gas_seal": comp_aux["dry_gas_seal"],
+                "fuel_gas_system": comp_aux["fuel_gas_system"],
+                "lube_oil_system": comp_aux["lube_oil_system"],
+                "air_intake_and_enclosure": comp_aux["air_intake_and_enclosure"],
+                "design_warnings": comp_aux["design_warnings"],
+            },
+            "fuel_gas": {
+                **comp_aux["fuel_gas_system"],
+                "operating_units": comp_op_count,
+                "installed_units": comp_total_count,
             },
             "compressor_building": {
                 "width_m": shelter_width_m,
                 "length_m": shelter_length_m,
                 "height_m": shelter_height_m,
                 "area_m2": round(shelter_width_m * shelter_length_m, 1),
-                "crane_capacity_tons": 15.0,
-                "acoustic_attenuation_dba": "85 dBA @ 1m",
+                "crane_capacity_tons": comp_aux["crane_capacity_tons"],
+                "acoustic_attenuation_dba": "≤ ISO NR 80 / 85 dBA @ 1m",
+                "enclosure_max_temp_c": 80.0,
+                "enclosure_ventilation_ups": True,
+                "fire_and_gas_system": comp_aux["air_intake_and_enclosure"]["fire_and_gas"],
             },
             "air_coolers": {
                 "bay_count": cooler_bays_count,
@@ -1934,6 +2805,29 @@ def calculate_station_process_model(
                 "lmtd_c": round(cooler_lmtd_c, 2),
                 "compressor_outlet_coupled": True,
                 "pressure_drop_bar": dp_cooler,
+                "tube_bundle": {
+                    "allowable_dp_bar": cooler_bundle_spec["allowable_dp_bar"],
+                    "tube_velocity_ms": cooler_bundle_spec["tube_velocity_ms"],
+                    "reynolds": cooler_bundle_spec["reynolds"],
+                    "tubes_per_row": cooler_bundle_spec["tubes_per_row"],
+                    "tubes_per_bay": cooler_bundle_spec["tubes_per_bay"],
+                    "tube_passes": cooler_bundle_spec["tube_passes"],
+                    "tube_length_m": cooler_bundle_spec["tube_length_m"],
+                    "tube_wall_bwg": cooler_bundle_spec["tube_wall_bwg"],
+                    "nozzle_rating": cooler_bundle_spec["nozzle_rating"],
+                },
+                "draft_type": cooler_bundle_spec["draft_type"],
+                "fan_blades_min": cooler_bundle_spec["fan_blades_min"],
+                "max_fan_tip_speed_ms": cooler_bundle_spec["max_fan_tip_speed_ms"],
+                "fan_motor_max_kw": cooler_bundle_spec["fan_motor_max_kw"],
+                "noise_limit_150m_dba": cooler_bundle_spec["noise_limit_150m_dba"],
+                "design_reference_ambient_c": cooler_bundle_spec["design_reference_ambient_c"],
+                "max_design_gas_outlet_c": cooler_bundle_spec["max_design_gas_outlet_c"],
+                "vfd_drive_spec": cooler_bundle_spec["vfd_drive_spec"],
+                "vibration_switches": cooler_bundle_spec["vibration_switches"],
+                "louver_and_sunshade": cooler_bundle_spec["louver_and_sunshade"],
+                "isolation_and_drain": cooler_bundle_spec["isolation_and_drain"],
+                "tcv_control_spec": cooler_bundle_spec["tcv_control_spec"],
                 "inlet_header_pipe_size": p_lines["cooler_inlet"]["nominal_size_in"],
                 "riser_pipe_size": p_lines["cooler_bay_risers"]["nominal_size_in"],
                 "bay_inlet_header_pipe_size": p_lines["cooler_bay_inlet_header"]["nominal_size_in"],
@@ -1946,14 +2840,25 @@ def calculate_station_process_model(
                 "cooler_bypass_warnings": tcv_warnings,
                 "bypass_line": {
                     "pipe_size": p_lines["cooler_bypass"]["nominal_size_in"],
-                    "control_valve": "TCV Sıcaklık Kontrol Baypas Vanası (Note 17)",
-                    "purpose": "VFD fan devir düşümüne rağmen aşırı soğuma durumunda sıcak gaz karışımı",
+                    "control_valve": "TCV Termostatik ON/OFF Baypas · Gas-over-Oil Hidrolik · Fail-Open (4500 §5.14)",
+                    "purpose": "VFD fan devir düşümüne rağmen aşırı soğuma durumunda sıcak gaz karışımı (sinyal kaybında fail-open)",
                 },
             },
             "condensate_system": {
                 "collection_tank_volume_m3": condensate_tank_volume_m3,
+                "spec_5250_base_tank_m3": spec_5250_base_tank_m3,
+                "min_15x_blowflask_m3": min_15x_blowflask_m3,
                 "estimated_liquid_rate_m3h": liquid_condensate_rate_m3h,
-                "source_drains": "Siklon Seperatör ve Kartuş Filtre LCV Seviye Kontrol Vanaları",
+                "design_standard": "DIN 6608 / St37 (Spec 5250)",
+                "pump_flow_m3h": cond_pump_flow_m3h,
+                "pump_head_m": 5.0,
+                "pump_motor_kw": cond_pump_motor_kw,
+                "pump_spec": "Dikey Dalgıç Ex-Proof Pompa (Spec 4190)",
+                "hydrostatic_test_bar": 2.0,
+                "coating": "İç sentetik kaplama + Dış kömür katranı epoksi (5420)",
+                "instrumentation": "LI + LSL (pompa durdurma) + LSH (kontrol odası alarmı) + Alev tutuculu vent",
+                "source_drains": "MFS/CFS Blow-Flask → Atmosferik Siklon (Oto/Man) + Kompresör Ünite Drenajları",
+                "atmospheric_cyclone_separator": "Atmosferik Sıvı/Gaz Siklon Seperatörü + Flame Arrestor Vent + Seperatörler Arası Manuel Purge (4500 §5.2)",
                 "vent_protection": "Flame Arrester Emniyetli Atmosferik Vent Bacası (Note 14)",
             },
             "safety_relief_and_blowdown": {
@@ -1963,10 +2868,12 @@ def calculate_station_process_model(
                 "psv_overpressure_pct": psv_overpressure_pct,
                 "psv_back_pressure_bar": psv_back_pressure_bar,
                 "psv_valve_type": psv_valve_type,
+                "psv_pilot_supply": '2" Pilot Supply Hattı + Pulsasyon Snubber + Çift Çıkış + Field Test Connection + Önünde Küresel Vana (4500 §5.10 / Özel §5.4)',
                 "ambient_pressure_bar": round(p_atm_bar, 5),
                 "ambient_temp_c": round(ambient_temp_c, 2),
                 "relief_capacity_pct": 100.0,
                 "bdv_valves_count": esd_count,
+                "bdv_valve_type": "Lubricated Flanged Plug Vana · Gas-over-Oil (1 s/inch) · Fail-Open · ESD Sonrası Manuel Kapama (4500 §5.11)",
                 "depressurization_time_min": bdv_depressurization_time_min,
                 "flare_vent_stack_height_m": 35.0,
                 "psv_sizing": psv_sizing,
@@ -1998,14 +2905,78 @@ def calculate_station_process_model(
                 "receiver": pig_receiver_size,
                 "launcher": pig_launcher_size,
                 "signaller_type": "İntrusif Manyetik Pinger",
+                "side_valves": "Tam Geçişli Block & Bleed Küresel Vana · Gas-over-Oil Aktüatör · Sinyal Kaybında Fail-Closed (4500 §5.4)",
+                "mainline_block_valve": "Gas-over-Oil Aktüatör · Sinyal Kaybında Fail-Open (4500 §5.4)",
+                "dp_interlock_barg": "0.5–4.0 barg ayarlanabilir fark basınç açılma kilidi",
+                "scraper_barred_tees": True,
+                "loading_line": "4500 §5.12: Suction MOV baypası (küresel + kapalı limit switch'li globe vana)",
+                "station_bypass_check": "4500 §5.13: Ana hat çapında Suction–Discharge Non-Slam Piston/Nozul Çekvalf (Soğutucu sonrası, USM öncesi)",
+            },
+            "station_suction_valve": {
+                "tag": "SV-IN",
+                "name": "İstasyon Giriş Yan Vanası (Station Suction Side Valve)",
+                "nominal_size": p_lines["suction_header"]["nominal_size_in"],
+                "standard": "API 6D QSL 2 · Tam Geçişli Block & Bleed Küresel Vana",
+                "actuator": "Gas-over-Oil Hidrolik Aktüatör (Çift Selenoid · S.C.S. / ESD)",
+                "fail_action": "Sinyal / güç kaybında Fail-Closed (4500 §5.4)",
+                "dp_interlock": "0.5–4.0 barg ayarlanabilir ΔP açılma kilidi (4500 §5.4)",
+                "body_vent_class": "≥16\" gövde/mil/seat ventleri üzerinde 1500 Class küresel + sürgülü vana (Özel §5.4)",
+                "scraper_barred_tee": True,
+            },
+            "station_discharge_valve": {
+                "tag": "SV-OUT",
+                "name": "İstasyon Çıkış Yan Vanası (Station Discharge Side Valve)",
+                "nominal_size": p_lines["discharge_header"]["nominal_size_in"],
+                "standard": "API 6D QSL 2 · Tam Geçişli Block & Bleed Küresel Vana",
+                "actuator": "Gas-over-Oil Hidrolik Aktüatör (Çift Selenoid · S.C.S. / ESD)",
+                "fail_action": "Sinyal / güç kaybında Fail-Closed (4500 §5.4)",
+                "dp_interlock": "0.5–4.0 barg ayarlanabilir ΔP açılma kilidi (4500 §5.4)",
+                "body_vent_class": "≥16\" gövde/mil/seat ventleri üzerinde 1500 Class küresel + sürgülü vana (Özel §5.4)",
+                "scraper_barred_tee": True,
+            },
+            "mainline_block_valve": {
+                "tag": "MLBV-101",
+                "name": "Ana Hat Blok Vanası (Mainline Block Valve)",
+                "nominal_size": p_lines["mainline_inlet"]["nominal_size_in"],
+                "standard": "API 6D QSL 2 · Konsept 1-NGTL-0-CS-P-001-4000",
+                "actuator": "Gas-over-Oil Hidrolik Aktüatör (S.C.S. / ESD)",
+                "fail_action": "Sinyal kaybında Fail-Open (4500 §5.4)",
+                "dp_interlock": "0.5–4.0 barg ayarlanabilir ΔP açılma kilidi (4500 §5.4)",
+                "pit_installation": "Yeraltı vanalar vent & drenajlı vana çukurunda (Özel §5.4)",
+            },
+            "station_loading_line": {
+                "tag": "LV-101 / LV-102",
+                "name": "İstasyon Dolum Hattı ve Vanaları (Station Loading Line)",
+                "installed_around": "station_suction_valve",
+                "upstream_valve": "Flanşlı Küresel Vana (3\"+ redüktörlü · Özel §5.4)",
+                "downstream_valve": "Flanşlı Globe Vana · Kapalı Limit Switch Alarmı (4500 §5.12)",
+                "remote_control_ozel_5_4": True,
+                "note": "4500 §5.12 manuel küresel + limit-switch globe; Özel §5.4 uzaktan kontrollü açma-kapama",
+            },
+            "station_bypass_valve": {
+                "tag": "NRV-BP-101",
+                "name": "İstasyon By-Pass Hattı ve Non-Slam Çekvalf",
+                "nominal_size": p_lines["discharge_header"]["nominal_size_in"],
+                "valve_type": "Piston veya Nozul Tipi Non-Slam Çekvalf (4500 §5.13)",
+                "tie_in_location": "Station Discharge Header (Gaz Soğutucu sonrası, USM öncesi) ↔ Station Suction Header",
+                "slam_retarder_required": False,
             },
             "station_recycle": {
                 "pipe_size": p_lines["station_recycle"]["nominal_size_in"],
                 "max_recirculation_capacity_kgs": station_recycle_capacity_kgs,
                 "control_valve_type": "Kademeli Basınç Düşürücü Düşük Gürültülü Trim",
+                "inline_check_valve_nrv": True,
+                "power_gas_actuator_bottle": {
+                    "dedicated_bottle": True,
+                    "tubing_material": "316 SS",
+                    "stroke_time_s": "20–30 s ayarlanabilir",
+                    "fail_safe": "ESD / sinyal kaybında Fail-Closed",
+                },
+                "note13_purge_rack_separated": True,
                 "pcv_sizing": pcv_sizing,
                 "pcv_warnings": pcv_warnings,
             },
+            "station_utilities": station_utilities,
         },
         "nodes": nodes,
         "pipe_flows": pipe_flows,

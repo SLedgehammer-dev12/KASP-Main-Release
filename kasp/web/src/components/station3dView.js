@@ -157,13 +157,53 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   const coolerFansPerBay = Math.max(1, Math.min(4, Number(coolerGeometry.n_fans || 2)));
   const coolerFanDiameter = Math.max(0.8, Number(coolerGeometry.fan_diameter || 2.44));
 
-  // Front manifold corridor constants (declared before section 7 because the
-  // gas-cooler inlet tap uses headerEastX).
-  const compPitch = 52;
-  const compStartX = -120;
-  const lastCompX = compStartX + Math.max(0, numComps - 1) * compPitch;
-  const headerWestX = -132;
-  const headerEastX = Math.max(lastCompX + 22, -10);
+  // Front manifold corridor & North-yard spacing constants (declared early so
+  // upstream spines, filtration headers, cooler bays, and front headers stay synchronized).
+  const mfsInletX = -114;
+  const mfsVerticalX = -106;
+  const mfsX = -99;
+  const mfsOutletHeaderX = -91;
+  const mfsCenterZ = -84;
+  const mfsSpacingZ = numCyclones === 1 ? 0 : Math.max(8.5, 34 / Math.max(1, numCyclones - 1));
+  const mfsStartZ = mfsCenterZ - ((numCyclones - 1) * mfsSpacingZ) / 2;
+  const mfsEndZ = mfsCenterZ + ((numCyclones - 1) * mfsSpacingZ) / 2;
+  const mfsInletTieZ = mfsStartZ - 8;
+
+  const cfsPitchX = 11.5;
+  const cfsStartX = -68;
+  const cfsEndX = cfsStartX + Math.max(0, numFilters - 1) * cfsPitchX;
+  const cfsCenterX = (cfsStartX + cfsEndX) / 2;
+  const cfsHeaderY = 2.2;
+  const cfsVesselY = 4.8;
+  const cfsVesselZ = -78;
+  const cfsInletHeaderZ = -100;
+  const cfsOutletHeaderZ = -56;
+  const cfsOutletTieX = cfsEndX + 12;
+
+  const coolerX0 = Math.max(18, cfsOutletTieX + 26);
+  const coolerCenterZ = -88;
+  const coolerInletHeaderZ = -60;
+  const coolerOutletHeaderZ = -50;
+  const coolerReturnStartX = coolerX0 - 1.5;
+  const dischargeReturnZ = -40;
+  const northRecycleZ = Math.min(-116, mfsInletTieZ - 8);
+
+  // Spec 4-NGTL 0-CS-M-002-4500 §5.8 Station Recycle Control Valve Skid between cooled discharge and filtered suction
+  const stationRecycleTakeoffX = Math.max(cfsOutletTieX + 18, coolerReturnStartX - 4.0);
+  const stationRecycleValveX = (stationRecycleTakeoffX + cfsOutletTieX) / 2;
+  const stationRecycleZ = -32.5;
+  const stationRecycleY = 2.2;
+
+  // Compressors start from the Gas Cooler side (East) and extend Westward toward PIG traps as units are added.
+  const compPitch = 58;
+  const compStartX = Math.max(coolerX0 + 18, 36) + Math.max(0, numComps - 3) * 22;
+  const lastCompX = compStartX - Math.max(0, numComps - 1) * compPitch;
+  const compWestEdgeX = lastCompX - 28;
+  const headerWestX = Math.min(lastCompX - 18, cfsOutletTieX - 12);
+  const headerEastX = Math.max(compStartX + 18, coolerX0 + 12);
+  const frontSuctionZ = -18.5;
+  const frontRecycleZ = -13.5;
+  const frontDischargeZ = -8.5;
   const cutawayUnitIdx = Math.min(4, numComps);
   const cutawayUnitLabel = `COMPRESSOR-${String(cutawayUnitIdx).padStart(2, "0")}`;
 
@@ -460,6 +500,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   const matFanBlade = new THREE.MeshStandardMaterial({ color: 0x9aa4ae, roughness: 0.5, metalness: 0.55 });
   const matFinTube = new THREE.MeshStandardMaterial({ color: 0x2f7f6f, roughness: 0.5, metalness: 0.5 });
   const matInternalMesh = new THREE.MeshStandardMaterial({ color: 0x5d8f99, roughness: 0.6, metalness: 0.35, side: THREE.DoubleSide });
+  const matHeatTraceOrange = new THREE.MeshStandardMaterial({ color: 0xf97316, emissive: 0x9a3412, emissiveIntensity: 0.35, roughness: 0.35, metalness: 0.45 });
   const matFenceWire = new THREE.MeshBasicMaterial({ color: 0x334155, wireframe: true, transparent: true, opacity: 0.55 });
   const matFencePost = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5, metalness: 0.7 });
 
@@ -970,11 +1011,16 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   // ══════════════════ 5. SITE TERRAIN, ROADS & PERIMETER SECURITY FENCE ══════════════════
 
   // Main Process Gravel Pad with 2 buried-pipeline cutaway trench windows along the PIG-R / PIG-L axis (x = -196)
+  const desiredCoolerBayW = Math.max(6.8, Math.min(12.5, coolerTubesPerRow * 0.24), Math.max(rCoolerRiser, rCoolerOutletRiser) * 7.5);
+  const estCoolerEndX = coolerX0 + Math.max(18, Math.min(120, numCoolerBays * desiredCoolerBayW));
+  const westLoopRoadX = Math.min(-158, compWestEdgeX - 8, headerWestX - 8);
+  const westYardExtentX = Math.min(-220, westLoopRoadX - 36);
+  const eastYardExtentX = Math.max(240, estCoolerEndX + 100);
   const padShape = new THREE.Shape();
-  padShape.moveTo(-210, -155);
-  padShape.lineTo(210, -155);
-  padShape.lineTo(210, 155);
-  padShape.lineTo(-210, 155);
+  padShape.moveTo(westYardExtentX, -162);
+  padShape.lineTo(eastYardExtentX, -162);
+  padShape.lineTo(eastYardExtentX, 162);
+  padShape.lineTo(westYardExtentX, 162);
   padShape.closePath();
 
   const pigTrenchCorridors = [
@@ -1097,33 +1143,39 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   }
 
   // North Horizontal Road (Z = -24)
-  addRoadSegment(-152, -24, 122, -24, 7.0, 22);
+  const eastLoopRoadX = Math.max(132, headerEastX + 20);
+  const wasteSpurX = Math.max(92, estCoolerEndX + 14);
+  addRoadSegment(westLoopRoadX, -24, Math.max(eastLoopRoadX, wasteSpurX + 10), -24, 7.0, 22);
   createCadGreenLabel("7.0 M. WIDE ROAD", -72, 0.26, -24, 24, 2.8, -Math.PI / 2, 0, 0);
 
   // South Horizontal Road (Z = +48)
-  addRoadSegment(-152, 48, 128, 48, 7.0, 22);
+  addRoadSegment(westLoopRoadX, 48, Math.max(128, eastLoopRoadX), 48, 7.0, 22);
   createCadGreenLabel("7.0 M. WIDE ROAD", 28, 0.26, 48, 24, 2.8, -Math.PI / 2, 0, 0);
 
   // East & West Loop Connector Roads + South-East Entrance Road + NE Waste Storage Spur
-  addRoadSegment(122, -24, 122, 48, 7.0, 20);
-  addRoadSegment(-152, -24, -152, 48, 7.0, 20);
-  addRoadSegment(62, -24, 62, -92, 6.5, 20); // Spur to Temporary Waste Storage Area
+  addRoadSegment(eastLoopRoadX, -24, eastLoopRoadX, 48, 7.0, 20);
+  addRoadSegment(westLoopRoadX, -24, westLoopRoadX, 48, 7.0, 20);
+  addRoadSegment(wasteSpurX, -24, wasteSpurX, -98, 6.5, 20); // Spur to Temporary Waste Storage Area
   addRoadSegment(125, 48, 142, 125, 7.0, 22); // SE Main Gate Entrance Road
 
   // West access spur to the relocated pig trap / battery-limit yard.
-  addRoadSegment(-152, -24, -208, -24, 6.5, 20);
-  addRoadSegment(-208, -24, -208, -96, 6.5, 20);
-  addRoadSegment(-208, -96, -176, -96, 6.5, 18);
+  const westPigSpurX = Math.min(-208, westLoopRoadX - 18);
+  addRoadSegment(westLoopRoadX, -24, westPigSpurX, -24, 6.5, 20);
+  addRoadSegment(westPigSpurX, -24, westPigSpurX, -96, 6.5, 20);
+  addRoadSegment(westPigSpurX, -96, -176, -96, 6.5, 18);
 
   // ── Perimeter Double Security Wire Fence (Proses Tel Çiti) & Patrol Road ──
+  const fenceWestX = Math.min(-232, westPigSpurX - 24);
+  const fenceNorthEastX = Math.max(140, estCoolerEndX + 55);
+  const fenceEastX = Math.max(215, fenceNorthEastX + 45);
   const fenceBoundaryPoints = [
-    // Extended west boundary to accommodate the relocated pig trap yard.
-    new THREE.Vector3(-232, 0, -124),
-    new THREE.Vector3(78, 0, -124),
-    new THREE.Vector3(178, 0, 38), // Angled NE pipeline boundary matching screenshots (0), (1), (2)
-    new THREE.Vector3(178, 0, 128),
-    new THREE.Vector3(-232, 0, 128),
-    new THREE.Vector3(-232, 0, -124),
+    // Extended north and east boundaries for wider filtration/cooling spacing and the relocated pig trap yard.
+    new THREE.Vector3(fenceWestX, 0, -134),
+    new THREE.Vector3(fenceNorthEastX, 0, -134),
+    new THREE.Vector3(fenceEastX, 0, 38), // Angled NE pipeline boundary
+    new THREE.Vector3(fenceEastX, 0, 132),
+    new THREE.Vector3(fenceWestX, 0, 132),
+    new THREE.Vector3(fenceWestX, 0, -134),
   ];
 
   function buildPerimeterSecurityFence(pts) {
@@ -1315,11 +1367,12 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   );
 
   // Elevated North Perimeter Yellow Pipe Rack (Station Recycle & Purge Line - Note 13)
+  const recycleRackEastX = estCoolerEndX;
   createCadPipeRoute(
     [
-      new THREE.Vector3(-160, 4.2, -104),
-      new THREE.Vector3(-85, 4.2, -104),
-      new THREE.Vector3(55, 4.2, -104),
+      new THREE.Vector3(-164, 4.2, northRecycleZ),
+      new THREE.Vector3(-85, 4.2, northRecycleZ),
+      new THREE.Vector3(recycleRackEastX, 4.2, northRecycleZ),
     ],
     rAntiSurgeHeader,
     matYellowPipe,
@@ -1327,17 +1380,17 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       flowArrows: 5,
       equipKey: "station_recycle",
       lineKey: "station_recycle",
-      segmentTitle: "İstasyon Ana Sirkülasyon & Purge Hattı (Note 13)",
+      segmentTitle: "Kuzey Çevre Purge & Dengeleme Kolektörü (Note 13 — PCV-101'den Ayrı)",
       fromBoundary: "Station Discharge Header ( Gaz Soğutucu Çıkışı Sonrası )",
       toBoundary: "Station Suction Header ( PIG-R Çıkışı / MFS Önü )",
       registerParticlePath: true,
     }
   );
-  for (let rx = -155; rx <= 50; rx += 12) {
+  for (let rx = -158; rx <= recycleRackEastX - 4; rx += 14) {
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.4, 4.2, 0.4), matCadBlueSteel);
-    post.position.set(rx, 2.1, -104);
+    post.position.set(rx, 2.1, northRecycleZ);
     const cross = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.3, 2.2), matCadBlueSteel);
-    cross.position.set(rx, 4.0, -104);
+    cross.position.set(rx, 4.0, northRecycleZ);
     scene.add(post, cross);
   }
 
@@ -1468,14 +1521,98 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       registerParticlePath: true,
     }
   );
-  // Mainline by-pass Line Valve between suction (z = -82) and discharge (z = -62) tie-ins.
+  // Mainline Block Valve (MLBV-101 · Fail-Open Gas-over-Oil) + Side Valves (SV-IN, SV-OUT) + Loading (§5.12) + Station Bypass (§5.13).
   createValveStation(-190, 2.2, -72, rPigBypass * 1.08, {
     rotationY: Math.PI / 2,
     hasActuator: true,
     hasPlatform: true,
-    equipKey: "pig_receiver",
+    equipKey: "mainline_block_valve",
     valveColorMat: matRedFire,
   });
+  createValveStation(-186.5, 2.2, -82, rSuctHeader * 1.05, {
+    rotationY: 0,
+    hasActuator: true,
+    hasPlatform: true,
+    equipKey: "station_suction_valve",
+    valveColorMat: matValveBody,
+  });
+  createValveStation(-186.5, 2.2, -62, rDischHeader * 1.05, {
+    rotationY: 0,
+    hasActuator: true,
+    hasPlatform: true,
+    equipKey: "station_discharge_valve",
+    valveColorMat: matRedFire,
+  });
+
+  // Station Loading Line BESIDE Station Suction Side Valve (4500 §5.12 + Özel §5.4: horizontal bypass beside SV-IN, zero vertical overlap)
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(-189.0, 2.2, -82),
+      new THREE.Vector3(-189.0, 2.2, -79.2),
+      new THREE.Vector3(-184.0, 2.2, -79.2),
+      new THREE.Vector3(-184.0, 2.2, -82),
+    ],
+    Math.max(0.11, rPigBypass * 0.35),
+    matTealUtilityPipe,
+    {
+      equipKey: "station_loading_line",
+      segmentTitle: "İstasyon Dolum Hattı — Station Loading Line (4500 §5.12 / Özel §5.4)",
+      fromBoundary: "İstasyon Giriş Vanası (SV-IN) Memba",
+      toBoundary: "Station Suction Header (Yükleme/Dengeleme)",
+    }
+  );
+  createValveStation(-187.6, 2.2, -79.2, Math.max(0.14, rPigBypass * 0.42), {
+    rotationY: 0,
+    hasActuator: false,
+    hasPlatform: false,
+    equipKey: "station_loading_line",
+    valveColorMat: matValveBody,
+  });
+  createValveStation(-185.4, 2.2, -79.2, Math.max(0.14, rPigBypass * 0.42), {
+    rotationY: 0,
+    hasActuator: true,
+    hasPlatform: false,
+    equipKey: "station_loading_line",
+    valveColorMat: matCyanArrow,
+  });
+
+  // Station By-Pass Line & Non-Slam Piston/Nozzle Check Valve (4500 §5.13: exact same diameter as station header)
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(-152, 2.2, -62),
+      new THREE.Vector3(-152, 2.2, -82),
+    ],
+    rDischHeader,
+    matYellowPipe,
+    {
+      flowArrows: 1,
+      flangeEnds: true,
+      equipKey: "station_bypass_valve",
+      lineKey: "station_bypass",
+      segmentTitle: "İstasyon By-Pass Hattı & Non-Slam Çekvalf (4500 §5.13 · Header Çapında)",
+      fromBoundary: "Station Discharge Header",
+      toBoundary: "Station Suction Header",
+    }
+  );
+  const bypassCheckGroup = new THREE.Group();
+  bypassCheckGroup.position.set(-152, 2.2, -72);
+  const bypassNonSlamNrv = new THREE.Mesh(
+    new THREE.ConeGeometry(rDischHeader * 1.32, rDischHeader * 2.4, 20),
+    matFlangeSteel
+  );
+  bypassNonSlamNrv.rotation.x = -Math.PI / 2;
+  bypassCheckGroup.add(bypassNonSlamNrv);
+  [-rDischHeader * 1.25, rDischHeader * 1.25].forEach((dz) => {
+    const flg = new THREE.Mesh(
+      new THREE.CylinderGeometry(rDischHeader * 1.38, rDischHeader * 1.38, 0.24, 20),
+      matFlangeSteel
+    );
+    flg.rotation.x = Math.PI / 2;
+    flg.position.z = dz;
+    bypassCheckGroup.add(flg);
+  });
+  registerClickable(bypassCheckGroup, "station_bypass_valve");
+  scene.add(bypassCheckGroup);
   // PIG-R kicker & receiver balance line (Pig By-Pass ➔ PIG-R barrel).
   createCadPipeRoute(
     [
@@ -1530,10 +1667,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     [
       new THREE.Vector3(-190, 2.2, -82),
       new THREE.Vector3(-160, 2.2, -82),
-      new THREE.Vector3(-122, 2.2, -82),
-      new THREE.Vector3(-92, 2.2, -82),
-      new THREE.Vector3(-92, 2.2, -92),
-      new THREE.Vector3(-72, 2.2, -92),
+      new THREE.Vector3(-128, 2.2, -82),
+      new THREE.Vector3(-128, 2.2, mfsInletTieZ),
+      new THREE.Vector3(mfsInletX, 2.2, mfsInletTieZ),
     ],
     rSuctHeader,
     matYellowPipe,
@@ -1551,10 +1687,12 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   // Station Discharge Header Downstream Spine (Gas Cooler Cooled Return ➔ PSV & ESD Risers ➔ Ultrasonic Meter ➔ Pig By-Pass).
   createCadPipeRoute(
     [
-      new THREE.Vector3(-0.5, 1.6, -48),
-      new THREE.Vector3(-0.5, coolerReturnY, -48),
-      new THREE.Vector3(-98, coolerReturnY, -48),
-      new THREE.Vector3(-98, 2.2, -62),
+      new THREE.Vector3(coolerReturnStartX, 1.6, coolerOutletHeaderZ),
+      new THREE.Vector3(coolerReturnStartX, coolerReturnY, coolerOutletHeaderZ),
+      new THREE.Vector3(coolerReturnStartX, coolerReturnY, dischargeReturnZ),
+      new THREE.Vector3(-126, coolerReturnY, dischargeReturnZ),
+      new THREE.Vector3(-126, 2.2, dischargeReturnZ),
+      new THREE.Vector3(-126, 2.2, -62),
       new THREE.Vector3(-160, 2.2, -62),
       new THREE.Vector3(-190, 2.2, -62),
     ],
@@ -1573,15 +1711,15 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   createCadPipeCallout(
     `L-109 • STATION DISCHARGE HEADER (ANA OMURGA)`,
     `Gaz Soğutucu Çıkışı ➔ PSV/ESD ➔ USM ➔ PIG-L (${dischLine.nominal_size_in || '48"'})`,
-    -64,
+    -16,
     coolerReturnY + 4.4,
-    -48,
+    dischargeReturnZ,
     { width: 28, height: 4.7, pipeY: coolerReturnY + rDischHeader, accentColor: "#f59e0b", lineKey: "discharge_header", equipKey: "pig_launcher" }
   );
 
   // ── 1) PSV Riser Bank on Station Discharge Header (rising vertically on the line) ──
   const psvCount3d = Math.max(1, Math.min(4, Number(eq.safety_relief_and_blowdown?.psv_count || 2)));
-  const psvBaseX = -24;
+  const psvBaseX = Math.min(-44, cfsOutletTieX - 16);
   const psvSpanX = Math.max(6, psvCount3d * 3.4);
   const psvPlatformY = coolerReturnY + 2.4;
   const psvRiserTopY = coolerReturnY + 3.3;
@@ -1590,17 +1728,17 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   // Olive-steel elevated grating platform straddling the discharge header (matching cad_ref_1.jpg)
   const psvDeck = new THREE.Mesh(new THREE.BoxGeometry(psvSpanX + 3.0, 0.20, 5.2), matOliveSteel);
-  psvDeck.position.set(psvBaseX, psvPlatformY, -48);
+  psvDeck.position.set(psvBaseX, psvPlatformY, dischargeReturnZ);
   psvBankGroup.add(psvDeck);
   const psvRailEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(psvSpanX + 3.0, 1.1, 5.2));
   const psvRails = new THREE.LineSegments(psvRailEdges, new THREE.LineBasicMaterial({ color: 0xcab300 }));
-  psvRails.position.set(psvBaseX, psvPlatformY + 0.55, -48);
+  psvRails.position.set(psvBaseX, psvPlatformY + 0.55, dischargeReturnZ);
   psvBankGroup.add(psvRails);
   [
-    [psvBaseX - (psvSpanX + 2.4) / 2, -50.3],
-    [psvBaseX + (psvSpanX + 2.4) / 2, -50.3],
-    [psvBaseX - (psvSpanX + 2.4) / 2, -45.7],
-    [psvBaseX + (psvSpanX + 2.4) / 2, -45.7],
+    [psvBaseX - (psvSpanX + 2.4) / 2, dischargeReturnZ - 2.3],
+    [psvBaseX + (psvSpanX + 2.4) / 2, dischargeReturnZ - 2.3],
+    [psvBaseX - (psvSpanX + 2.4) / 2, dischargeReturnZ + 2.3],
+    [psvBaseX + (psvSpanX + 2.4) / 2, dischargeReturnZ + 2.3],
   ].forEach(([lx, lz]) => {
     const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, psvPlatformY, 0.22), matOliveSteel);
     leg.position.set(lx, psvPlatformY / 2, lz);
@@ -1614,8 +1752,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     // Vertical riser teeing straight up from the discharge header
     createCadPipeRoute(
       [
-        new THREE.Vector3(rx, coolerReturnY, -48),
-        new THREE.Vector3(rx, psvRiserTopY, -48),
+        new THREE.Vector3(rx, coolerReturnY, dischargeReturnZ),
+        new THREE.Vector3(rx, psvRiserTopY, dischargeReturnZ),
       ],
       visualPipeRadius(psvInletOdMm, 168.28, { max: 0.42 }),
       matYellowPipe,
@@ -1632,7 +1770,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     );
 
     const unit = new THREE.Group();
-    unit.position.set(rx, psvRiserTopY, -48);
+    unit.position.set(rx, psvRiserTopY, dischargeReturnZ);
     const inFlg = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 0.18, 16), matFlangeSteel);
     unit.add(inFlg);
     const blockValve = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.55, 14), matValveBody);
@@ -1668,7 +1806,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   // ── 2) ESD / Blowdown Riser Bank on Station Discharge Header (rising vertically on the line) ──
   const esdCount3d = Math.max(1, Math.min(6, Number(eq.esd_sizing?.esd_count || 2)));
-  const esdBaseX = -46;
+  const esdBaseX = psvBaseX - 24;
   const esdSpanX = Math.max(6, esdCount3d * 3.4);
   const esdPlatformY = coolerReturnY + 2.4;
   const esdRiserTopY = coolerReturnY + 3.1;
@@ -1676,17 +1814,17 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   const esdBankGroup = new THREE.Group();
 
   const esdDeck = new THREE.Mesh(new THREE.BoxGeometry(esdSpanX + 3.0, 0.20, 5.2), matOliveSteel);
-  esdDeck.position.set(esdBaseX, esdPlatformY, -48);
+  esdDeck.position.set(esdBaseX, esdPlatformY, dischargeReturnZ);
   esdBankGroup.add(esdDeck);
   const esdRailEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(esdSpanX + 3.0, 1.1, 5.2));
   const esdRails = new THREE.LineSegments(esdRailEdges, new THREE.LineBasicMaterial({ color: 0xcab300 }));
-  esdRails.position.set(esdBaseX, esdPlatformY + 0.55, -48);
+  esdRails.position.set(esdBaseX, esdPlatformY + 0.55, dischargeReturnZ);
   esdBankGroup.add(esdRails);
   [
-    [esdBaseX - (esdSpanX + 2.4) / 2, -50.3],
-    [esdBaseX + (esdSpanX + 2.4) / 2, -50.3],
-    [esdBaseX - (esdSpanX + 2.4) / 2, -45.7],
-    [esdBaseX + (esdSpanX + 2.4) / 2, -45.7],
+    [esdBaseX - (esdSpanX + 2.4) / 2, dischargeReturnZ - 2.3],
+    [esdBaseX + (esdSpanX + 2.4) / 2, dischargeReturnZ - 2.3],
+    [esdBaseX - (esdSpanX + 2.4) / 2, dischargeReturnZ + 2.3],
+    [esdBaseX + (esdSpanX + 2.4) / 2, dischargeReturnZ + 2.3],
   ].forEach(([lx, lz]) => {
     const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, esdPlatformY, 0.22), matOliveSteel);
     leg.position.set(lx, esdPlatformY / 2, lz);
@@ -1699,8 +1837,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
     createCadPipeRoute(
       [
-        new THREE.Vector3(ex, coolerReturnY, -48),
-        new THREE.Vector3(ex, esdRiserTopY, -48),
+        new THREE.Vector3(ex, coolerReturnY, dischargeReturnZ),
+        new THREE.Vector3(ex, esdRiserTopY, dischargeReturnZ),
       ],
       visualPipeRadius(esdRiserOdMm, 168.28, { max: 0.45 }),
       matYellowPipe,
@@ -1717,7 +1855,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     );
 
     const esdUnit = new THREE.Group();
-    esdUnit.position.set(ex, esdRiserTopY, -48);
+    esdUnit.position.set(ex, esdRiserTopY, dischargeReturnZ);
     const flgLow = new THREE.Mesh(new THREE.CylinderGeometry(0.54, 0.54, 0.18, 16), matFlangeSteel);
     esdUnit.add(flgLow);
     const valveSphere = new THREE.Mesh(new THREE.SphereGeometry(0.52, 16, 12), matRedFire);
@@ -1743,33 +1881,19 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   registerClickable(esdBankGroup, "esd_valves");
   scene.add(esdBankGroup);
 
-  // Mainline full-bore ESD isolation valves on discharge and suction headers
-  createValveStation(-56, coolerReturnY, -48, Math.max(0.78, rDischHeader * 1.15), {
-    hasActuator: true,
-    hasPlatform: true,
-    equipKey: "esd_valves",
-    valveColorMat: matRedFire,
-  });
-  createValveStation(-102, 2.2, -82, Math.max(0.72, rSuctHeader * 1.15), {
-    hasActuator: true,
-    hasPlatform: true,
-    equipKey: "esd_valves",
-    valveColorMat: matRedFire,
-  });
-
   createCadPipeCallout(
     `PSV-101..10${psvCount3d} & ESD-101..10${esdCount3d} • DISCHARGE HEADER EMNİYET MANİFOLDU`,
     "Hat Üzeri Dikey Riser PSV & ESD Vanaları (Tıklayarak Sayı & Çap Hesaplayın)",
-    -35,
+    (psvBaseX + esdBaseX) / 2,
     coolerReturnY + 11.8,
-    -48,
+    dischargeReturnZ,
     { width: 32, height: 4.8, pipeY: coolerReturnY + rDischHeader, accentColor: "#ef4444", lineKey: "discharge_header", equipKey: "safety_relief" }
   );
 
   // ── 3) Ultrasonic Gas Flow Meter (USM - FT-401) on Station Discharge Header ──
-  const usmX = -74;
+  const usmX = esdBaseX - 36;
   const usmY = coolerReturnY;
-  const usmZ = -48;
+  const usmZ = dischargeReturnZ;
   const usmGroup = new THREE.Group();
   usmGroup.position.set(usmX, usmY, usmZ);
 
@@ -1864,9 +1988,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   createCadPipeCallout(
     `L-109 • STATION DISCHARGE HEADER (PIG-L BİTİŞ SINIRI)`,
     `TC Çıkış Headerı & Soğutucu ➔ PIG-L Giriş MOV (${dischLine.nominal_size_in || '48"'})`,
-    -76,
+    usmX - 10,
     coolerReturnY + rDischHeader + 3.1,
-    -48,
+    dischargeReturnZ,
     { width: 27, height: 4.8, pipeY: coolerReturnY + rDischHeader, accentColor: "#f59e0b", lineKey: "discharge_header", equipKey: "pig_launcher" }
   );
   createCadPipeCallout(
@@ -1874,13 +1998,13 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     `Station Discharge Header ➔ PCV ➔ Station Suction Header (${pLines.station_recycle?.nominal_size_in || '-'})`,
     -60,
     7.8,
-    -104,
+    northRecycleZ,
     { width: 25, height: 4.5, pipeY: 4.2 + rAntiSurgeHeader, accentColor: "#22d3ee", lineKey: "station_recycle", equipKey: "station_recycle" }
   );
 
   // Emergency Vent / Blowdown Stack & PSV Assembly (North-West Yard)
   const ventStackGrp = new THREE.Group();
-  ventStackGrp.position.set(-106, 0, -96);
+  ventStackGrp.position.set(-134, 0, -100);
   const stackBase = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.6, 3.5), matConcretePlinth);
   const stackPipe = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.75, 22, 16), matVesselGrey);
   stackPipe.position.y = 11;
@@ -1889,37 +2013,33 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   ventStackGrp.add(stackBase, stackPipe, stackTip);
   registerClickable(ventStackGrp, "safety_relief");
   scene.add(ventStackGrp);
-  createValveStation(-106, 2.0, -91, rPsvInlet * 1.15, { hasPlatform: true, equipKey: "safety_relief", valveColorMat: matRedFire });
+  createValveStation(-134, 2.0, -94, rPsvInlet * 1.15, { hasPlatform: true, equipKey: "safety_relief", valveColorMat: matRedFire });
 
   // ══════════════════ 7. NORTH-CENTER FILTRATION & COOLING YARD (MFS, CFS, GAS COOLER) ══════════════════
 
-  // ── 7.1 MFS: Multi-Cyclone Filter Separators (X: -72 to -46, Z: -88 to -46) ──
+  // ── 7.1 MFS: Multi-Cyclone Filter Separators ──
   const mfsGroup = new THREE.Group();
-  const mfsX = -60;
-  const mfsStartZ = -80;
-  const mfsSpacingZ = numCyclones === 1 ? 0 : 24 / Math.max(1, numCyclones - 1);
-  const mfsPlatDepth = Math.max(18, numCyclones * 7.5);
+  const mfsPlatDepth = Math.max(18, mfsEndZ - mfsStartZ + 8);
 
-  // Central Elevated 2-Tier Olive-Steel Platform (matching Screenshot 0 & 2)
+  // Central Elevated 2-Tier Olive-Steel Platform
   const mfsPlat = new THREE.Mesh(new THREE.BoxGeometry(8.5, 6.2, mfsPlatDepth), matOliveSteel);
-  mfsPlat.position.set(mfsX, 3.1, -68);
+  mfsPlat.position.set(mfsX, 3.1, mfsCenterZ);
   mfsPlat.castShadow = true;
   mfsGroup.add(mfsPlat);
 
-  // Translucent Maintenance Envelope around MFS (taller for vertical separators)
-  const mfsEnv = new THREE.Mesh(new THREE.BoxGeometry(24, 13, mfsPlatDepth + 4), matEnvelopeBox);
-  mfsEnv.position.set(mfsX - 2, 6.5, -68);
+  // Translucent Maintenance Envelope around MFS (taller for vertical separators + below-barrel blow-flasks)
+  const mfsEnv = new THREE.Mesh(new THREE.BoxGeometry(24, 15.5, mfsPlatDepth + 4), matEnvelopeBox);
+  mfsEnv.position.set(mfsX - 2, 7.75, mfsCenterZ);
   scene.add(mfsEnv);
   envelopeMeshes.push(mfsEnv);
 
   // Common MFS inlet manifold (Station Suction Header tie → elevated MFS equipment manifold)
-  const mfsInletX = -72;
-  const mfsInletY = 6.6;
+  const mfsInletY = 7.8;
   createCadPipeRoute(
     [
-      new THREE.Vector3(mfsInletX, 2.2, -92),
-      new THREE.Vector3(mfsInletX, mfsInletY, -92),
-      new THREE.Vector3(mfsInletX, mfsInletY, mfsStartZ + 24),
+      new THREE.Vector3(mfsInletX, 2.2, mfsInletTieZ),
+      new THREE.Vector3(mfsInletX, mfsInletY, mfsInletTieZ),
+      new THREE.Vector3(mfsInletX, mfsInletY, mfsEndZ),
     ],
     rCycloneInlet,
     matYellowPipe,
@@ -1934,17 +2054,16 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     }
   );
 
-  // Vertical multi-cyclone separators: body + top dome + conical bottom.
-  // The previous horizontal/inclined vessel bodies were rotated on the Z axis.
-  const mfsVerticalX = mfsX - 6.0;
-  const mfsVesselBottomY = 1.4;
+  // Vertical multi-cyclone separators: body + spherical top dome + conical bottom + Spec 4500 §5.2 below-barrel horizontal blow-flask + dual level bottles.
+  const mfsVesselBottomY = 3.3;
   const mfsVesselBodyH = 7.2;
   const mfsVesselTopY = mfsVesselBottomY + mfsVesselBodyH;
-  const mfsOutletHeaderX = mfsX + 5.5;
-  const mfsOutletTopY = 10.6;
+  const mfsOutletTopY = 12.6;
+  const mfsAutoDumpHeaderX = mfsVerticalX + 1.85;
+  const mfsManualDumpHeaderX = mfsVerticalX - 1.95;
 
   for (let i = 0; i < numCyclones; i++) {
-    const cz = numCyclones === 1 ? -68 : mfsStartZ + i * mfsSpacingZ;
+    const cz = numCyclones === 1 ? mfsCenterZ : mfsStartZ + i * mfsSpacingZ;
     const mfsUnitTag = `V-10${i + 1}`;
 
     // Vertical cylindrical separator body
@@ -1953,7 +2072,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     vessel.castShadow = true;
     mfsGroup.add(vessel);
 
-    // Dished top head
+    // Spherical fixed top head (Spec 5260 Attachment-I)
     const topHead = new THREE.Mesh(
       new THREE.SphereGeometry(1.15, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2),
       matSilverVessel
@@ -1962,12 +2081,78 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     topHead.castShadow = true;
     mfsGroup.add(topHead);
 
-    // Conical bottom (apex down)
+    // Conical bottom (apex down -> Y = 1.9)
     const bottomCone = new THREE.Mesh(new THREE.ConeGeometry(1.15, 1.4, 20), matSilverVessel);
     bottomCone.rotation.x = Math.PI;
     bottomCone.position.set(mfsVerticalX, mfsVesselBottomY - 0.7, cz);
     bottomCone.castShadow = true;
     mfsGroup.add(bottomCone);
+
+    // Spec 4500 §5.2: Horizontal Blow-Flask mounted directly below MFS separator barrel
+    const downcomerNozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.20, 0.65, 12), matSilverVessel);
+    downcomerNozzle.position.set(mfsVerticalX, 1.65, cz);
+    mfsGroup.add(downcomerNozzle);
+
+    const blowFlask = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 2.4, 16), matSilverVessel);
+    blowFlask.rotation.z = Math.PI / 2;
+    blowFlask.position.set(mfsVerticalX, 0.96, cz);
+    blowFlask.castShadow = true;
+    mfsGroup.add(blowFlask);
+
+    [-1.2, 1.2].forEach((capDx) => {
+      const bfCap = new THREE.Mesh(new THREE.SphereGeometry(0.52, 12, 10), matSilverVessel);
+      bfCap.scale.set(0.55, 1, 1);
+      bfCap.position.set(mfsVerticalX + capDx, 0.96, cz);
+      mfsGroup.add(bfCap);
+    });
+    [-0.75, 0.75].forEach((sadDx) => {
+      const bfSaddle = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.52, 0.92), matConcretePlinth);
+      bfSaddle.position.set(mfsVerticalX + sadDx, 0.26, cz);
+      mfsGroup.add(bfSaddle);
+    });
+
+    // Insulation & Electrical Heat Tracing collars (>= 2 °C freeze protection per Spec 4500 §5.2)
+    [-0.55, 0.0, 0.55].forEach((htDx) => {
+      const heatTraceBand = new THREE.Mesh(new THREE.TorusGeometry(0.56, 0.045, 8, 20), matHeatTraceOrange);
+      heatTraceBand.rotation.y = Math.PI / 2;
+      heatTraceBand.position.set(mfsVerticalX + htDx, 0.96, cz);
+      mfsGroup.add(heatTraceBand);
+    });
+
+    // Dual separate instrument level bottles (LG / LT / LSH / LSL), online isolatable away from blow-flask nozzle
+    [-0.44, 0.44].forEach((lbDz) => {
+      const levelBottle = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 1.65, 12), matCadBlueSteel);
+      levelBottle.position.set(mfsVerticalX - 1.42, 2.05, cz + lbDz);
+      levelBottle.castShadow = true;
+      mfsGroup.add(levelBottle);
+      [1.35, 2.75].forEach((tapY) => {
+        const bridleTap = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.46, 8), matSilverVessel);
+        bridleTap.rotation.z = Math.PI / 2;
+        bridleTap.position.set(mfsVerticalX - 1.18, tapY, cz + lbDz);
+        mfsGroup.add(bridleTap);
+        const isoValve = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 8), matValveBody);
+        isoValve.position.set(mfsVerticalX - 1.18, tapY, cz + lbDz);
+        mfsGroup.add(isoValve);
+      });
+    });
+
+    // Automatic liquid dump LCV branch (blow-flask bottom -> common automatic dump header)
+    const autoDumpBranch = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.0, 8), matHeatTraceOrange);
+    autoDumpBranch.rotation.z = Math.PI / 2;
+    autoDumpBranch.position.set(mfsVerticalX + 0.92, 0.38, cz);
+    mfsGroup.add(autoDumpBranch);
+    const lcvValve = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), matValveBody);
+    lcvValve.position.set(mfsVerticalX + 1.15, 0.38, cz);
+    mfsGroup.add(lcvValve);
+
+    // Manual dump branch directly below separator/blow-flask nozzle -> common manual dump header
+    const manualDumpBranch = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 1.95, 8), matHeatTraceOrange);
+    manualDumpBranch.rotation.z = Math.PI / 2;
+    manualDumpBranch.position.set(mfsVerticalX - 0.98, 1.62, cz);
+    mfsGroup.add(manualDumpBranch);
+    const manualDumpValve = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), matValveBody);
+    manualDumpValve.position.set(mfsVerticalX - 0.85, 1.62, cz);
+    mfsGroup.add(manualDumpValve);
 
     // Inlet / outlet nozzles and flanges
     const inletNozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.9, 16), matSilverVessel);
@@ -1988,21 +2173,13 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     outletFlange.position.set(mfsVerticalX, mfsVesselTopY + 1.68, cz);
     mfsGroup.add(outletFlange);
 
-    // Bottom drain nozzle
-    const drainNozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.65, 12), matSilverVessel);
-    drainNozzle.position.set(mfsVerticalX, 0.45, cz);
-    mfsGroup.add(drainNozzle);
-    const drainValve = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 10), matValveBody);
-    drainValve.position.set(mfsVerticalX, 0.9, cz);
-    mfsGroup.add(drainValve);
-
     // Access ladder on the east side
     [-0.28, 0.28].forEach((dz) => {
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 8.2, 0.08), matCadBlueSteel);
-      rail.position.set(mfsVerticalX + 1.42, 4.3, cz + dz);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 9.8, 0.08), matCadBlueSteel);
+      rail.position.set(mfsVerticalX + 1.42, 5.2, cz + dz);
       mfsGroup.add(rail);
     });
-    for (let ry = 1.0; ry < 8.2; ry += 0.75) {
+    for (let ry = 1.0; ry < 9.8; ry += 0.75) {
       const rung = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.06, 0.56), matCadBlueSteel);
       rung.position.set(mfsVerticalX + 1.42, ry, cz);
       mfsGroup.add(rung);
@@ -2014,13 +2191,13 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     topRing.position.set(mfsVerticalX, mfsVesselTopY - 0.35, cz);
     mfsGroup.add(topRing);
 
-    // Three support legs around the conical bottom
+    // Three elevated support legs lifting separator barrel clear above below-barrel blow-flask
     [0, (2 * Math.PI) / 3, (4 * Math.PI) / 3].forEach((angle) => {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.4, 0.16), matCadBlueSteel);
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.18, 3.3, 0.18), matCadBlueSteel);
       leg.position.set(
-        mfsVerticalX + Math.cos(angle) * 1.25,
-        0.7,
-        cz + Math.sin(angle) * 1.25
+        mfsVerticalX + Math.cos(angle) * 1.32,
+        1.65,
+        cz + Math.sin(angle) * 1.32
       );
       leg.castShadow = true;
       mfsGroup.add(leg);
@@ -2044,7 +2221,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         toBoundary: `${mfsUnitTag} Siklon Seperatör Giriş Nozulu`,
       }
     );
-    createValveStation(mfsVerticalX - 3.0, mfsInletY, cz, rCycloneInlet, { hasPlatform: false, equipKey: "cyclones" });
+    createValveStation((mfsInletX + mfsVerticalX - 1.15) / 2, mfsInletY, cz, rCycloneInlet, { hasPlatform: false, equipKey: "cyclones" });
 
     // Outlet from separator top → overhead header → shared outlet collector
     createCadPipeRoute(
@@ -2067,14 +2244,14 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         registerParticlePath: i === 0,
       }
     );
-    createValveStation(mfsVerticalX + 3.2, mfsOutletTopY, cz, rCycloneOutlet, { hasPlatform: false, equipKey: "cyclones" });
+    createValveStation(mfsVerticalX + 5.0, mfsOutletTopY, cz, rCycloneOutlet, { hasPlatform: false, equipKey: "cyclones" });
   }
 
-  // MFS outlet collector header: ties every cyclone top outlet to the CFS inlet.
+  // MFS outlet collector header: ties every cyclone top outlet to the CFS inlet distribution header.
   createCadPipeRoute(
     [
       new THREE.Vector3(mfsOutletHeaderX, 2.4, mfsStartZ),
-      new THREE.Vector3(mfsOutletHeaderX, 2.4, mfsStartZ + 24),
+      new THREE.Vector3(mfsOutletHeaderX, 2.4, mfsEndZ),
     ],
     rCycloneOutlet,
     matYellowPipe,
@@ -2084,126 +2261,239 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       lineKey: "cyclone_outlet_branch",
       segmentTitle: "MFS Ekipman Çıkış Kollektörü (L-103A)",
       fromBoundary: "MFS Siklon Üst Çıkış Branşmanları",
-      toBoundary: "CFS Kartuş Filtre Giriş Manifoldu Ara Bağlantısı",
+      toBoundary: "CFS Kartuş Filtre Giriş Headerı Ara Bağlantısı",
       registerParticlePath: true,
     }
   );
   createCadPipeRoute(
     [
-      new THREE.Vector3(mfsOutletHeaderX, 2.4, -76),
-      new THREE.Vector3(mfsX + 8.0, 2.4, -76),
+      new THREE.Vector3(mfsOutletHeaderX, 2.4, mfsCenterZ),
+      new THREE.Vector3(-80, 2.4, mfsCenterZ),
+      new THREE.Vector3(-80, cfsHeaderY, cfsInletHeaderZ),
+      new THREE.Vector3(cfsStartX - 6, cfsHeaderY, cfsInletHeaderZ),
     ],
     rCycloneOutlet,
     matYellowPipe,
     {
-      flowArrows: 1,
+      flowArrows: 2,
       equipKey: "cyclones",
       lineKey: "cyclone_outlet_branch",
       segmentTitle: "MFS ➔ CFS Ara Bağlantı Kollektörü (L-103A)",
       fromBoundary: "MFS Ortak Çıkış Kollektörü",
-      toBoundary: "CFS Kartuş Filtre Giriş Manifoldu",
+      toBoundary: "CFS Kartuş Filtre Giriş Dağıtım Headerı (L-104)",
     }
   );
 
-  // Condensate Collection Sump Box (South-West of MFS, Note 14)
+  // Common Automatic & Manual Dump Headers (heat-traced >= 2 °C) -> Atmospheric Cyclone Separator w/ Flame Arrestor -> TK-101 Dump Tank
+  const dumpDestZ = mfsEndZ + 7.5;
+  const atmSepX = mfsX - 9.5;
+  const atmSepZ = mfsEndZ + 6.5;
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(mfsAutoDumpHeaderX, 0.38, mfsStartZ),
+      new THREE.Vector3(mfsAutoDumpHeaderX, 0.38, dumpDestZ),
+      new THREE.Vector3(atmSepX, 0.38, dumpDestZ),
+    ],
+    0.11,
+    matHeatTraceOrange,
+    {
+      equipKey: "cyclones",
+      lineKey: "cyclone_branch",
+      segmentTitle: "MFS Ortak Otomatik Drenaj Headerı (Heat Traced ≥ 2 °C)",
+      fromBoundary: "MFS Alt Blow-Flask LCV Otomatik Tahliye Çıkışları",
+      toBoundary: "Atmosferik Siklon Seperatör Alt Sıvı Drenaj Hattı ➔ TK-101",
+    }
+  );
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(mfsManualDumpHeaderX, 1.62, mfsStartZ),
+      new THREE.Vector3(mfsManualDumpHeaderX, 1.62, atmSepZ),
+      new THREE.Vector3(atmSepX, 1.62, atmSepZ),
+    ],
+    0.10,
+    matHeatTraceOrange,
+    {
+      equipKey: "cyclones",
+      lineKey: "cyclone_branch",
+      segmentTitle: "MFS Ortak Manuel Drenaj Headerı (Heat Traced ≥ 2 °C)",
+      fromBoundary: "Seperatör/Blow-Flask Bağlantı Altı Manuel Vanalar",
+      toBoundary: "Atmosferik Sıvı/Gaz Siklon Seperatör (Flame Arrestor'lı)",
+    }
+  );
+
+  // Atmospheric Liquid/Gas Cyclone Separator with Flame Arrestor Vent before TK-101
+  const atmSepBody = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 2.8, 16), matVesselGrey);
+  atmSepBody.position.set(atmSepX, 1.8, atmSepZ);
+  mfsGroup.add(atmSepBody);
+  const atmFlameArrestorVent = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 2.4, 12), matRedFire);
+  atmFlameArrestorVent.position.set(atmSepX, 4.2, atmSepZ);
+  mfsGroup.add(atmFlameArrestorVent);
+
+  // Condensate Collection Sump Box (South-West of MFS, ≥ 15x blow-flask dump / min 3 m3)
   const condBox1 = new THREE.Mesh(new THREE.BoxGeometry(5.5, 3.2, 5.5), matOliveSteel);
-  condBox1.position.set(-73, 1.6, -50);
+  condBox1.position.set(mfsX - 10, 1.6, mfsEndZ + 10);
   mfsGroup.add(condBox1);
   registerClickable(condBox1, "condensate_system");
 
-  // Small Instrument / Local Shelter South-East of MFS (seen in Screenshot 0 & 1)
+  // Small Instrument / Local Shelter South-East of MFS
   const mfsShelter = new THREE.Mesh(new THREE.BoxGeometry(5.2, 6.5, 5.2), matOliveSteel);
-  mfsShelter.position.set(-48, 3.25, -40);
+  mfsShelter.position.set(mfsOutletHeaderX + 6, 3.25, mfsEndZ + 10);
   mfsGroup.add(mfsShelter);
 
   registerClickable(mfsGroup, "cyclones");
   scene.add(mfsGroup);
-  createCadGreenLabel("MFS", mfsX - 2, 0.3, -90, 12, 2.8, -Math.PI / 2, 0, 0);
+  createCadGreenLabel("MFS", mfsX - 2, 0.3, mfsStartZ - 6, 12, 2.8, -Math.PI / 2, 0, 0);
   createCadPipeCallout(
     `L-103/103A • MFS EKİPMAN BORULAMASI`,
     `Giriş (${pLines.cyclone_branch?.nominal_size_in || '-'}) ➔ MFS ➔ Çıkış (${pLines.cyclone_outlet_branch?.nominal_size_in || pLines.cyclone_branch?.nominal_size_in || '-'})`,
     mfsInletX,
     10.4,
-    -74,
+    mfsCenterZ,
     { width: 22, height: 4.3, pipeY: mfsInletY + rCycloneInlet, accentColor: "#34d399", lineKey: "cyclone_branch", equipKey: "cyclones" }
   );
 
-  // ── 7.2 CFS: Cartridge Filter Separators (X: -40 to -14, Z: -85 to -52) ──
+  // ── 7.2 CFS: Elevated Cartridge Filter Separators with Dedicated Inlet/Outlet Headers & Ball Valves ──
   const cfsGroup = new THREE.Group();
-  const cfsStartX = -38;
-  const cfsSpacingX = numFilters === 1 ? 0 : 18 / Math.max(1, numFilters - 1);
+  const cfsInletNozZ = cfsVesselZ - 3.5;
+  const cfsOutletNozZ = cfsVesselZ + 4.2;
+
+  // Dedicated CFS Inlet Distribution Header (East-West at header level Y = cfsHeaderY)
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(cfsStartX - 6, cfsHeaderY, cfsInletHeaderZ),
+      new THREE.Vector3(cfsEndX, cfsHeaderY, cfsInletHeaderZ),
+    ],
+    rFilterInlet,
+    matYellowPipe,
+    {
+      flowArrows: 3,
+      equipKey: "cartridge_filters",
+      lineKey: "filter_branch",
+      segmentTitle: "CFS Giriş Dağıtım Headerı (L-104)",
+      fromBoundary: "MFS Çıkış Ara Kollektörü Tie-In Noktası",
+      toBoundary: "CFS Kartuş Filtre Giriş Branşman Yükselişleri (F-101..N)",
+      registerParticlePath: true,
+    }
+  );
 
   for (let i = 0; i < numFilters; i++) {
-    const fx = numFilters === 1 ? -29 : cfsStartX + i * cfsSpacingX;
+    const fx = numFilters === 1 ? cfsCenterX : cfsStartX + i * cfsPitchX;
     const cfsUnitTag = `F-10${i + 1}`;
-    // Horizontal Cylindrical Filter Vessel oriented North-South (matching Screenshot 0, 1, 2)
-    const fltVessel = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 11.5, 22), matSilverVessel);
+    // Horizontal Cylindrical Filter Vessel elevated above header pipes on taller piers & steel saddles
+    const fltVessel = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 12.0, 22), matSilverVessel);
     fltVessel.rotation.x = Math.PI / 2;
-    fltVessel.position.set(fx, 2.5, -68);
+    fltVessel.position.set(fx, cfsVesselY, cfsVesselZ);
     fltVessel.castShadow = true;
     cfsGroup.add(fltVessel);
 
     // Dished heads at both ends
-    [-62.25, -73.75].forEach((hz) => {
+    [cfsVesselZ + 6.0, cfsVesselZ - 6.0].forEach((hz) => {
       const head = new THREE.Mesh(new THREE.SphereGeometry(1.0, 20, 12), matSilverVessel);
       head.scale.z = 0.38;
-      head.position.set(fx, 2.5, hz);
+      head.position.set(fx, cfsVesselY, hz);
       head.castShadow = true;
       cfsGroup.add(head);
     });
 
-    // Saddle supports
-    [-72.0, -64.0].forEach((sz) => {
-      const saddle = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.35, 0.55), matCadBlueSteel);
-      saddle.position.set(fx, 0.68, sz);
+    // Taller concrete piers (Y: 0..1.4) + elevated steel saddle supports (Y: 1.4..3.9)
+    [cfsVesselZ - 4.0, cfsVesselZ + 4.0].forEach((sz) => {
+      const saddle = new THREE.Mesh(new THREE.BoxGeometry(2.0, 2.5, 0.65), matCadBlueSteel);
+      saddle.position.set(fx, 2.65, sz);
       saddle.castShadow = true;
       cfsGroup.add(saddle);
-      const pad = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.18, 0.9), matConcretePlinth);
-      pad.position.set(fx, 0.09, sz);
+      const pad = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.4, 1.2), matConcretePlinth);
+      pad.position.set(fx, 0.7, sz);
+      pad.castShadow = true;
       cfsGroup.add(pad);
     });
 
-    // Top inlet nozzle + flange
+    // Top-north inlet nozzle + flange
     const inletNozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 0.8, 16), matSilverVessel);
-    inletNozzle.position.set(fx, 3.5, -71);
+    inletNozzle.position.set(fx, cfsVesselY + 1.0, cfsInletNozZ);
     cfsGroup.add(inletNozzle);
     const inletFlange = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.15, 16), matFlangeSteel);
-    inletFlange.position.set(fx, 3.93, -71);
+    inletFlange.position.set(fx, cfsVesselY + 1.43, cfsInletNozZ);
     cfsGroup.add(inletFlange);
 
-    // End outlet nozzle + flange
+    // Top-south outlet nozzle + flange (keeps the South QOC hinged cover completely unobstructed)
     const outletNozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 0.8, 16), matSilverVessel);
-    outletNozzle.rotation.x = Math.PI / 2;
-    outletNozzle.position.set(fx, 2.5, -61.85);
+    outletNozzle.position.set(fx, cfsVesselY + 1.0, cfsOutletNozZ);
     cfsGroup.add(outletNozzle);
     const outletFlange = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.15, 16), matFlangeSteel);
-    outletFlange.rotation.x = Math.PI / 2;
-    outletFlange.position.set(fx, 2.5, -61.4);
+    outletFlange.position.set(fx, cfsVesselY + 1.43, cfsOutletNozZ);
     cfsGroup.add(outletFlange);
 
-    // Bottom drain nozzle
-    const drain = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.6, 12), matSilverVessel);
-    drain.position.set(fx, 1.35, -68);
+    // Downcomer nozzle + Below-barrel Horizontal CFS Blow-Flask + Self-Regulating Heat Tracing (>= 2 °C) & Level Bottle (Spec 5210 §4.1 / Özel §4.8.2)
+    const drain = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 1.85, 12), matSilverVessel);
+    drain.position.set(fx, 2.9, cfsVesselZ);
     cfsGroup.add(drain);
 
-    // Quick-opening filter cover facing South
+    const cfsBlowFlask = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.46, 4.2, 16), matSilverVessel);
+    cfsBlowFlask.rotation.x = Math.PI / 2;
+    cfsBlowFlask.position.set(fx, 1.48, cfsVesselZ);
+    cfsBlowFlask.castShadow = true;
+    cfsGroup.add(cfsBlowFlask);
+
+    [cfsVesselZ - 2.1, cfsVesselZ + 2.1].forEach((czCap) => {
+      const bfEnd = new THREE.Mesh(new THREE.SphereGeometry(0.46, 12, 10), matSilverVessel);
+      bfEnd.scale.z = 0.5;
+      bfEnd.position.set(fx, 1.48, czCap);
+      cfsGroup.add(bfEnd);
+    });
+    [cfsVesselZ - 1.35, cfsVesselZ + 1.35].forEach((szBf) => {
+      const bfSad = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.0, 0.24), matConcretePlinth);
+      bfSad.position.set(fx, 0.5, szBf);
+      cfsGroup.add(bfSad);
+    });
+    [-1.1, 0.0, 1.1].forEach((htDz) => {
+      const htBand = new THREE.Mesh(new THREE.TorusGeometry(0.50, 0.045, 8, 20), matHeatTraceOrange);
+      htBand.position.set(fx, 1.48, cfsVesselZ + htDz);
+      cfsGroup.add(htBand);
+    });
+
+    // Dedicated CFS instrument level bottle (LG/LT/LSH/LSL) + LCV drain valve
+    const cfsLevelBottle = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 1.45, 10), matCadBlueSteel);
+    cfsLevelBottle.position.set(fx - 1.25, 1.9, cfsVesselZ);
+    cfsGroup.add(cfsLevelBottle);
+    const cfsLcv = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), matValveBody);
+    cfsLcv.position.set(fx, 0.72, cfsVesselZ + 2.65);
+    cfsGroup.add(cfsLcv);
+
+    // Quick-Opening Closure (QOC) facing South + Davit swing arm (Spec 5210 §4.1 / Özel §4.8.2)
     const cap = new THREE.Mesh(new THREE.CylinderGeometry(1.12, 1.12, 0.45, 20), matYellowPipe);
     cap.rotation.x = Math.PI / 2;
-    cap.position.set(fx, 2.5, -62.1);
+    cap.position.set(fx, cfsVesselY, cfsVesselZ + 6.15);
     cfsGroup.add(cap);
+    const qocDavit = new THREE.Group();
+    const davitPost = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.85, 10), matCadBlueSteel);
+    davitPost.position.set(fx + 1.22, cfsVesselY + 0.55, cfsVesselZ + 6.0);
+    const davitArm = new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.12, 0.12), matCadBlueSteel);
+    davitArm.position.set(fx + 0.6, cfsVesselY + 1.42, cfsVesselZ + 6.15);
+    qocDavit.add(davitPost, davitArm);
+    cfsGroup.add(qocDavit);
 
-    // Side steel access platforms along each CFS vessel
-    const sideWalk = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.15, 11), matOliveSteel);
-    sideWalk.position.set(fx + 1.8, 2.0, -68);
+    // Elevated side steel access grating platforms + support columns along each CFS vessel
+    const sideWalk = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.16, 11.5), matOliveSteel);
+    sideWalk.position.set(fx + 1.9, 4.0, cfsVesselZ);
     cfsGroup.add(sideWalk);
+    [
+      [fx + 1.15, cfsVesselZ - 5.0],
+      [fx + 2.65, cfsVesselZ - 5.0],
+      [fx + 1.15, cfsVesselZ + 5.0],
+      [fx + 2.65, cfsVesselZ + 5.0],
+    ].forEach(([lx, lz]) => {
+      const wLeg = new THREE.Mesh(new THREE.BoxGeometry(0.18, 4.0, 0.18), matCadBlueSteel);
+      wLeg.position.set(lx, 2.0, lz);
+      cfsGroup.add(wLeg);
+    });
 
-    // Overhead Yellow Inlet U-bend into CFS top nozzle
+    // Per-filter Inlet Branch rising from CFS Inlet Header over to top-north nozzle + equal-diameter flanged ball valve
     createCadPipeRoute(
       [
-        new THREE.Vector3(mfsX + 8.0, 2.4, -76),
-        new THREE.Vector3(fx, 2.4, -76),
-        new THREE.Vector3(fx, 4.8, -73),
-        new THREE.Vector3(fx, 3.2, -71),
+        new THREE.Vector3(fx, cfsHeaderY, cfsInletHeaderZ),
+        new THREE.Vector3(fx, 6.5, cfsInletHeaderZ),
+        new THREE.Vector3(fx, 6.5, cfsInletNozZ),
+        new THREE.Vector3(fx, cfsVesselY + 1.0, cfsInletNozZ),
       ],
       rFilterInlet,
       matYellowPipe,
@@ -2213,18 +2503,19 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         lineKey: "filter_branch",
         unitLabel: cfsUnitTag,
         segmentTitle: `CFS Kartuş Filtre Giriş Branşmanı (${cfsUnitTag} • L-104)`,
-        fromBoundary: "MFS Çıkış Ara Kollektörü",
-        toBoundary: `${cfsUnitTag} Kartuş Filtre Üst Giriş Nozulu`,
+        fromBoundary: "CFS Giriş Dağıtım Headerı (Z = -100m)",
+        toBoundary: `${cfsUnitTag} Kartuş Filtre Üst-Kuzey Giriş Nozulu`,
       }
     );
-    createValveStation(fx - 2.5, 2.4, -76, rFilterInlet, { hasPlatform: false, equipKey: "cartridge_filters" });
+    createValveStation(fx, 6.5, (cfsInletHeaderZ + cfsInletNozZ) / 2, rFilterInlet, { hasPlatform: false, rotationY: Math.PI / 2, equipKey: "cartridge_filters" });
 
-    // Outlet from end nozzle to the common CFS outlet header
+    // Per-filter Outlet Branch leaving top-south nozzle down to CFS Outlet Collection Header + equal-diameter flanged ball valve
     createCadPipeRoute(
       [
-        new THREE.Vector3(fx, 2.5, -61.4),
-        new THREE.Vector3(fx, 2.5, -59.2),
-        new THREE.Vector3(fx, 2.2, -57),
+        new THREE.Vector3(fx, cfsVesselY + 1.0, cfsOutletNozZ),
+        new THREE.Vector3(fx, 6.4, cfsOutletNozZ),
+        new THREE.Vector3(fx, 6.4, cfsOutletHeaderZ),
+        new THREE.Vector3(fx, cfsHeaderY, cfsOutletHeaderZ),
       ],
       rFilterOutlet,
       matYellowPipe,
@@ -2234,20 +2525,20 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         lineKey: "filter_outlet_branch",
         unitLabel: cfsUnitTag,
         segmentTitle: `CFS Kartuş Filtre Çıkış Branşmanı (${cfsUnitTag} • L-104A)`,
-        fromBoundary: `${cfsUnitTag} Kartuş Filtre Çıkış Nozulu`,
-        toBoundary: "CFS Ortak Çıkış Manifoldu (Station Suction Header Bağlantısı)",
+        fromBoundary: `${cfsUnitTag} Kartuş Filtre Üst-Güney Çıkış Nozulu`,
+        toBoundary: "CFS Çıkış Toplama Headerı (Z = -56m)",
         registerParticlePath: i === 0,
       }
     );
-    createValveStation(fx, 2.5, -59.2, rFilterOutlet, { hasPlatform: false, rotationY: Math.PI / 2, equipKey: "cartridge_filters" });
+    createValveStation(fx, 6.4, (cfsOutletNozZ + cfsOutletHeaderZ) / 2, rFilterOutlet, { hasPlatform: false, rotationY: Math.PI / 2, equipKey: "cartridge_filters" });
   }
 
-  // Common CFS outlet collector header (single pipe, no duplicated overlap)
-  const cfsOutletStartX = numFilters === 1 ? -29 : cfsStartX;
+  // Dedicated CFS Outlet Collection Header (single East-West header at Y = cfsHeaderY feeding Station Suction Mid-Spine)
+  const cfsOutletStartX = numFilters === 1 ? cfsCenterX : cfsStartX;
   createCadPipeRoute(
     [
-      new THREE.Vector3(cfsOutletStartX, 2.2, -57),
-      new THREE.Vector3(-12, 2.2, -57),
+      new THREE.Vector3(cfsOutletStartX, cfsHeaderY, cfsOutletHeaderZ),
+      new THREE.Vector3(cfsOutletTieX, cfsHeaderY, cfsOutletHeaderZ),
     ],
     rFilterOutlet,
     matYellowPipe,
@@ -2255,42 +2546,41 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       flowArrows: 2,
       equipKey: "cartridge_filters",
       lineKey: "filter_outlet_branch",
-      segmentTitle: "CFS Ekipman Çıkış Kollektörü (L-104A)",
-      fromBoundary: "CFS Kartuş Filtre Ünite Çıkış Nozulları",
+      segmentTitle: "CFS Çıkış Toplama Headerı (L-104A)",
+      fromBoundary: "CFS Kartuş Filtre Ünite Çıkış Branşmanları",
       toBoundary: "Station Suction Header (Filtrelenmiş Ana Omurga Tie-In Noktası)",
       registerParticlePath: true,
     }
   );
 
-  // Translucent Maintenance Envelope East of CFS + Metering Platform
-  const cfsEnv = new THREE.Mesh(new THREE.BoxGeometry(9, 5.5, 16), matEnvelopeBox);
-  cfsEnv.position.set(-12, 2.75, -68);
+  // Translucent Maintenance Envelope East of CFS
+  const cfsEnv = new THREE.Mesh(new THREE.BoxGeometry(8, 7.2, 16), matEnvelopeBox);
+  cfsEnv.position.set(cfsEndX + 6.5, 3.6, cfsVesselZ);
   scene.add(cfsEnv);
   envelopeMeshes.push(cfsEnv);
 
   const condBox2 = new THREE.Mesh(new THREE.BoxGeometry(5.0, 2.8, 5.0), matOliveSteel);
-  condBox2.position.set(-18, 1.4, -52);
+  condBox2.position.set(cfsCenterX, 1.4, cfsOutletHeaderZ + 8);
   cfsGroup.add(condBox2);
 
   registerClickable(cfsGroup, "cartridge_filters");
   scene.add(cfsGroup);
-  createCadGreenLabel("CFS", -29, 0.3, -90, 12, 2.8, -Math.PI / 2, 0, 0);
+  createCadGreenLabel("CFS", cfsCenterX, 0.3, cfsInletHeaderZ - 7, 12, 2.8, -Math.PI / 2, 0, 0);
   createCadPipeCallout(
-    `L-104/104A • CFS EKİPMAN BORULAMASI`,
-    `Giriş (${pLines.filter_branch?.nominal_size_in || '-'}) ➔ CFS ➔ Çıkış (${pLines.filter_outlet_branch?.nominal_size_in || pLines.filter_branch?.nominal_size_in || '-'})`,
-    -29,
-    7.6,
-    -61,
-    { width: 22, height: 4.3, pipeY: 2.5 + rFilterOutlet, accentColor: "#34d399", lineKey: "filter_outlet_branch", equipKey: "cartridge_filters" }
+    `L-104/104A • CFS HEADER & VANALI BRANŞMANLAR`,
+    `Giriş (${pLines.filter_branch?.nominal_size_in || '-'}) ➔ Yükseltilmiş F-101..${numFilters} ➔ Çıkış (${pLines.filter_outlet_branch?.nominal_size_in || pLines.filter_branch?.nominal_size_in || '-'})`,
+    cfsCenterX,
+    9.4,
+    cfsOutletHeaderZ,
+    { width: 24, height: 4.5, pipeY: 6.4 + rFilterOutlet, accentColor: "#34d399", lineKey: "filter_outlet_branch", equipKey: "cartridge_filters" }
   );
 
   // Station Suction Header Mid-Spine: Filtered main header routing from CFS across North Road to TC Suction Connection Header
   createCadPipeRoute(
     [
-      new THREE.Vector3(-12, 2.2, -57),
-      new THREE.Vector3(-12, 2.2, -32),
-      new THREE.Vector3(-32, 2.2, -32),
-      new THREE.Vector3(-32, 1.5, -16.2),
+      new THREE.Vector3(cfsOutletTieX, cfsHeaderY, cfsOutletHeaderZ),
+      new THREE.Vector3(cfsOutletTieX, cfsHeaderY, -30),
+      new THREE.Vector3(cfsOutletTieX, 1.5, frontSuctionZ),
     ],
     rSuctHeader,
     matYellowPipe,
@@ -2299,7 +2589,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       equipKey: "turbo_compressors",
       lineKey: "comp_suction_header",
       segmentTitle: "Station Suction Header (CFS Çıkışı ➔ TC Suction Bağlantı Headerı)",
-      fromBoundary: "CFS Çıkış Manifoldu Ana Header Dönüş Tie-In Noktası",
+      fromBoundary: "CFS Çıkış Toplama Headerı Ana Dönüş Tie-In Noktası",
       toBoundary: "Turbo-Kompresör Üniteleri Suction Bağlantı Headerı",
       registerParticlePath: true,
     }
@@ -2307,21 +2597,217 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   createCadPipeCallout(
     `L-105 • STATION SUCTION HEADER (ANA OMURGA)`,
     `CFS Çıkışı ➔ TC Ünite Suction Bağlantı Headerı (${compSuctHeaderLine.nominal_size_in || suctLine.nominal_size_in || '48"'})`,
-    -22,
+    cfsOutletTieX,
     6.2,
-    -32,
-    { width: 26, height: 4.6, pipeY: 2.2 + rSuctHeader, accentColor: "#38bdf8", lineKey: "comp_suction_header", equipKey: "turbo_compressors" }
+    -30,
+    { width: 26, height: 4.6, pipeY: cfsHeaderY + rSuctHeader, accentColor: "#38bdf8", lineKey: "comp_suction_header", equipKey: "turbo_compressors" }
   );
 
-  // ── 7.3 GAS COOLER: Elevated Fin-Fan Air Cooler Bank (X: +2 to +coolerEndX, Z: -76) ──
+  // ── 7.2A FUEL GAS CONDITIONING & METERING SKID (Spec 4500 §8.1-8.5 & Özel §4.8.5) ──
+  // Top take-off strictly DOWNSTREAM of main CFS filters and UPSTREAM of Gas Cooler & Recycle tie-in
+  const fuelGasSkid = new THREE.Group();
+  const fgX = cfsOutletTieX + 14.5;
+  const fgZ = -29.5;
+  const fgPad = new THREE.Mesh(new THREE.BoxGeometry(14.5, 0.36, 7.6), matConcretePlinth);
+  fgPad.position.set(fgX, 0.18, fgZ);
+  fgPad.receiveShadow = true;
+  fuelGasSkid.add(fgPad);
+
+  // Horizontal 1 µm Sock Separator + Below-Barrel Heat-Traced Blowflask
+  const fgSepBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 3.6, 16), matCadBlueSteel);
+  fgSepBarrel.rotation.z = Math.PI / 2;
+  fgSepBarrel.position.set(fgX - 3.6, 2.25, fgZ - 1.4);
+  fgSepBarrel.castShadow = true;
+  fuelGasSkid.add(fgSepBarrel);
+
+  const fgBlowFlask = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 2.2, 12), matSilverVessel);
+  fgBlowFlask.rotation.z = Math.PI / 2;
+  fgBlowFlask.position.set(fgX - 3.6, 1.05, fgZ - 1.4);
+  fuelGasSkid.add(fgBlowFlask);
+  [-0.6, 0.0, 0.6].forEach((htDx) => {
+    const htBand = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.035, 8, 16), matHeatTraceOrange);
+    htBand.rotation.y = Math.PI / 2;
+    htBand.position.set(fgX - 3.6 + htDx, 1.05, fgZ - 1.4);
+    fuelGasSkid.add(htBand);
+  });
+
+  // 1+1 Gas/Glycol Fuel Pre-Heaters (20 ± 5 °C) + 2x100% Parallel Pressure Reduction & Metering Runs
+  [-0.9, 1.1].forEach((hzDz, hIdx) => {
+    const fgHeater = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 3.2, 14), matHeatTraceOrange);
+    fgHeater.rotation.z = Math.PI / 2;
+    fgHeater.position.set(fgX + 0.8, 1.65 + hIdx * 0.85, fgZ + hzDz);
+    fuelGasSkid.add(fgHeater);
+
+    const regRun = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 3.4, 10), matTealUtilityPipe);
+    regRun.rotation.z = Math.PI / 2;
+    regRun.position.set(fgX + 4.4, 1.45, fgZ + hzDz);
+    fuelGasSkid.add(regRun);
+    const prvBody = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 10), matValveBody);
+    prvBody.position.set(fgX + 4.4, 1.45, fgZ + hzDz);
+    fuelGasSkid.add(prvBody);
+  });
+
+  // Top-of-pipe take-off from post-CFS Station Suction Spine (316 SS fuel feed)
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(cfsOutletTieX, cfsHeaderY + rSuctHeader * 0.85, -30),
+      new THREE.Vector3(cfsOutletTieX, cfsHeaderY + 1.6, -30),
+      new THREE.Vector3(fgX - 6.0, cfsHeaderY + 1.6, -30),
+      new THREE.Vector3(fgX - 5.4, 2.25, fgZ - 1.4),
+    ],
+    0.16,
+    matTealUtilityPipe,
+    {
+      flowArrows: 1,
+      equipKey: "fuel_gas",
+      segmentTitle: "Yakıt Gazı Çekiş Hattı (CFS Çıkışı Sonrası / Soğutucu Öncesi)",
+      fromBoundary: "Ana CFS Kartuş Filtre Çıkışı (Station Suction Spine)",
+      toBoundary: "FG-101 Yakıt Gazı Şartlandırma Skidi (1 µm + 20 °C Eşanjör)",
+    }
+  );
+  registerClickable(fuelGasSkid, "fuel_gas");
+  scene.add(fuelGasSkid);
+  createCadGreenLabel("FUEL GAS SKID FG-101", fgX, 4.1, fgZ, 13.5, 2.4, -Math.PI / 2, 0, 0);
+
+  // ── 7.2B STATION RECYCLE CONTROL VALVE SKID (Spec 4-NGTL 0-CS-M-002-4500 §5.8) ──
+  // Offtake downstream of Gas Cooler on Station Discharge Header (dischargeReturnZ)
+  // through 2 flanking block valves + central Globe/Plug-in-Cage PCV with acoustic canopy,
+  // returning to Station Suction Header downstream of CFS and upstream of all compressor units.
+  const stationRecycleSkid = new THREE.Group();
+  const recycleSkidPad = new THREE.Mesh(
+    new THREE.BoxGeometry(15.2, 0.36, 5.8),
+    matConcretePlinth
+  );
+  recycleSkidPad.position.set(stationRecycleValveX, 0.18, stationRecycleZ);
+  recycleSkidPad.receiveShadow = true;
+  stationRecycleSkid.add(recycleSkidPad);
+
+  // Pipe supports under elevated Station Recycle skid run
+  [-5.8, 0, 5.8].forEach((dx) => {
+    const pier = new THREE.Mesh(new THREE.BoxGeometry(0.45, stationRecycleY - rAntiSurgeHeader, 0.7), matConcretePlinth);
+    pier.position.set(stationRecycleValveX + dx, (stationRecycleY - rAntiSurgeHeader) / 2, stationRecycleZ);
+    stationRecycleSkid.add(pier);
+  });
+
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(stationRecycleTakeoffX, coolerReturnY, dischargeReturnZ),
+      new THREE.Vector3(stationRecycleTakeoffX, stationRecycleY, dischargeReturnZ),
+      new THREE.Vector3(stationRecycleTakeoffX, stationRecycleY, stationRecycleZ),
+      new THREE.Vector3(cfsOutletTieX + 4.0, stationRecycleY, stationRecycleZ),
+      new THREE.Vector3(cfsOutletTieX + 4.0, cfsHeaderY, -30),
+      new THREE.Vector3(cfsOutletTieX, cfsHeaderY, -30),
+    ],
+    rAntiSurgeHeader,
+    matYellowPipe,
+    {
+      flowArrows: 3,
+      equipKey: "station_recycle",
+      lineKey: "station_recycle",
+      segmentTitle: "İstasyon Recycle Kontrol Vanası Hattı (PCV-101 • Spec 4500 §5.8)",
+      fromBoundary: "Station Discharge Header (Gaz Soğutucu Çıkışı Sonrası)",
+      toBoundary: "Station Suction Header (CFS Çıkışı Sonrası / Kompresör Emiş Öncesi)",
+      registerParticlePath: true,
+    }
+  );
+
+  // Upstream & Downstream Flanking Block Valves (Spec 4500 §5.8: block valves on both sides of PCV)
+  createValveStation(stationRecycleValveX + 4.4, stationRecycleY, stationRecycleZ, rAntiSurgeHeader, {
+    hasPlatform: false,
+    hasActuator: false,
+    equipKey: "station_recycle",
+  });
+  createValveStation(stationRecycleValveX - 4.4, stationRecycleY, stationRecycleZ, rAntiSurgeHeader, {
+    hasPlatform: false,
+    hasActuator: false,
+    equipKey: "station_recycle",
+  });
+
+  // Central Station Recycle Control Valve (Globe / Plug-in-Cage + Electropneumatic & Power-Gas Bottle + NRV Check)
+  createValveStation(stationRecycleValveX, stationRecycleY, stationRecycleZ, rAntiSurgeHeader, {
+    hasPlatform: false,
+    hasActuator: true,
+    equipKey: "station_recycle",
+    valveColorMat: matCyanArrow,
+  });
+  const recycleNrv = new THREE.Mesh(
+    new THREE.ConeGeometry(rAntiSurgeHeader * 1.35, rAntiSurgeHeader * 2.4, 16),
+    matFlangeSteel
+  );
+  recycleNrv.rotation.z = Math.PI / 2;
+  recycleNrv.position.set(stationRecycleValveX - 2.3, stationRecycleY, stationRecycleZ);
+  stationRecycleSkid.add(recycleNrv);
+  const recyclePowerGasBottle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.28, 0.28, 1.85, 14),
+    matCyanArrow
+  );
+  recyclePowerGasBottle.position.set(stationRecycleValveX + 1.6, 1.25, stationRecycleZ + 1.6);
+  stationRecycleSkid.add(recyclePowerGasBottle);
+
+  // Sound-Proofing Acoustic Canopy over Station Recycle Control Valve (Spec 4500 §5.8)
+  const stationRecycleCanopy = new THREE.Group();
+  stationRecycleCanopy.position.set(stationRecycleValveX, 0, stationRecycleZ);
+  const canopyW = 4.2;
+  const canopyH = 3.1;
+  const canopyD = 3.4;
+  const canopyBaseY = stationRecycleY - 0.55;
+  const matAcousticPanel = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.55,
+    metalness: 0.35,
+    transparent: true,
+    opacity: 0.42,
+    depthWrite: false,
+  });
+  const canopyShell = new THREE.Mesh(
+    new THREE.BoxGeometry(canopyW, canopyH, canopyD),
+    matAcousticPanel
+  );
+  canopyShell.position.y = canopyBaseY + canopyH / 2;
+  stationRecycleCanopy.add(canopyShell);
+  const canopyRoof = new THREE.Mesh(
+    new THREE.BoxGeometry(canopyW + 0.35, 0.24, canopyD + 0.35),
+    matOliveSteel
+  );
+  canopyRoof.position.y = canopyBaseY + canopyH + 0.12;
+  canopyRoof.castShadow = true;
+  stationRecycleCanopy.add(canopyRoof);
+  [
+    [-canopyW / 2, -canopyD / 2],
+    [canopyW / 2, -canopyD / 2],
+    [-canopyW / 2, canopyD / 2],
+    [canopyW / 2, canopyD / 2],
+  ].forEach(([px, pz]) => {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.16, canopyBaseY + canopyH, 0.16), matCadBlueSteel);
+    post.position.set(px, (canopyBaseY + canopyH) / 2, pz);
+    stationRecycleCanopy.add(post);
+  });
+  const canopyTrim = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(canopyW, canopyH, canopyD)),
+    new THREE.LineBasicMaterial({ color: 0xfacc15 })
+  );
+  canopyTrim.position.y = canopyBaseY + canopyH / 2;
+  stationRecycleCanopy.add(canopyTrim);
+  stationRecycleSkid.add(stationRecycleCanopy);
+
+  registerClickable(stationRecycleSkid, "station_recycle");
+  scene.add(stationRecycleSkid);
+  createCadPipeCallout(
+    `PCV-101 • STATION RECYCLE VALVE (SPEC 4500 §5.8)`,
+    `Soğutucu Çıkışı ➔ 2x Blok Vana + Akustik Kabin + PCV (${pLines.station_recycle?.nominal_size_in || '6"'}) ➔ Emiş`,
+    stationRecycleValveX,
+    stationRecycleY + 4.8,
+    stationRecycleZ,
+    { width: 28, height: 4.7, pipeY: stationRecycleY + rAntiSurgeHeader, accentColor: "#22d3ee", lineKey: "station_recycle", equipKey: "station_recycle" }
+  );
+
+  // ── 7.3 GAS COOLER: Elevated Fin-Fan Air Cooler Bank ──
   const coolerGroup = new THREE.Group();
-  const coolerX0 = 2;
   const rBayHeader = Math.max(rBayInletHeader, rBayOutletHeader);
-  const desiredBayW = Math.max(6.4, Math.min(12.0, coolerTubesPerRow * 0.24), Math.max(rCoolerRiser, rCoolerOutletRiser) * 7.2);
-  const coolerWidth = Math.max(16, Math.min(110, numCoolerBays * desiredBayW));
+  const desiredBayW = desiredCoolerBayW;
+  const coolerWidth = Math.max(18, Math.min(120, numCoolerBays * desiredBayW));
   const coolerEndX = coolerX0 + coolerWidth;
   const coolerDepth = Math.max(14, Math.min(28, 12 + coolerTubeLength * 0.8));
-  const coolerCenterZ = -76;
   const coolerSouthFaceZ = coolerCenterZ + coolerDepth / 2;
   const coolerDeckY = 7.8;
 
@@ -2332,7 +2818,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   const bayInletHeaderZ = coolerSouthFaceZ + 0.85;
   const bayOutletHeaderZ = bayInletHeaderZ + Math.max(0.75, rBayHeader * 0.85);
   const bayHeaderZ = bayInletHeaderZ;
-  const coolerRiserClimbZ = Math.max(-65.5, bayOutletHeaderZ + rBayHeader + 1.15);
+  const coolerRiserClimbZ = bayOutletHeaderZ + rBayHeader + 1.15;
+  const coolerValveZ = (coolerInletHeaderZ + coolerRiserClimbZ) / 2;
 
   // Elevated Fin-Fan Plenum Box
   const plenum = new THREE.Mesh(new THREE.BoxGeometry(coolerWidth, 2.2, Math.max(10, coolerDepth - 0.6)), matVesselGrey);
@@ -2524,7 +3011,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     // Bay #b+1 Inlet & Outlet Riser Pipes connected directly to this bay's own Inlet & Outlet Headers
     createCadPipeRoute(
       [
-        new THREE.Vector3(bayInletX, 1.6, -54),
+        new THREE.Vector3(bayInletX, 1.6, coolerInletHeaderZ),
         new THREE.Vector3(bayInletX, 1.6, coolerRiserClimbZ),
         new THREE.Vector3(bayInletX, bayInletHdrY, coolerRiserClimbZ),
         new THREE.Vector3(bayInletX, bayInletHdrY, bayInletHeaderZ),
@@ -2549,8 +3036,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         new THREE.Vector3(bayOutletX, bayOutletHdrY, bayOutletHeaderZ),
         new THREE.Vector3(bayOutletX, bayOutletHdrY, coolerRiserClimbZ),
         new THREE.Vector3(bayOutletX, coolerOutletCrossY, coolerRiserClimbZ),
-        new THREE.Vector3(bayOutletX, coolerOutletCrossY, -48),
-        new THREE.Vector3(bayOutletX, 1.6, -48),
+        new THREE.Vector3(bayOutletX, coolerOutletCrossY, coolerOutletHeaderZ),
+        new THREE.Vector3(bayOutletX, 1.6, coolerOutletHeaderZ),
       ],
       rCoolerOutletRiser,
       matYellowPipe,
@@ -2586,33 +3073,32 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     createValveStation(
       bayInletX,
       1.6,
-      -58,
+      coolerValveZ,
       Math.max(0.28, rCoolerRiser * 0.95),
-      { hasPlatform: false, equipKey: "air_coolers" }
+      { hasPlatform: false, hasActuator: false, rotationY: Math.PI / 2, equipKey: "air_coolers" }
     );
     createValveStation(
       bayOutletX,
       coolerOutletCrossY,
-      -58,
+      coolerValveZ,
       Math.max(0.28, rCoolerOutletRiser * 0.95),
-      { hasPlatform: false, equipKey: "air_coolers" }
+      { hasPlatform: false, hasActuator: false, rotationY: Math.PI / 2, equipKey: "air_coolers" }
     );
   }
 
-  // Hot Gas Inlet Header & Cooled Gas Outlet Header in front of Gas Cooler (Z: -54 and -48).
-  // Station Discharge Header (rDischHeader) feeds the Gas Cooler hot manifold tie-in:
-  //   - 2-unit layout: x = -5.0 keeps >= 4.5 m X-clearance from cold return riser (x = -0.5).
-  //   - 3+ unit layout: turns north east of coolerEndX + 4.5 to clear all headers.
-  const gasCoolerFeedTurnX = headerEastX <= -6
-    ? -5.0
-    : Math.max(headerEastX + 4.5, coolerEndX + 4.5);
+  // Hot Gas Inlet Header & Cooled Gas Outlet Header in front of Gas Cooler (Z = coolerInletHeaderZ / coolerOutletHeaderZ).
+  // Station Discharge Header (rDischHeader) feeds the Gas Cooler hot manifold tie-in with extra X/Z spacing.
+  const coolerHotFeedX = coolerX0 - 7.0;
+  const gasCoolerFeedTurnX = headerEastX <= coolerHotFeedX - 3.0
+    ? coolerHotFeedX
+    : Math.max(headerEastX + 6.0, coolerEndX + 6.0);
   const gasCoolerFeedPoints = [
-    new THREE.Vector3(headerEastX, 1.5, -11.0),
-    new THREE.Vector3(gasCoolerFeedTurnX, 1.5, -11.0),
-    new THREE.Vector3(gasCoolerFeedTurnX, 1.6, -54.0),
+    new THREE.Vector3(headerEastX, 1.5, frontDischargeZ),
+    new THREE.Vector3(gasCoolerFeedTurnX, 1.5, frontDischargeZ),
+    new THREE.Vector3(gasCoolerFeedTurnX, 1.6, coolerInletHeaderZ),
   ];
   if (gasCoolerFeedTurnX > coolerEndX) {
-    gasCoolerFeedPoints.push(new THREE.Vector3(coolerEndX, 1.6, -54.0));
+    gasCoolerFeedPoints.push(new THREE.Vector3(coolerEndX, 1.6, coolerInletHeaderZ));
   }
   createCadPipeRoute(
     gasCoolerFeedPoints,
@@ -2630,8 +3116,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   );
   createCadPipeRoute(
     [
-      new THREE.Vector3(-5.0, 1.6, -54),
-      new THREE.Vector3(coolerEndX, 1.6, -54),
+      new THREE.Vector3(coolerHotFeedX, 1.6, coolerInletHeaderZ),
+      new THREE.Vector3(coolerEndX, 1.6, coolerInletHeaderZ),
     ],
     rCoolerInlet,
     matYellowPipe,
@@ -2648,8 +3134,8 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   );
   createCadPipeRoute(
     [
-      new THREE.Vector3(-0.5, 1.6, -48),
-      new THREE.Vector3(coolerEndX, 1.6, -48),
+      new THREE.Vector3(coolerReturnStartX, 1.6, coolerOutletHeaderZ),
+      new THREE.Vector3(coolerEndX, 1.6, coolerOutletHeaderZ),
     ],
     rCoolerOutlet,
     matYellowPipe,
@@ -2666,16 +3152,14 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   );
 
   // Gas Cooler By-Pass Line with TCV Control Valve (Note 17).
-  // Lifts from hot inlet manifold (x = -5.0, z = -54) above coolerReturnY and
-  // drops into cold outlet manifold at x = 2.6 (clear of cold return x = -0.5 and Bay #1 inlet riser).
-  const bypassTieX = 2.6;
+  const bypassTieX = coolerX0 + 0.8;
   createCadPipeRoute(
     [
-      new THREE.Vector3(-5.0, 1.6, -54),
-      new THREE.Vector3(-5.0, coolerBypassY, -54),
-      new THREE.Vector3(-5.0, coolerBypassY, -48),
-      new THREE.Vector3(bypassTieX, coolerBypassY, -48),
-      new THREE.Vector3(bypassTieX, 1.6, -48),
+      new THREE.Vector3(coolerHotFeedX, 1.6, coolerInletHeaderZ),
+      new THREE.Vector3(coolerHotFeedX, coolerBypassY, coolerInletHeaderZ),
+      new THREE.Vector3(coolerHotFeedX, coolerBypassY, coolerOutletHeaderZ),
+      new THREE.Vector3(bypassTieX, coolerBypassY, coolerOutletHeaderZ),
+      new THREE.Vector3(bypassTieX, 1.6, coolerOutletHeaderZ),
     ],
     rCoolerBypass,
     matYellowPipe,
@@ -2689,32 +3173,80 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       registerParticlePath: true,
     }
   );
-  createValveStation(1.4, coolerBypassY, -48, Math.max(0.25, rCoolerBypass), { hasPlatform: false, equipKey: "cooler_bypass" });
+  createValveStation((coolerHotFeedX + bypassTieX) / 2, coolerBypassY, coolerOutletHeaderZ, Math.max(0.25, rCoolerBypass), { hasPlatform: false, hasActuator: true, equipKey: "cooler_bypass", valveColorMat: matCyanArrow });
+
+  // ── 7.3B UTILITY GAS SKID (Cooler Inlet Takeoff · 1485 Sm3/h · Odorizer · Electric Heater · 2x100% PRV) & METHANOL DEHYDRATOR ──
+  const utilityGasSkid = new THREE.Group();
+  const utilX = coolerHotFeedX - 12.5;
+  const utilZ = coolerInletHeaderZ + 4.5;
+  const utilPad = new THREE.Mesh(new THREE.BoxGeometry(11.5, 0.34, 6.8), matConcretePlinth);
+  utilPad.position.set(utilX, 0.17, utilZ);
+  utilPad.receiveShadow = true;
+  utilityGasSkid.add(utilPad);
+
+  // Double-pipe preheater + external MCC-fed electric heater + 2x100% parallel PRV runs + odorizer tank
+  [-1.1, 1.1].forEach((uzOff) => {
+    const dpHeater = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 3.6, 12), matHeatTraceOrange);
+    dpHeater.rotation.z = Math.PI / 2;
+    dpHeater.position.set(utilX - 1.8, 1.5, utilZ + uzOff);
+    utilityGasSkid.add(dpHeater);
+
+    const prvPipe = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 3.0, 10), matTealUtilityPipe);
+    prvPipe.rotation.z = Math.PI / 2;
+    prvPipe.position.set(utilX + 2.2, 1.45, utilZ + uzOff);
+    utilityGasSkid.add(prvPipe);
+  });
+  const odorizerTank = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 2.2, 14), matHeatTraceOrange);
+  odorizerTank.position.set(utilX + 4.3, 1.45, utilZ - 1.4);
+  utilityGasSkid.add(odorizerTank);
+  const methanolPot = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 2.4, 14), matCyanArrow);
+  methanolPot.position.set(utilX - 4.4, 1.55, utilZ + 1.5);
+  utilityGasSkid.add(methanolPot);
+
+  createCadPipeRoute(
+    [
+      new THREE.Vector3(coolerHotFeedX, 1.6, coolerInletHeaderZ),
+      new THREE.Vector3(utilX + 4.0, 1.6, coolerInletHeaderZ),
+      new THREE.Vector3(utilX + 4.0, 1.5, utilZ),
+    ],
+    0.14,
+    matTealUtilityPipe,
+    {
+      flowArrows: 1,
+      equipKey: "station_utilities",
+      segmentTitle: "Kullanım Gazı Çekiş Hattı (Gas Cooler Girişi · Özel §4.8.6)",
+      fromBoundary: "Gas Cooler Giriş Manifoldu (L-111)",
+      toBoundary: "Kullanım Gazı & Kokulandırma Skidi (Min. 1485 Sm³/h)",
+    }
+  );
+  registerClickable(utilityGasSkid, "station_utilities");
+  scene.add(utilityGasSkid);
+  createCadGreenLabel("UTILITY GAS & MeOH SKID", utilX, 3.6, utilZ, 12.0, 2.2, -Math.PI / 2, 0, 0);
 
   createCadPipeCallout(
     `L-111..114 • COOLER EKİPMAN MANİFOLDU & TCV`,
     `Discharge Header ➔ E-101 Riserlar (${pLines.cooler_inlet?.nominal_size_in || '-'} / ${pLines.cooler_bay_risers?.nominal_size_in || '-'})`,
     coolerX0 + coolerWidth * 0.5,
     5.8,
-    -54,
+    coolerInletHeaderZ,
     { width: 25, height: 4.5, pipeY: 1.6 + rCoolerInlet, accentColor: "#34d399", lineKey: "cooler_inlet", equipKey: "air_coolers" }
   );
 
   // Translucent Grey Maintenance Box on East Side of Gas Cooler
   const coolerEnv = new THREE.Mesh(new THREE.BoxGeometry(10, 9.5, 18), matEnvelopeBox);
-  coolerEnv.position.set(coolerEndX + 5, 4.75, -76);
+  coolerEnv.position.set(coolerEndX + 5, 4.75, coolerCenterZ);
   scene.add(coolerEnv);
   envelopeMeshes.push(coolerEnv);
 
   registerClickable(coolerGroup, "air_coolers");
   scene.add(coolerGroup);
-  createCadGreenLabel("GAS COOLER", coolerX0 + coolerWidth / 2, coolerDeckY + 2.65, -83, Math.max(18, coolerWidth * 0.7), 3.8, -Math.PI / 2, 0, 0);
+  createCadGreenLabel("GAS COOLER", coolerX0 + coolerWidth / 2, coolerDeckY + 2.65, coolerCenterZ - 7, Math.max(18, coolerWidth * 0.7), 3.8, -Math.PI / 2, 0, 0);
   if (coolerGeometry && coolerGeometry.tubes_per_row) {
     createCadGreenLabel(
       `${coolerTubeRows}x${coolerTubesPerRow} TUBES`,
       coolerX0 + coolerWidth / 2,
       coolerDeckY + 0.6,
-      -68,
+      coolerCenterZ + 8,
       Math.max(14, coolerWidth * 0.55),
       2.4,
       -Math.PI / 2,
@@ -2723,10 +3255,12 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     );
   }
 
-  // ── 7.4 TEMPORARY WASTE STORAGE AREA (North-East Angled Brown Buildings, X: +75 to +110, Z: -102 to -60) ──
+  // ── 7.4 TEMPORARY WASTE STORAGE AREA (North-East Angled Brown Buildings) ──
+  const wasteX = Math.max(125, coolerEndX + 42);
+  const wasteZ = -94;
   const wasteGroup = new THREE.Group();
-  wasteGroup.position.set(92, 0, -82);
-  wasteGroup.rotation.y = -0.62; // Angled parallel to NE perimeter fence as in Screenshot (1) & (2)
+  wasteGroup.position.set(wasteX, 0, wasteZ);
+  wasteGroup.rotation.y = -0.62; // Angled parallel to NE perimeter fence
 
   const wasteBldg1 = new THREE.Mesh(new THREE.BoxGeometry(26, 6.5, 16), matBuildingWall);
   wasteBldg1.position.set(-14, 3.25, -8);
@@ -2741,9 +3275,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   createCadGreenLabel(
     "TEMPORARY WASTE STORAGE AREA",
-    92,
+    wasteX,
     7.2,
-    -82,
+    wasteZ,
     46,
     3.4,
     -Math.PI / 2,
@@ -2765,9 +3299,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     1.5 + rDischHeader + rAntiSurge + 0.45
   );
 
-  // 1) Turbo-Compressor Suction Connection Header — Terminal Section of Station Suction Header (Z = -16.2)
+  // 1) Turbo-Compressor Suction Connection Header — Terminal Section of Station Suction Header
   createCadPipeRoute(
-    [new THREE.Vector3(headerEastX, 1.5, -16.2), new THREE.Vector3(headerWestX, 1.5, -16.2)],
+    [new THREE.Vector3(headerEastX, 1.5, frontSuctionZ), new THREE.Vector3(headerWestX, 1.5, frontSuctionZ)],
     rSuctHeader,
     matYellowPipe,
     {
@@ -2781,9 +3315,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     }
   );
 
-  // 2) Anti-Surge / Recycle Header (Z = -13.6), between suction and discharge.
+  // 2) Anti-Surge / Recycle Header, between suction and discharge.
   createCadPipeRoute(
-    [new THREE.Vector3(headerEastX, 1.5, -13.6), new THREE.Vector3(headerWestX, 1.5, -13.6)],
+    [new THREE.Vector3(headerEastX, 1.5, frontRecycleZ), new THREE.Vector3(headerWestX, 1.5, frontRecycleZ)],
     rAntiSurgeHeader,
     matYellowPipe,
     {
@@ -2800,10 +3334,10 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   // Single anti-surge header tie to the suction header at the west end.
   createCadPipeRoute(
     [
-      new THREE.Vector3(headerWestX, 1.5, -13.6),
-      new THREE.Vector3(headerWestX - 4.0, 1.5, -13.6),
-      new THREE.Vector3(headerWestX - 4.0, 1.5, -16.2),
-      new THREE.Vector3(headerWestX, 1.5, -16.2),
+      new THREE.Vector3(headerWestX, 1.5, frontRecycleZ),
+      new THREE.Vector3(headerWestX - 4.0, 1.5, frontRecycleZ),
+      new THREE.Vector3(headerWestX - 4.0, 1.5, frontSuctionZ),
+      new THREE.Vector3(headerWestX, 1.5, frontSuctionZ),
     ],
     rAntiSurgeHeader,
     matYellowPipe,
@@ -2818,9 +3352,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     }
   );
 
-  // 3) Turbo-Compressor Unit Discharge Header — Hot Collector Feeding Station Discharge Header (Z = -11.0)
+  // 3) Turbo-Compressor Unit Discharge Header — Hot Collector Feeding Station Discharge Header
   createCadPipeRoute(
-    [new THREE.Vector3(headerWestX, 1.5, -11.0), new THREE.Vector3(headerEastX, 1.5, -11.0)],
+    [new THREE.Vector3(headerWestX, 1.5, frontDischargeZ), new THREE.Vector3(headerEastX, 1.5, frontDischargeZ)],
     rUnitDischHeader,
     matYellowPipe,
     {
@@ -2838,47 +3372,47 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   createCadPipeCallout(
     `L-105 • UNIT SUCTION HEADER (TC EMİŞ KOLLEKTÖRÜ)`,
     `Station Suction Header Sonu ➔ Ünite Emiş Branşmanları (${compSuctHeaderLine.nominal_size_in || suctLine.nominal_size_in || '48"'})`,
-    Math.min(headerEastX - 14, -46),
+    Math.min(headerEastX - 18, Math.max(headerWestX + 18, (headerWestX + headerEastX) / 2 + 12)),
     6.5,
-    -16.2,
+    frontSuctionZ,
     { width: 27, height: 4.7, pipeY: 1.5 + rSuctHeader, accentColor: "#38bdf8", lineKey: "comp_suction_header", equipKey: "turbo_compressors" }
   );
   createCadPipeCallout(
     `L-109A • UNIT DISCHARGE HEADER (TC BASMA KOLLEKTÖRÜ)`,
     `TC Ünite Sıcak Çıkışları (L-107) ➔ Soğutucu Girişi (${unitDischHeaderLine.nominal_size_in || dischLine.nominal_size_in || '48"'})`,
-    Math.max(headerWestX + 24, -104),
+    Math.max(headerWestX + 18, Math.min(headerEastX - 18, (headerWestX + headerEastX) / 2 - 12)),
     6.5,
-    -11.0,
+    frontDischargeZ,
     { width: 27, height: 4.7, pipeY: 1.5 + rUnitDischHeader, accentColor: "#f59e0b", lineKey: "unit_discharge_header", equipKey: "turbo_compressors" }
   );
 
-  // Concrete Sleeper Pipe Supports along the 3-Header Corridor
+  // Concrete Sleeper Pipe Supports along the widened 3-Header Corridor
   for (let sx = headerWestX + 6; sx <= headerEastX - 4; sx += 10) {
-    const sleeper = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.9, 7.5), matConcretePlinth);
-    sleeper.position.set(sx, 0.45, -13.6);
+    const sleeper = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.9, 12.2), matConcretePlinth);
+    sleeper.position.set(sx, 0.45, frontRecycleZ);
     scene.add(sleeper);
   }
 
-  // East Header Termination Olive-Green Valve Pit Box
+  // East Header Termination Olive-Green Valve Pit Box (Gas Cooler Side)
   const eastValvePit = new THREE.Group();
-  eastValvePit.position.set(headerEastX + 4, 0, -13.6);
-  const pitWalls = new THREE.Mesh(new THREE.BoxGeometry(6.5, 3.2, 8.8), matOliveSteel);
+  eastValvePit.position.set(headerEastX + 4, 0, frontRecycleZ);
+  const pitWalls = new THREE.Mesh(new THREE.BoxGeometry(6.5, 3.2, 13.5), matOliveSteel);
   pitWalls.position.y = 1.6;
   eastValvePit.add(pitWalls);
-  [-2.6, 0, 2.6].forEach((dz) => {
+  [frontSuctionZ - frontRecycleZ, 0, frontDischargeZ - frontRecycleZ].forEach((dz) => {
     const vCyl = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 2.2, 16), matYellowPipe);
     vCyl.rotation.z = Math.PI / 2;
     vCyl.position.set(0, 1.6, dz);
     eastValvePit.add(vCyl);
   });
-  registerClickable(eastValvePit, "station_recycle");
+  registerClickable(eastValvePit, "turbo_compressors");
   scene.add(eastValvePit);
 
-  // Translucent Future Header Extension Envelope
-  const eastExtEnv = new THREE.Mesh(new THREE.BoxGeometry(32, 3.5, 8.5), matEnvelopeBox);
-  eastExtEnv.position.set(headerEastX + 24, 1.75, -13.6);
-  scene.add(eastExtEnv);
-  envelopeMeshes.push(eastExtEnv);
+  // Translucent Future Header Extension Envelope (Westward toward PIG Station as units are added)
+  const westExtEnv = new THREE.Mesh(new THREE.BoxGeometry(28, 3.5, 13.0), matEnvelopeBox);
+  westExtEnv.position.set(headerWestX - 20, 1.75, frontRecycleZ);
+  scene.add(westExtEnv);
+  envelopeMeshes.push(westExtEnv);
 
   // ══════════════════ 9. DYNAMIC N+1 INDIVIDUAL COMPRESSOR BUILDINGS (COMPRESSOR-01 .. N) ══════════════════
 
@@ -2886,7 +3420,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   const bldgL = 32;
   const bldgWallH = 11.0;
   const bldgRidgeH = 13.6;
-  const bldgCenterZ = 16;
+  const bldgCenterZ = 17;
 
   /**
    * Builds a pitched roof geometry (triangular prism) for industrial buildings.
@@ -2908,7 +3442,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   }
 
   for (let i = 0; i < numComps; i++) {
-    const cx = numComps === 1 ? -60 : compStartX + i * compPitch;
+    const cx = compStartX - i * compPitch;
     const unitNumStr = String(i + 1).padStart(2, "0");
     const unitLabel = `COMPRESSOR-${unitNumStr}`;
 
@@ -3088,34 +3622,66 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     exhaustElbow.castShadow = true;
     unitRoot.add(exhaustElbow);
 
-    // b) External Turbine Combustion Air Intake Filter House & Lube Oil Cooler Skid (SW of Building)
-    const filterSkid = new THREE.Mesh(new THREE.BoxGeometry(5.5, 5.2, 7.5), matPurlinBrown);
-    filterSkid.position.set(-bldgW / 2 - 4.8, 3.2, 11.5);
+    // Internal Dry Gas Seal (DGS) Heated Panel + Duplex 1 µm Cartridge Filters + Separation Seal Vent
+    const dgsPanel = new THREE.Group();
+    const dgsCabinet = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.6, 2.2), matCyanArrow);
+    dgsCabinet.position.set(-5.6, 2.5, -7.2);
+    dgsCabinet.castShadow = true;
+    dgsPanel.add(dgsCabinet);
+    [-0.55, 0.55].forEach((fDz) => {
+      const dgsCartridge = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 1.35, 12), matHeatTraceOrange);
+      dgsCartridge.position.set(-4.65, 2.8, -7.2 + fDz);
+      dgsPanel.add(dgsCartridge);
+    });
+    const dgsVentTee = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.2, 8), matSilverVessel);
+    dgsVentTee.position.set(-5.6, 4.8, -7.2);
+    dgsPanel.add(dgsVentTee);
+    internalGroup.add(dgsPanel);
+
+    // b) External Turbine Combustion Air Intake Self-Cleaning Filter House (<= 8 mbar clean dP)
+    const filterSkid = new THREE.Mesh(new THREE.BoxGeometry(5.5, 5.2, 6.2), matPurlinBrown);
+    filterSkid.position.set(-bldgW / 2 - 4.8, 3.2, 9.8);
     filterSkid.castShadow = true;
     unitRoot.add(filterSkid);
 
-    // c) Standalone Local Unit Electrical / Control Shelter (Brown pitched-roof cabin next to each unit)
+    // c) External Aerial Lube Oil Cooler (Spec 4500 §6.7: 2 electric fans + 3-way thermostatic bypass + Al-clad SS piping)
+    const lubeCooler = new THREE.Group();
+    const lcDeck = new THREE.Mesh(new THREE.BoxGeometry(5.4, 1.8, 6.0), matSilverVessel);
+    lcDeck.position.set(-bldgW / 2 - 4.8, 2.9, 17.5);
+    lcDeck.castShadow = true;
+    lubeCooler.add(lcDeck);
+    [-1.4, 1.4].forEach((fanDz) => {
+      const shroud = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.15, 0.55, 16), matYellowPipe);
+      shroud.position.set(-bldgW / 2 - 4.8, 4.05, 17.5 + fanDz);
+      lubeCooler.add(shroud);
+    });
+    const lc3WayValve = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 10), matValveBody);
+    lc3WayValve.position.set(-bldgW / 2 - 2.2, 2.2, 16.0);
+    lubeCooler.add(lc3WayValve);
+    unitRoot.add(lubeCooler);
+
+    // d) Standalone Local Unit Electrical / Control Shelter (Brown pitched-roof cabin next to each unit)
     const localElecRoom = new THREE.Mesh(new THREE.BoxGeometry(6.2, 4.8, 6.8), matBuildingWall);
     localElecRoom.position.set(-bldgW / 2 - 11.5, 2.4, 11.5);
     localElecRoom.castShadow = true;
     unitRoot.add(localElecRoom);
 
-    // d) Dark-Brown Cable Trench Bridge from South 7.0 M. WIDE ROAD into South Wall of Building
+    // e) Dark-Brown Cable Trench Bridge from South 7.0 M. WIDE ROAD into South Wall of Building
     const cableBridge = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.65, 16), matCableTrench);
     cableBridge.position.set(-bldgW / 2 + 3.5, 0.35, bldgL / 2 + 8);
     unitRoot.add(cableBridge);
 
-    // 6) Front Branch Piping (Suction In, Discharge Out, Anti-Surge ASV Loop & Signature U-Crossover Loop)
+    // 6) Front Branch Piping (Dual Series Isolation Valves + Temporary Start-Up Strainer + ASV + Non-Slam Check)
     const suctBranchX = cx + 3.2;
     const dischBranchX = cx + 7.2;
 
-    // Suction Branch from TC Suction Connection Header (Z = -16.2) into Building North Wall (Z = 0).
+    // Suction Branch from TC Suction Connection Header (frontSuctionZ) into Building North Wall (Z = 1.0).
     createCadPipeRoute(
       [
-        new THREE.Vector3(suctBranchX, 1.5, -16.2),
-        new THREE.Vector3(suctBranchX, suctBranchCrossY, -15.0),
-        new THREE.Vector3(suctBranchX, suctBranchCrossY, -9.5),
-        new THREE.Vector3(suctBranchX, 2.6, -9.5),
+        new THREE.Vector3(suctBranchX, 1.5, frontSuctionZ),
+        new THREE.Vector3(suctBranchX, suctBranchCrossY, frontSuctionZ + 1.5),
+        new THREE.Vector3(suctBranchX, suctBranchCrossY, -6.5),
+        new THREE.Vector3(suctBranchX, 2.6, -6.5),
         new THREE.Vector3(suctBranchX, 2.6, 1.0),
       ],
       rCompSuctionBranch,
@@ -3126,14 +3692,16 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         lineKey: "comp_suction_branch",
         unitLabel,
         segmentTitle: `${unitLabel} Emiş Branşmanı (L-106)`,
-        fromBoundary: "TC Üniteleri Suction Bağlantı Headerı (Z = -16.2m)",
+        fromBoundary: "TC Üniteleri Suction Bağlantı Headerı",
         toBoundary: `${unitLabel} Santrifüj Kompresör Emiş Nozulu`,
         registerParticlePath: true,
       }
     );
-    createValveStation(suctBranchX, 2.6, -5.2, rCompSuctionBranch, { hasPlatform: true, equipKey: "turbo_compressors" });
+    // Dual Series Split-Body Full-Bore Ball Valves per Spec 4500 §5.5 (MOV <=30s + Series Manual Isolation)
+    createValveStation(suctBranchX, 2.6, -4.4, rCompSuctionBranch, { hasPlatform: true, hasActuator: true, rotationY: Math.PI / 2, equipKey: "turbo_compressors" });
+    createValveStation(suctBranchX, 2.6, -2.0, rCompSuctionBranch, { hasPlatform: false, hasActuator: false, rotationY: Math.PI / 2, equipKey: "turbo_compressors" });
 
-    // Internal suction continuation: north-wall entry -> compressor barrel north nozzle.
+    // Internal suction continuation: north-wall entry -> Temporary Start-Up Conical Strainer -> compressor barrel north nozzle.
     createCadPipeRoute(
       [
         new THREE.Vector3(suctBranchX, 2.6, 1.0),
@@ -3155,12 +3723,20 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         registerParticlePath: true,
       }
     );
+    // Temporary Start-Up Conical Strainer & Spacer Spool directly upstream of compressor suction nozzle
+    const tempStrainer = new THREE.Mesh(
+      new THREE.CylinderGeometry(rCompSuctionBranch * 1.45, rCompSuctionBranch * 1.15, 0.9, 16),
+      matHeatTraceOrange
+    );
+    tempStrainer.rotation.x = Math.PI / 2;
+    tempStrainer.position.set(-2.2, 3.4, -11.4);
+    internalGroup.add(tempStrainer);
 
-    // Discharge Branch from Building North Wall out to Station Discharge Header (Z = -11.0)
+    // Discharge Branch from Building North Wall out to Station Discharge Header (frontDischargeZ)
     createCadPipeRoute(
       [
         new THREE.Vector3(dischBranchX, 1.8, 1.0),
-        new THREE.Vector3(dischBranchX, 1.5, -11.0),
+        new THREE.Vector3(dischBranchX, 1.5, frontDischargeZ),
       ],
       rCompDischargeBranch,
       matYellowPipe,
@@ -3171,11 +3747,13 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         unitLabel,
         segmentTitle: `${unitLabel} Basma Branşmanı (L-107)`,
         fromBoundary: `${unitLabel} Santrifüj Kompresör Basma Nozulu / Çekvalf`,
-        toBoundary: "Station Discharge Header Bağlantı Branşmanı (Z = -11.0m)",
+        toBoundary: "Station Discharge Header Bağlantı Branşmanı",
         registerParticlePath: true,
       }
     );
-    createValveStation(dischBranchX, 1.8, -4.5, rCompDischargeBranch, { hasPlatform: true, equipKey: "turbo_compressors" });
+    // Dual Series Unit Discharge Ball Valves + Non-Slam Nozzle Check Valve (Spec 4500 §5.5 & §5.7)
+    createValveStation(dischBranchX, 1.8, -4.6, rCompDischargeBranch, { hasPlatform: true, hasActuator: true, rotationY: Math.PI / 2, equipKey: "turbo_compressors" });
+    createValveStation(dischBranchX, 1.8, -2.2, rCompDischargeBranch, { hasPlatform: false, hasActuator: false, rotationY: Math.PI / 2, equipKey: "turbo_compressors" });
 
     // Internal discharge continuation: compressor barrel south nozzle -> north-wall entry.
     createCadPipeRoute(
@@ -3201,14 +3779,14 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
       }
     );
 
-    // Hot Gas Anti-Surge Recycle Loop (ASV): discharge branch → ASV header.
+    // Hot Gas Anti-Surge Recycle Loop (ASV): discharge branch → ASV header (w/ downstream check & shutoff per Ozel §4.8).
     createCadPipeRoute(
       [
-        new THREE.Vector3(dischBranchX, 1.8, -2.0),
-        new THREE.Vector3(dischBranchX, antiSurgeCrossY, -2.0),
-        new THREE.Vector3(cx + 0.5, antiSurgeCrossY, -2.0),
-        new THREE.Vector3(cx + 0.5, antiSurgeCrossY, -13.6),
-        new THREE.Vector3(cx + 0.5, 1.5, -13.6),
+        new THREE.Vector3(dischBranchX, 1.8, -1.5),
+        new THREE.Vector3(dischBranchX, antiSurgeCrossY, -1.5),
+        new THREE.Vector3(cx + 0.5, antiSurgeCrossY, -1.5),
+        new THREE.Vector3(cx + 0.5, antiSurgeCrossY, frontRecycleZ),
+        new THREE.Vector3(cx + 0.5, 1.5, frontRecycleZ),
       ],
       rAntiSurge,
       matYellowPipe,
@@ -3222,7 +3800,9 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         toBoundary: "Ortak Anti-Surge / Suction Geri Dönüş Headerı",
       }
     );
-    createValveStation(cx + 0.5, antiSurgeCrossY, -7.6, rAntiSurge, { hasPlatform: true, equipKey: "anti_surge" });
+    createValveStation(cx + 0.5, antiSurgeCrossY, -6.0, rAntiSurge, { hasPlatform: true, rotationY: Math.PI / 2, equipKey: "anti_surge" });
+    // Downstream ASV check + shutoff isolation valve prior to recycle header tie-in
+    createValveStation(cx + 0.5, antiSurgeCrossY, -8.8, rAntiSurge, { hasPlatform: false, hasActuator: false, rotationY: Math.PI / 2, equipKey: "anti_surge" });
 
     if (i === 0) {
       createCadPipeCallout(
@@ -3303,11 +3883,29 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
   // 2) GENERATOR & M.V. ROOM (X = +6, Z = +92)
   buildAuxiliaryBuilding(6, 92, 28, 6.8, 18, "GENERATOR & M.V. ROOM", "generator_building");
 
-  // 3) FIRE WATER BUILDING & TANK (X = +64, Z = +88)
-  buildAuxiliaryBuilding(64, 88, 20, 6.8, 26, "FIRE WATER BUILDING & TANK", "safety_relief", Math.PI / 2);
+  // 3) FIRE WATER BUILDING & 300 m3 TANK (X = +64, Z = +88, Spec 4500 §14 / NFPA 20)
+  buildAuxiliaryBuilding(64, 88, 20, 6.8, 26, "FIRE WATER BUILDING & TANK", "fire_water", Math.PI / 2);
+  const fireWaterTank = new THREE.Mesh(new THREE.CylinderGeometry(4.6, 4.6, 5.2, 24), matRedFire);
+  fireWaterTank.position.set(49.5, 2.6, 88.0);
+  fireWaterTank.castShadow = true;
+  registerClickable(fireWaterTank, "fire_water");
+  scene.add(fireWaterTank);
 
-  // 4) AIR COMPRESSOR BUILDING (X = +92, Z = +88)
+  // 4) AIR COMPRESSOR BUILDING (X = +92, Z = +88) + Exterior ASME/CE >= 25 m3 Air Receiver & Dual-Tower Heatless Dryers (Spec 4320/4330/Özel §4.8.7)
   buildAuxiliaryBuilding(92, 88, 15, 6.5, 22, "AIR COMPRESSOR BUILDING", "air_compressor_building", Math.PI / 2);
+  const airReceiverTank = new THREE.Group();
+  const recMesh = new THREE.Mesh(new THREE.CylinderGeometry(1.45, 1.45, 6.2, 18), matSilverVessel);
+  recMesh.position.set(103.5, 3.5, 84.0);
+  recMesh.castShadow = true;
+  airReceiverTank.add(recMesh);
+  [-1.8, 1.8].forEach((dOff) => {
+    const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 3.8, 14), matTealUtilityPipe);
+    tower.position.set(103.5, 2.1, 90.0 + dOff);
+    airReceiverTank.add(tower);
+  });
+  registerClickable(airReceiverTank, "station_utilities");
+  scene.add(airReceiverTank);
+  createCadGreenLabel("AIR RECEIVER >=25 m3", 103.5, 7.2, 84.0, 11.5, 2.0, -Math.PI / 2, 0, Math.PI / 2);
 
   // 5) GUARD SHELTER at South-East Compressor Road Bend (X = +110, Z = +41)
   buildAuxiliaryBuilding(110, 41, 6.5, 3.8, 5.5, "GUARD SHELTER", "guard_shelter");
@@ -3327,18 +3925,18 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
   // ══════════════════ 11. UI TOOLBAR & CAMERA PRESET BINDINGS ══════════════════
 
-  const cutawayCompX = numComps === 1 ? -60 : compStartX + (cutawayUnitIdx - 1) * compPitch;
+  const cutawayCompX = compStartX - (cutawayUnitIdx - 1) * compPitch;
   const manifoldCenterX = (headerWestX + headerEastX) / 2;
-  const cfsCenterX = numFilters === 1 ? -29 : cfsStartX + ((numFilters - 1) * cfsSpacingX) / 2;
+  const filtrationCenterX = (mfsInletX + cfsOutletTieX) / 2;
   const coolerCenterX = coolerX0 + coolerWidth / 2;
   const cameraPresets = {
-    iso: { pos: new THREE.Vector3(-145, 95, -155), look: new THREE.Vector3(-10, 6, 5) },
-    top: { pos: new THREE.Vector3(-5, 255, 6), look: new THREE.Vector3(-5, 0, 5) },
+    iso: { pos: new THREE.Vector3(-155, 102, -168), look: new THREE.Vector3(-10, 6, 0) },
+    top: { pos: new THREE.Vector3(-5, 275, 6), look: new THREE.Vector3(-5, 0, 5) },
     compCutaway: { pos: new THREE.Vector3(cutawayCompX + 24, 22, -26), look: new THREE.Vector3(cutawayCompX, 6, 12) },
     comp4: { pos: new THREE.Vector3(cutawayCompX + 24, 22, -26), look: new THREE.Vector3(cutawayCompX, 6, 12) },
-    manifold: { pos: new THREE.Vector3(manifoldCenterX + 26, 20, -36), look: new THREE.Vector3(manifoldCenterX, 2.5, -13.6) },
-    filtration: { pos: new THREE.Vector3(-45, 36, -118), look: new THREE.Vector3(-45, 4, -68) },
-    cooler: { pos: new THREE.Vector3(coolerCenterX + 4, 30, -30), look: new THREE.Vector3(coolerCenterX, 8, -74) },
+    manifold: { pos: new THREE.Vector3(manifoldCenterX + 28, 22, -40), look: new THREE.Vector3(manifoldCenterX, 2.5, frontRecycleZ) },
+    filtration: { pos: new THREE.Vector3(cfsCenterX - 18, 24, -126), look: new THREE.Vector3(filtrationCenterX, 4.5, cfsVesselZ) },
+    cooler: { pos: new THREE.Vector3(coolerCenterX + 4, 32, -32), look: new THREE.Vector3(coolerCenterX, 8, coolerCenterZ) },
     tiein: { pos: new THREE.Vector3(-232, 22, -74), look: new THREE.Vector3(-192, 0.2, -72) },
     control: { pos: new THREE.Vector3(-25, 55, 155), look: new THREE.Vector3(-15, 5, 85) },
   };
@@ -3498,7 +4096,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     turbo_compressors: { pos: new THREE.Vector3(cutawayCompX + 20, 22, -24), look: new THREE.Vector3(cutawayCompX, 5, bldgCenterZ - 4) },
     compressor_building: { pos: new THREE.Vector3(cutawayCompX + 26, 30, -28), look: new THREE.Vector3(cutawayCompX, 8, bldgCenterZ) },
     air_coolers: { pos: new THREE.Vector3(coolerCenterX, 28, -32), look: new THREE.Vector3(coolerCenterX, 9, -76) },
-    station_recycle: { pos: new THREE.Vector3(headerEastX + 18, 16, -30), look: new THREE.Vector3(headerEastX + 4, 2.2, -13.6) },
+    station_recycle: { pos: new THREE.Vector3(stationRecycleValveX + 14, 13, stationRecycleZ - 16), look: new THREE.Vector3(stationRecycleValveX, stationRecycleY + 0.6, stationRecycleZ) },
     cooler_bypass: { pos: new THREE.Vector3(-1, coolerBypassY + 10, -28), look: new THREE.Vector3(-1, coolerBypassY * 0.75, -50) },
     condensate_system: { pos: new THREE.Vector3(-86, 12, -32), look: new THREE.Vector3(-73, 1.8, -50) },
     safety_relief: { pos: new THREE.Vector3(-24, coolerReturnY + 15, -26), look: new THREE.Vector3(-24, coolerReturnY + 4, -48) },
@@ -3506,6 +4104,11 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
     ultrasonic_meter: { pos: new THREE.Vector3(usmX, coolerReturnY + 12, -30), look: new THREE.Vector3(usmX, coolerReturnY + 1, usmZ) },
     pig_receiver: { pos: new THREE.Vector3(-214, 22, -86), look: new THREE.Vector3(-196, 2, -86) },
     pig_launcher: { pos: new THREE.Vector3(-214, 22, -58), look: new THREE.Vector3(-196, 2, -58) },
+    station_suction_valve: { pos: new THREE.Vector3(-186.5, 11, -96), look: new THREE.Vector3(-186.5, 2.2, -82) },
+    station_discharge_valve: { pos: new THREE.Vector3(-186.5, 11, -48), look: new THREE.Vector3(-186.5, 2.2, -62) },
+    mainline_block_valve: { pos: new THREE.Vector3(-204, 12, -72), look: new THREE.Vector3(-190, 2.2, -72) },
+    station_loading_line: { pos: new THREE.Vector3(-186.5, 8.5, -69), look: new THREE.Vector3(-186.5, 2.2, -79.2) },
+    station_bypass_valve: { pos: new THREE.Vector3(-138, 12, -72), look: new THREE.Vector3(-152, 2.2, -72) },
     tiein: { pos: new THREE.Vector3(-232, 22, -74), look: new THREE.Vector3(-196, 1.2, -72) },
     anti_surge: { pos: new THREE.Vector3(cutawayCompX + 14, 16, -28), look: new THREE.Vector3(cutawayCompX + 0.5, antiSurgeCrossY * 0.7, -8) },
     control_building: { pos: new THREE.Vector3(-62, 24, 46), look: new THREE.Vector3(-62, 5, 86) },
@@ -3539,49 +4142,74 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
 
     if (key === "cyclones") {
       tag = `V-101 .. V-10${numCyclones}`;
-      sub = `MFS Çoklu Siklon Seperatör Grubu (${numCyclones} Ünite)`;
+      sub = `MFS Çoklu Siklon Seperatör Grubu (${eq.cyclones?.configuration || `${numCyclones} Ünite`})`;
+      const cycBf = eq.cyclones?.blow_flask || {};
+      const cycHt = eq.cyclones?.heat_tracing || {};
       rows = [
         ["Proses Basıncı:", `${sm.suction_pressure_bar || 45.0} bar(a)`],
-        ["Basınç Düşümü (ΔP):", `${eq.cyclones?.pressure_drop_bar || 0.15} bar`],
-        ["Giriş Sıcaklığı:", `${sm.suction_temp_c || 15.0} °C`],
-        ["Ünite Başına Debi:", `${eq.cyclones?.flow_per_unit_kgs || (sm.total_mass_flow_kgs / numCyclones).toFixed(1)} kg/s`],
-        ["Sıvı/Katı Ayırma:", `> %99.5 (> 10 µm damlacık)`],
-        ["Giriş Branşmanı:", `${eq.cyclones?.inlet_pipe_size || '30" NPS'} (${suctLine.pipe_material || 'API 5L X70'})`],
-        ["Konfigürasyon:", `${eq.cyclones?.operating_count || (numCyclones - 1)} Aktif + 1 Otomatik Yedek`],
-        ["Drenaj Çıkışı:", `LCV Seviye Kontrol Vanası ➔ TK-101`],
+        ["Temiz ΔP / Alarm:", `${eq.cyclones?.pressure_drop_bar || 0.25} bar (Temiz ≤ 400 mbar · Kirli 700 mbar)`],
+        ["Ünite Payı / Debi:", `%${eq.cyclones?.unit_capacity_pct || 50} · ${eq.cyclones?.flow_per_unit_kgs || (sm.total_mass_flow_kgs / Math.max(1, numCyclones - 1)).toFixed(1)} kg/s (${eq.cyclones?.internal_cyclone_elements || "-"} tüp)`],
+        ["Ayırma Verimi (5260):", `≥ 8 µm %100 · ≥ 4 µm %90 (Katı & Sıvı)`],
+        ["Mekanik (ASME VIII):", `Ø${eq.cyclones?.vessel_diameter_mm || 1200} mm · Spherical Head · 1.6 mm CA · SS Cıvata`],
+        ["Blow-Flask & Seviye:", `Yatay Ø${cycBf.diameter_mm || 600}×${cycBf.length_mm || 1800} mm + 2 Ayrı Seviye Şişesi (4500 §5.2)`],
+        ["Heat Tracing & Drenaj:", `İzolasyon + ≥ 2 °C Elektrik Isıtma${cycHt.freeze_risk_active ? " ⚠️ DONMA RİSKİ" : ""} · Oto/Man Header ➔ TK-101`],
+        ["Giriş / Çıkış Branşmanı:", `${eq.cyclones?.inlet_pipe_size || '16"'} / ${eq.cyclones?.outlet_pipe_size || eq.cyclones?.inlet_pipe_size || '16"'} NPS`],
       ];
     } else if (key === "cartridge_filters") {
+      const flt = eq.cartridge_filters || {};
+      const fltBf = flt.blow_flask || {};
+      const fltHt = flt.heat_tracing || {};
       tag = `F-101 .. F-10${numFilters}`;
-      sub = `CFS Kartuş Filtre Seperatör Grubu (${numFilters} Ünite)`;
+      sub = `CFS Kartuş Filtre Seperatör Grubu (${flt.configuration || `${numFilters} Ünite`})`;
       rows = [
-        ["Giriş / Çıkış Basıncı:", `${(sm.suction_pressure_bar - 0.15).toFixed(2)} → ${(sm.suction_pressure_bar - 0.25).toFixed(2)} bar(a)`],
-        ["Temiz Filtre ΔP:", `${eq.cartridge_filters?.clean_dp_bar || 0.10} bar (Maks: 0.70 bar)`],
-        ["Filtreleme Hassasiyeti:", `0.3 µm (%99.98 aerosol tutma)`],
-        ["Ünite Başına Debi:", `${eq.cartridge_filters?.flow_per_unit_kgs || (sm.total_mass_flow_kgs / numFilters).toFixed(1)} kg/s`],
-        ["Giriş Branşmanı:", `${eq.cartridge_filters?.inlet_pipe_size || '30" NPS'}`],
-        ["Konfigürasyon:", `${eq.cartridge_filters?.operating_count || (numFilters - 1)} Aktif + 1 Yedek`],
-        ["Diferansiyel Basınç:", `PDT Basınç Transmiteri Aktif`],
+        ["Giriş / Çıkış Basıncı:", `${(sm.suction_pressure_bar - (eq.cyclones?.pressure_drop_bar || 0.25)).toFixed(2)} → ${(sm.suction_pressure_bar - (eq.cyclones?.pressure_drop_bar || 0.25) - (flt.clean_dp_bar || 0.10)).toFixed(2)} bar(a)`],
+        ["Temiz ΔP / Değişim / Patlama:", `${flt.clean_dp_bar || 0.10} bar (Temiz ≤ 140 mbar · Değişim 300 mbar · Patlama 3 bar)`],
+        ["Filtrasyon Hassasiyeti:", `${flt.filter_efficiency_micron || "≥ 3 µm (%99.8 katı) · ≥ 10 µm (sıvı)"}`],
+        ["Ünite Payı / Debi:", `%${flt.unit_capacity_pct || 50} · ${flt.flow_per_unit_kgs || (sm.total_mass_flow_kgs / Math.max(1, numFilters - 1)).toFixed(1)} kg/s (${flt.cartridge_elements_count || "-"} kartuş)`],
+        ["Kapak & Mekanik (ASME VIII):", `${flt.closure_type || "QOC + Davit"} · Ø${flt.vessel_diameter_mm || 1350}×${flt.vessel_length_mm || 4700} mm · CE`],
+        ["Blow-Flask & Heat Tracing:", `Yatay Ø${fltBf.diameter_mm || 600}×${fltBf.length_mm || 1800} mm · İzolasyon Braket + ≥ 2 °C${fltHt.freeze_risk_active ? " ⚠️ DONMA RİSKİ" : ""}`],
+        ["Giriş / Çıkış Branşmanı:", `${flt.inlet_pipe_size || '24"'} / ${flt.outlet_pipe_size || flt.inlet_pipe_size || '24"'} NPS`],
+        ["Yedek & Enstrümantasyon:", `${flt.spare_sets_required || "3 set yedek filtre + conta"} · PDT/PDI/PDSH`],
       ];
     } else if (key === "turbo_compressors") {
       tag = `C-101 .. C-10${numComps}`;
-      sub = `API 617 Santrifüj Kompresör & Gaz Türbini Trenleri`;
-      const pwrKw = Math.round(eq.turbo_compressors?.power_per_unit_kw || (sm.total_power_mw * 1000 / numComps));
+      sub = `API 617 Santrifüj Kompresör & Endüstriyel Gaz Türbini Trenleri`;
+      const tc = eq.turbo_compressors || {};
+      const fg = tc.fuel_gas_system || {};
+      const dgs = tc.dry_gas_seal || {};
+      const lo = tc.lube_oil_system || {};
+      const uv = tc.unit_valves_and_strainer || {};
+      const ai = tc.air_intake_and_enclosure || {};
+      const pwrKw = Math.round(tc.power_per_unit_kw || (sm.total_power_mw * 1000 / numComps));
+      const fuelKgh = Number(fg.fuel_per_unit_kgh || 0);
+      const fuelSm3h = Number(fg.fuel_per_unit_sm3h || 0);
       rows = [
         ["Emiş / Basma Basıncı:", `${(sm.suction_pressure_bar - 0.25).toFixed(1)} → ${sm.discharge_pressure_bar || 75.0} bar(a)`],
         ["Basınç Oranı (PR):", `${((sm.discharge_pressure_bar || 75.0) / Math.max(1, (sm.suction_pressure_bar - 0.25))).toFixed(2)} : 1`],
         ["Emiş / Basma Sıcaklığı:", `${sm.suction_temp_c || 15.0} °C → ${eq.air_coolers?.inlet_temp_c || 68.0} °C`],
-        ["Tren Başına Şaft Gücü:", `${pwrKw.toLocaleString()} kW (${(pwrKw / 1000).toFixed(2)} MW)`],
-        ["Tren Başına Gaz Debisi:", `${eq.turbo_compressors?.flow_per_unit_kgs || (sm.total_mass_flow_kgs / numComps).toFixed(1)} kg/s`],
-        ["Tren Başına Yakıt:", `${(pwrKw * 0.195).toFixed(1)} kg/h (~${((pwrKw * 0.195)/0.772).toFixed(0)} Sm³/h)`],
-        ["Nozul Ölçüsü:", `${eq.turbo_compressors?.suction_nozzle_size_in || '10"'} / ${eq.turbo_compressors?.discharge_nozzle_size_in || '6"'}`],
-        ["Anti-Surge Vanası (ASV):", `ASV ${eq.turbo_compressors?.anti_surge_valve_size_in || 12}" (< ${eq.turbo_compressors?.anti_surge_stroke_time_s || 1.5}s Stroking)`],
-        ["Surge Sınır Debisi:", `${eq.turbo_compressors?.surge_limit_flow_kgs || (sm.total_mass_flow_kgs / numComps * 0.65).toFixed(1)} kg/s`],
-        ["Yedeklilik Modeli:", `${eq.turbo_compressors?.operating_count || (numComps - 1)} Aktif + 1 Hazır Yedek (N+1)`],
+        ["Tren Güç / Gaz Debisi:", `${pwrKw.toLocaleString()} kW (${(pwrKw / 1000).toFixed(2)} MW) · ${tc.flow_per_unit_kgs || (sm.total_mass_flow_kgs / numComps).toFixed(1)} kg/s`],
+        ["ISO 6976 Yakıt / Tren:", `${fuelKgh.toFixed(1)} kg/h (~${fuelSm3h.toFixed(0)} Sm³/h · LHV ${fg.lhv_kj_kg || "-"} kJ/kg)`],
+        ["Ünite Vanası & Strainer:", `2×MOV (≤${uv.motor_actuator_stroke_max_s || 30}s) + Geçici Konik Strainer + Non-Slam Çek`],
+        ["Dry Gas Seal (API 692):", `${dgs.filtration_rating_um || 1} µm Duplex + PDCV Regülatör + Carbon Seal`],
+        ["Yağlama (Spec 4500 §6.7):", `${lo.flow_lpm_per_unit || "-"} L/dk · ≥5 dk (${lo.reservoir_min_working_volume_l || "-"} L) · 10 µm Duplex + 2-Fan Cooler`],
+        ["Hava Emiş & Gürültü:", `Self-Cleaning (≤${ai.air_intake_clean_dp_max_mbar || 8} mbar temiz) · ≤ ISO NR 80 / 85 dBA`],
+        ["ASV & Yedeklilik:", `ASV ${tc.anti_surge_valve_size_in || 12}" (< ${tc.anti_surge_stroke_time_s || 0.8}s + Çek/Blok) · ${tc.operating_count || (numComps - 1)}+1`],
       ];
-      const asvSizing = eq.turbo_compressors?.anti_surge_valve_sizing;
+      const asvSizing = tc.anti_surge_valve_sizing;
       if (asvSizing) {
         rows.push(["ASV IEC 60534 Boyut:", `${asvSizing.valve_inch} • Cv ${Number(asvSizing.required_cv || 0).toFixed(1)} • Açıklık %${Number(asvSizing.opening_percent || 0).toFixed(1)}`]);
       }
+    } else if (key === "fuel_gas") {
+      tag = `FG-101`;
+      sub = `Yakıt Gazı Şartlandırma, Isıtma & Basınç Düşürme Skidi (Spec 4500 §8.0)`;
+      const fg = eq.fuel_gas || eq.turbo_compressors?.fuel_gas_system || {};
+      rows = [
+        ["Çekiş Konumu:", fg.takeoff_location || "Ana CFS Filtre Çıkışı / Gaz Soğutucu Girişi Öncesi"],
+        ["Seperatör & Blow-Flask:", `1 µm (%99.8) Yatay Sock Filtre + ≥ ${fg.separator_heat_tracing_min_c || 2} °C Blow-Flask`],
+        ["Eşanjör & Regülatör:", `${fg.heat_exchanger_redundancy || "1+1 Eşanjör"} (${fg.heat_exchanger_outlet_c || "20 ± 5 °C"})`],
+        ["Ünite / Toplam Yakıt (%120):", `${fg.fuel_per_unit_kgh || 0} kg/h (%120: ${fg.design_fuel_per_unit_kgh || 0}) · Toplam ${fg.total_fuel_kgh || 0} kg/h`],
+        ["ISO 6976 LHV & Borulama:", `${fg.lhv_kj_kg || "-"} kJ/kg · ${fg.pipe_material || "316 SS"} · ${fg.spare_sets_required || "2 set yedek"}`],
+      ];
     } else if (key === "compressor_building") {
       tag = `BLDG-01`;
       sub = `Kompresör Ünite Binası & Akustik Mahfaza`;
@@ -3589,26 +4217,26 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         ["Boyutlar (G x U x Y):", `${eq.compressor_building?.width_m || 24}m x ${eq.compressor_building?.length_m || 68}m x ${eq.compressor_building?.height_m || 14}m`],
         ["Taban Alanı:", `${eq.compressor_building?.area_m2 || 1632} m²`],
         ["Tavan Vinci:", `${eq.compressor_building?.crane_capacity_tons || 15} Ton Köprülü Gezer Vinç`],
-        ["Akustik Ses Düzeyi:", `< 85 dBA @ 1m (Çift Kat Taşyünü)`],
-        ["Yangın & Gaz Güvenliği:", `%20 LEL IR Dedektörler + Otomatik CO₂`],
-        ["HVAC & Havalandırma:", `Basınçlandırılmış Ex-Proof Hava Besleme`],
+        ["Akustik Ses Düzeyi:", `${eq.compressor_building?.acoustic_attenuation_dba || "≤ ISO NR 80 / 85 dBA @ 1m"}`],
+        ["Yangın & Gaz Güvenliği:", `${eq.compressor_building?.fire_and_gas_system || "%10/%20 LEL IR Dedektörler + Otomatik CO₂"}`],
+        ["HVAC & Havalandırma:", `≤ ${eq.compressor_building?.enclosure_max_temp_c || 80} °C · UPS DC/400VAC Yedekli Kabin Fanları`],
       ];
     } else if (key === "air_coolers") {
       tag = `E-101`;
-      sub = `Fin-Fan Doğal Gaz Hava Soğutucu Bankı (${numCoolerBays} Bay)`;
+      sub = `Fin-Fan Doğal Gaz Hava Soğutucu Bankı (${numCoolerBays} Bay • Spec 5234 / API 661)`;
       const ac = eq.air_coolers || {};
+      const tb = ac.tube_bundle || {};
       rows = [
         ["Kompresör Çıkışı = Soğutucu Girişi:", `${ac.inlet_temp_c ?? 68.0} °C (${ac.compressor_outlet_coupled ? "✓ Doğrulandı" : "Aktif"})`],
-        ["Hava Giriş / Çıkış Sıcaklığı:", `${ac.air_inlet_temp_c ?? 15.0} °C → ${ac.air_outlet_temp_c ?? 30.0} °C`],
-        ["Maks. Çıkış Limiti / Gaz Çıkışı:", `≤ ${ac.requested_max_outlet_temp_c ?? 45.0} °C / ${ac.outlet_temp_c ?? 38.0} °C`],
-        ["Yaklaşım (Approach) / LMTD:", `${ac.approach_temp_c ?? 15.0} °C / LMTD ${ac.lmtd_c ?? "-"} °C`],
-        ["Toplam Isıl Yük:", `${ac.total_heat_duty_mw || 14.8} MWth`],
-        ["Fan Konfigürasyonu:", `${ac.total_fans || (numCoolerBays * 2)} Adet Induced-Draft VFD Fan`],
-        ["Gaz Basınç Kaybı (ΔP):", `${ac.pressure_drop_bar || 0.45} bar`],
+        ["Hava / Maks. Çıkış Sınırı (4500):", `${ac.air_inlet_temp_c ?? 15.0} °C (Ref ≤40 °C) → ≤ ${ac.requested_max_outlet_temp_c ?? 45.0} °C (${ac.outlet_temp_c ?? 38.0} °C)`],
+        ["Toplam Isıl Yük / LMTD:", `${ac.total_heat_duty_mw || 14.8} MWth • LMTD ${ac.lmtd_c ?? "-"} °C (Approach ${ac.approach_temp_c ?? 15.0} °C)`],
+        ["Dinamik Tüp Demeti ΔP (5234):", `${ac.pressure_drop_bar || 0.35} bar (İzin ≤${tb.allowable_dp_bar ?? 0.50} bar · v=${tb.tube_velocity_ms ?? "-"} m/s · ${tb.tubes_per_bay ?? "-"} tüp/bay · 12 BWG)`],
+        ["Fan & VFD Tahriki (5234 / §5.14):", `${ac.total_fans || (numCoolerBays * 2)} Adet Forced-Draft VFD · IEEE 519 (≥%95) · ≤${ac.max_fan_tip_speed_ms ?? 50} m/s · ≤${ac.fan_motor_max_kw ?? 29.8} kW`],
+        ["Titreşim, Güneşlik & İzolasyon:", `Murphy Titreşim Stop · 2.0 mm Alüminyum Panjur Güneşlik · Kilitli Manuel Vana + 1" Vent/Drenaj`],
         ["Kolektör Boru Çapı:", `${ac.inlet_header_pipe_size || '48"'} / Riser: ${ac.riser_pipe_size || '30"'}`],
       ];
       if ((ac.design_warnings || []).length) {
-        rows.push(["Termal Yaklaşım Uyarısı:", ac.design_warnings[0]]);
+        rows.push(["Termal / Şartname Uyarısı:", ac.design_warnings[0]]);
       }
       const coolerDesign = ac.detailed_design;
       if (coolerDesign) {
@@ -3623,13 +4251,15 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         rows.push(["TCV IEC 60534 Boyut:", `${tcvSizing.valve_inch} • Cv ${Number(tcvSizing.required_cv || 0).toFixed(1)}`]);
       }
     } else if (key === "station_recycle") {
-      tag = `RECYCLE-01`;
-      sub = `${eq.station_recycle?.pipe_size || '48"'} İstasyon Ana Sirkülasyon & Purge Hattı (Note 13)`;
+      tag = `PCV-101 / RECYCLE`;
+      sub = `${eq.station_recycle?.pipe_size || '6"'} İstasyon Recycle Kontrol Vanası (4-NGTL 0-CS-M-002-4500 §5.8)`;
       rows = [
-        ["Boru Çapı & Malzeme:", `${eq.station_recycle?.pipe_size || '48"'} NPS (${suctLine.pipe_material || 'API 5L X70'})`],
-        ["Sirkülasyon Kapasitesi:", `${eq.station_recycle?.max_recirculation_capacity_kgs || 120} kg/s (%100 İstasyon Debisi)`],
-        ["Kontrol Vanası:", `PCV Kademeli Basınç Düşürücü Düşük Gürültülü Trim`],
-        ["İşlev:", `Hat süpürme (purge), ilk devreye alma & rölanti`],
+        ["Boru Çapı & Malzeme:", `${eq.station_recycle?.pipe_size || '6"'} NPS (${suctLine.pipe_material || 'API 5L X70'})`],
+        ["Hat Bağlantısı:", `Gaz Soğutucu Çıkışı Sonrası ➔ Filtrelenmiş Emiş (Kompresör Önü)`],
+        ["Kontrol Vanası Tipi:", `Globe / Plug-in-Cage + Hat İçi NRV Çekvalf (4500 §5.8)`],
+        ["Power-Gas Tüpü & İzolasyon:", `Ayrı Power-Gas Aktüatör Tüpü (316 SS) · 2x Blok Vana + Ses Kabini + Ayrı Note 13 Purge`],
+        ["Stroking & Emniyet:", `20-30 s Ayarlanabilir Hareket • ESD/Sinyal Kaybında Fail-Closed`],
+        ["Sirkülasyon Kapasitesi:", `${eq.station_recycle?.max_recirculation_capacity_kgs || 120} kg/s`],
       ];
       const pcvSizing = eq.station_recycle?.pcv_sizing;
       if (pcvSizing) {
@@ -3659,9 +4289,11 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         ["Seçilen API 526 Orifis / Flanş:", `${psvSizing.selected_orifice || "-"} (${psvSizing.inlet_flange_in || '8"'} × ${psvSizing.outlet_flange_in || '10"'})`],
         ["Atmosferik Vent Çıkış Hızı:", `${Number(psvSizing.vent_exit_velocity_ms || 0).toFixed(1)} m/s (ρ_atm=${Number(psvSizing.atm_gas_density_kgm3 || 0).toFixed(3)} kg/m³)`],
         ["Önerilen Min. PSV Sayısı:", `${psvSizing.recommended_duty_count || 1} Duty + 1 Standby (Toplam ${psvSizing.recommended_total_count || 2})`],
+        ["Yerleşim & Özel Şartname:", `Binalara ≥35 m · Choke Flow · Dual-Outlet Flanş · 2" Pilot + Snubber + Field Test (4500 §5.10 / Özel p.32)`],
       ];
     } else if (key === "esd_valves") {
       const esd = eq.esd_sizing || {};
+      const utilBdv = eq.station_utilities?.safety_and_bypass?.bdv_4500 || {};
       const auto = esd.auto_inputs || {};
       const suct = esd.suction || {};
       const disch = esd.discharge || {};
@@ -3683,6 +4315,7 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         ["Hesaplanan Boşaltma Çapı:", `YB: ${disch.calculated_size_in || disch.selected_size_in || '-'}" (DN${disch.calculated_dn_mm || '-'}) • DB: ${suct.calculated_size_in || suct.selected_size_in || '-'}" (DN${suct.calculated_dn_mm || '-'})`],
         ["Tam Geçişli Hat ESD Çapı:", `Basma: ${disch.selected_size_in || '-'}" • Emiş: ${suct.selected_size_in || '-'}"`],
         ["Önerilen Paralel BDV Sayısı:", `${disch.recommended_duty_count || 1} Aktif (Kurulu: ${esd.esd_count || 2} Adet)`],
+        ["Spec 4500 §5.11 ESD Şartı:", `Binalara ≥35 m · 1 barg ≤60 s (${utilBdv.esd_60s_compliant ? "✓ UYGUN" : `Mevcut ${esd.depressurization_time_min ?? 15} dk`}) · Yağlamalı Plug · Gas-over-Oil Fail-Open`],
       ];
     } else if (key === "ultrasonic_meter") {
       const usm = eq.ultrasonic_meter || {};
@@ -3699,34 +4332,36 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         ["Doğruluk & Düz Boru:", `${usm.accuracy_class || "±0.15%"} • ${usm.straight_run_requirement || "10D / 5D"}`],
       ];
     } else if (key === "condensate_system") {
-      tag = `TK-101`;
-      sub = `Kondensat Sıvı Toplama ve Depolama Sistemi`;
+      const cond = eq.condensate_system || {};
+      tag = `TK-101 (DIN 6608)`;
+      sub = `Kondensat Sıvı Toplama ve Depolama Sistemi (${cond.design_standard || "DIN 6608 / St37 · Spec 5250"})`;
       rows = [
-        ["Tank Hacmi:", `${eq.condensate_system?.collection_tank_volume_m3 || 15} m³`],
-        ["Tahmini Sıvı Üretimi:", `${eq.condensate_system?.estimated_liquid_rate_m3h || 0.45} m³/h`],
-        ["Drenaj Kaynağı:", `MFS & CFS Seviye Kontrol Vanaları (LCV)`],
-        ["Vent Koruması:", `Alev Tutuculu Atmosferik Havalık (Note 14)`],
+        ["Tank Hacmi & Standart:", `${cond.collection_tank_volume_m3 || 15} m³ (Baz ${cond.spec_5250_base_tank_m3 || 5} m³ · 15× Blow-Flask=${cond.min_15x_blowflask_m3 || 3} m³ · 2 bar Test)`],
+        ["Ex-Proof Dalgıç Pompa:", `${cond.pump_flow_m3h || 10}±20% m³/h @ ${cond.pump_head_m || 5} m (${cond.pump_motor_kw || 4} kW · Spec 4190)`],
+        ["Drenaj & Enstrümantasyon:", `${cond.source_drains || "MFS & CFS Blow-Flask → Atmosferik Siklon"} · LI/LSL/LSH`],
+        ["Kaplama & Vent:", `${cond.coating || "İç Sentetik + Dış Kömür Katranı Epoksi (5420)"} · Alev Tutucu (Note 14)`],
       ];
     } else if (key === "pig_receiver") {
+      const pig = eq.pigging || {};
       tag = `PIG-R-56"x48"`;
-      sub = `Suction Pig Alıcı Kovanı (Ana Hat Emişi)`;
+      sub = `Suction Pig Alıcı Kovanı & İstasyon Yan Vanaları (4500 §5.4, §5.12–13)`;
       rows = [
-        ["Kovan Ölçüsü:", `PIG-R 56"x48" (ANSI Class 600)`],
+        ["Kovan Ölçüsü:", `${pig.receiver || 'PIG-R 56"x48" (ANSI Class 600)'}`],
         ["İşletme Basıncı:", `${sm.suction_pressure_bar || 45.0} bar(a)`],
-        ["Hızlı Açılır Kapak:", `Band-lock / Clamp tipi • PIG-L kapısına dönük`],
-        ["Kicker / Dengeleme:", `PIG by-pass hattına receiver & dengeleme bağlantısı`],
-        ["İzolasyon:", `Full-Bore Motorlu Küresel Vana (MOV/ESDV)`],
+        ["İstasyon Yan & Ana Vana:", `${pig.side_valves || "Gas-over-Oil Fail-Closed"} · ΔP Kilidi: ${pig.dp_interlock_barg || "0.5–4.0 barg"}`],
+        ["Loading & Station Bypass:", `${pig.loading_line || "4500 §5.12 Loading"} · ${pig.station_bypass_check || "4500 §5.13 Non-Slam Check Bypass"}`],
+        ["Kicker & Scraper Tee:", `≥%50 Branşmanda Scraper-Barred Tee · Manyetik Pinger`],
       ];
     } else if (key === "cooler_bypass") {
       tag = `TCV-101 BY-PASS`;
-      sub = `Gaz Soğutucu By-Pass & Sıcaklık Kontrol Hattı (Note 17)`;
+      sub = `Gaz Soğutucu By-Pass & Sıcaklık Kontrol Hattı (Spec 4500 §5.14 / Note 17)`;
       rows = [
-        ["Vana Tipi:", `TCV Sıcaklık Kontrollü Oransal Vana`],
+        ["Vana & Aktüatör Tipi:", `Termostatik ON/OFF Baypas · Gas-over-Oil Hidrolik · Fail-Open`],
         ["By-Pass Debisi:", `Maks. %35 İstasyon Debisi`],
-        ["Birincil Kontrol:", `Hava Soğutucu Fanlarında VFD Frekans Kontrolü`],
+        ["Birincil Kontrol:", `Forced-Draft VFD Fanlar (IEEE 519 · SCS 4-20 mA)`],
         ["İkincil Kontrol:", `TCV Sıcak Gaz Karıştırma Baypası`],
         ["Boru Malzemesi:", `${suctLine.pipe_material || 'API 5L X70'}`],
-        ["Görev:", `Kış aylarında / düşük debide aşırı soğumayı önlemek`],
+        ["Görev:", `Kış aylarında / düşük debide aşırı soğumayı önlemek · Sinyal kaybında Fail-Open`],
       ];
       const tcv = eq.air_coolers?.cooler_bypass_valve_sizing;
       if (tcv) {
@@ -3769,14 +4404,23 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         ["Transfer Süresi (ATS):", `< 15 Saniye Otomatik Şebeke Transferi`],
         ["Şalt Hücreleri:", `SF6 Gaz Yalıtımlı / Vakumlu O.G. Kesiciler`],
       ];
-    } else if (key === "air_compressor_building") {
-      tag = `BLDG-UTIL / AIR`;
-      sub = `Enstrüman ve Tesis Servis Havası Binası`;
+    } else if (key === "air_compressor_building" || key === "station_utilities") {
+      const util = eq.station_utilities || {};
+      const ca = util.compressed_air || {};
+      const ug = util.utility_gas || {};
+      const pg = util.power_gas || {};
+      const hg = util.heating_glycol || {};
+      const sb = util.safety_and_bypass || {};
+      tag = key === "station_utilities" ? `UTIL-101..401` : `BLDG-UTIL / AIR`;
+      sub = key === "station_utilities"
+        ? `Power Gas (MeOH), Kullanım Gazı (≥1485 Sm³/h), Basınçlı Hava & 90/70 °C Glikol Sistemleri`
+        : `Enstrüman ve Tesis Servis Havası Binası (Spec 4320 / 4330 / Özel §4.8.7)`;
       rows = [
-        ["Hava Basıncı:", `7.5 - 10.0 bar(g) Basınçlı Enstrüman Havası`],
-        ["Kompresör Tipi:", `2 x %100 Yağsız Vidalı Kompresör (1 Asil + 1 Yedek)`],
-        ["Hava Kalitesi:", `ISO 8573-1 Sınıf 1.2.1 (-40°C Çiy Noktası)`],
-        ["Hava Tankı & Kurutucu:", `Dikey Hava Alıcı Kap + Çift Kuleli Desikant`],
+        ["Basınçlı Hava & Kurutucu:", `${ca.demand_nm3h || "-"} Nm³/h · ${ca.compressor_configuration || "1+1 %100 VFD Eş-Yaşlandırma"}`],
+        ["Hava Kalitesi & Tank (4320/4330):", `${ca.dewpoint_c ?? -40} °C Çiy Noktası (Alarm ${ca.high_dewpoint_alarm_c ?? -20} °C) · Tank ${ca.receiver_volume_m3 ?? 25} m³ (≥${ca.holdup_time_min ?? 10} dk) · ≥304 SS`],
+        ["Kullanım Gazı Skidi (Özel §4.8.6):", `Çekiş: ${ug.takeoff_location || "Gas Cooler Girişi"} · Kapasite ${ug.calculated_demand_sm3h || 1485} Sm³/h (Min 1485) · Harici MCC Elektrik Isıtıcı + Odorizer + PE`],
+        ["Power Gas & Metanol Dehidratör:", `${pg.design_pressure_bar ?? 82.5} bar(g) (%110 MAOP) · Hammerschmidt ΔT=${pg.methanol_dehydrator?.hammerschmidt_depression_c ?? "-"} °C · 1\" Drop / 1/2\" SS`],
+        ["Isıtma Glikol & Emniyet (§11 / §5.12-13):", `${hg.heat_load_kw || "-"} kWth (${hg.medium || "90/70 °C %50/%50 Glikol"} · 2×70% Kazan · 3×50% Pompa) · ${sb.station_bypass_check || "Non-Slam Check Bypass"}`],
       ];
     } else if (key === "guard_shelter") {
       tag = `SHELTER-GUARD`;
@@ -3794,15 +4438,65 @@ export function createStation3dView(container, stationData, onSelectEquipment, o
         ["Bakım Vinci:", `3 Tonluk Gezer Köprülü Vinç`],
         ["Kritik Yedek Parça:", `Vana Trimleri, Mekanik Salmastralar & Filtre Stoğu`],
       ];
+    } else if (key === "fire_water") {
+      const fw = eq.station_utilities?.fire_water || {};
+      tag = `FW-101 / F&G`;
+      sub = `Yangın Suyu, F&G Algılama & Söndürme Sistemi (4500 §14 / NFPA 20)`;
+      rows = [
+        ["Depolama Tankı:", `${fw.tank_volume_m3 ?? 300} m³ Yangın Suyu Tankı`],
+        ["Pompa Grubu:", `${fw.pumps || "NFPA 20: 1 Elektrikli + 1 Dizel + 1 Jockey"}`],
+        ["Hidrant & F&G:", `${fw.ring_main_hydrants || "Çevre Ring Hidrant + %20 LEL IR / UV-IR"}`],
+        ["Türbin Kabini Söndürme:", `${fw.turbine_enclosure_suppression || "Otomatik CO2 / Temiz Gaz"}`],
+      ];
+    } else if (key === "station_suction_valve" || key === "station_discharge_valve") {
+      const sv = key === "station_suction_valve" ? (eq.station_suction_valve || {}) : (eq.station_discharge_valve || {});
+      tag = sv.tag || (key === "station_suction_valve" ? "SV-IN" : "SV-OUT");
+      sub = `${sv.name || "İstasyon Yan Vanası"} (4500 §5.4 / Özel §5.4)`;
+      rows = [
+        ["Vana Standardı:", `${sv.standard || "API 6D QSL 2 · Block & Bleed Küresel"}`],
+        ["Aktüatör & Fail-Safe:", `${sv.actuator || "Gas-over-Oil"} · ${sv.fail_action || "Fail-Closed"}`],
+        ["ΔP Kilidi:", `${sv.dp_interlock || "0.5–4.0 barg ayarlanabilir"}`],
+        ["Gövde Vent / Yağlama:", `${sv.body_vent_class || "1500 Class küresel + sürgülü vana"}`],
+      ];
+    } else if (key === "mainline_block_valve") {
+      const ml = eq.mainline_block_valve || {};
+      tag = ml.tag || "MLBV-101";
+      sub = `${ml.name || "Ana Hat Blok Vanası"} (4500 §5.4)`;
+      rows = [
+        ["Çap & Standart:", `${ml.nominal_size || suctLine.nominal_size_in || '48"'} · ${ml.standard || "API 6D QSL 2"}`],
+        ["Aktüatör & Fail-Safe:", `${ml.actuator || "Gas-over-Oil"} · ${ml.fail_action || "Fail-Open"}`],
+        ["ΔP Kilidi:", `${ml.dp_interlock || "0.5–4.0 barg ayarlanabilir"}`],
+        ["Yerleşim:", `${ml.pit_installation || "Vent & drenajlı vana çukuru"}`],
+      ];
+    } else if (key === "station_loading_line") {
+      const ld = eq.station_loading_line || {};
+      tag = ld.tag || "LV-101 / LV-102";
+      sub = `${ld.name || "İstasyon Dolum Hattı"} (4500 §5.12 / Özel §5.4)`;
+      rows = [
+        ["Konum:", `SV-IN (İstasyon Giriş Vanası) Etrafında By-Pass`],
+        ["Memba Vanası:", `${ld.upstream_valve || "Flanşlı Küresel Vana"}`],
+        ["Mansap Vanası:", `${ld.downstream_valve || "Flanşlı Globe Vana · Kapalı Limit Switch Alarmı"}`],
+        ["Uzaktan Kontrol:", `${ld.remote_control_ozel_5_4 ? "Aktif (Özel §5.4 uzaktan açma-kapama)" : "Manuel"}`],
+      ];
+    } else if (key === "station_bypass_valve") {
+      const bp = eq.station_bypass_valve || {};
+      tag = bp.tag || "NRV-BP-101";
+      sub = `${bp.name || "İstasyon By-Pass Non-Slam Çekvalf"} (4500 §5.13)`;
+      rows = [
+        ["Vana Tipi:", `${bp.valve_type || "Piston / Nozul Non-Slam Çekvalf"}`],
+        ["Bağlantı Yeri:", `${bp.tie_in_location || "Discharge (Soğutucu sonrası, USM öncesi) ↔ Suction"}`],
+        ["Çap:", `${bp.nominal_size || suctLine.nominal_size_in || '48"'}`],
+      ];
     } else if (key === "pig_launcher" || key === "tiein") {
+      const pig = eq.pigging || {};
       tag = `PIG-R / PIG-L`;
-      sub = `${suctLine.nominal_size_in || '48"'} Doğal Gaz Ana Hat & Pig Kovanları`;
+      sub = `${suctLine.nominal_size_in || '48"'} Doğal Gaz Ana Hat & Pig Kovanları (4500 §5.4, §5.12–13)`;
       rows = [
         ["Ana Hat Çapı:", `${suctLine.nominal_size_in || '48"'} NPS (OD: ${suctLine.od_mm || 1219} mm) ${suctLine.pipe_material || 'API 5L X70'}`],
-        ["Kovan Ölçüsü:", `PIG-R 56"x48" / PIG-L 56"x48" (ANSI Class 900)`],
-        ["Oryantasyon:", `Kapaklar karşılıklı • Batarya limiti batı sahasında`],
+        ["Kovan Ölçüsü:", `${pig.receiver || 'PIG-R'} / ${pig.launcher || 'PIG-L'}`],
+        ["Blok Vana & ΔP Kilidi:", `${pig.mainline_block_valve || "Gas-over-Oil Fail-Open"} · ΔP: ${pig.dp_interlock_barg || "0.5–4.0 barg"}`],
+        ["Loading & Bypass:", `${pig.loading_line || "Loading (§5.12)"} · ${pig.station_bypass_check || "Non-Slam Check (§5.13)"}`],
         ["İşletme Basıncı:", `${sm.suction_pressure_bar || 45} bar(a) Emiş • ${sm.discharge_pressure_bar || 75} bar(a) Basma`],
-        ["By-Pass / Kicker:", `Ortak by-pass hattı • hat vanası • PIG-L kicker bağlantısı`],
       ];
     } else {
       tag = key.toUpperCase();

@@ -51,28 +51,34 @@ function infoRows(key, ctx, lang = "tr") {
   const dpFlt = Number(eq.cartridge_filters?.clean_dp_bar ?? 0.10);
 
   if (key === "cyclones") {
-    const opCyc = Number(eq.cyclones?.operating_count || Math.max(1, nCyc - 1));
+    const cyc = eq.cyclones || {};
+    const bf = cyc.blow_flask || {};
+    const opCyc = Number(cyc.operating_count || Math.max(1, nCyc - 1));
     const flowCyc =
-      eq.cyclones?.flow_per_unit_kgs ??
+      cyc.flow_per_unit_kgs ??
       (Number(sm.total_mass_flow_kgs) > 0
         ? (Number(sm.total_mass_flow_kgs) / opCyc).toFixed(2)
         : 12.0);
     const endTag = `V-${100 + nCyc}`;
     return [
-      [isEn ? "Equipment" : "Ekipman", `V-101 … ${endTag} · ${nCyc} ${isEn ? "units" : "ünite"}`],
+      [isEn ? "Equipment" : "Ekipman", `V-101 … ${endTag} · ${nCyc} ${isEn ? "units" : "ünite"} (%${cyc.unit_capacity_pct ?? 50})`],
       [isEn ? "Process pressure" : "Proses basıncı", `${pSuc} bar(a)`],
-      [isEn ? "Pressure drop" : "Basınç düşümü", `${dpCyc} bar`],
+      [isEn ? "Clean / dirty ΔP" : "Temiz / kirli ΔP", `${dpCyc} bar (≤ 0.400 / 0.700 bar)`],
       [isEn ? "Inlet temperature" : "Giriş sıcaklığı", `${tSuc} °C`],
-      [isEn ? "Unit mass flow" : "Ünite debisi", `${flowCyc} kg/s`],
-      [isEn ? "Liquid / solid knockout" : "Sıvı / katı ayırma", `> %${eq.cyclones?.liquid_knockout_pct ?? 99.5} · > 10 µm`],
-      [isEn ? "Inlet / outlet branch" : "Giriş / çıkış branşmanı", `${eq.cyclones?.inlet_pipe_size || `${suc.nominal_size_in || '10"'}`} / ${eq.cyclones?.outlet_pipe_size || eq.cyclones?.inlet_pipe_size || `${suc.nominal_size_in || '10"'}`} NPS`],
+      [isEn ? "Unit flow / tubes" : "Ünite debisi / tüp", `${flowCyc} kg/s · ${cyc.internal_cyclone_elements ?? "-"} ${isEn ? "tubes" : "tüp"}`],
+      [isEn ? "Filtration grade (5260)" : "Ayırma hassasiyeti (5260)", isEn ? "≥ 8 µm 100% · ≥ 4 µm 90%" : "≥ 8 µm %100 · ≥ 4 µm %90"],
+      [isEn ? "Mechanical (ASME VIII)" : "Mekanik (ASME VIII)", `Ø${cyc.vessel_diameter_mm ?? 1200} mm · ${cyc.corrosion_allowance_mm ?? 1.6} mm CA · SS bolts`],
+      [isEn ? "Blow-Flask & level (4500)" : "Blow-Flask & seviye", `Ø${bf.diameter_mm ?? 600}×${bf.length_mm ?? 1800} mm · 2 ${isEn ? "level bottles" : "seviye şişesi"} · ≥ 2 °C`],
+      [isEn ? "Inlet / outlet branch" : "Giriş / çıkış branşmanı", `${cyc.inlet_pipe_size || `${suc.nominal_size_in || '10"'}`} / ${cyc.outlet_pipe_size || cyc.inlet_pipe_size || `${suc.nominal_size_in || '10"'}`} NPS`],
       [isEn ? "Configuration" : "Konfigürasyon", isEn ? `${opCyc} duty + 1 standby` : `${opCyc} aktif + 1 yedek`],
     ];
   }
   if (key === "cartridge_filters") {
-    const opFlt = Number(eq.cartridge_filters?.operating_count || Math.max(1, nFlt - 1));
+    const flt = eq.cartridge_filters || {};
+    const bf = flt.blow_flask || {};
+    const opFlt = Number(flt.operating_count || Math.max(1, nFlt - 1));
     const flowFlt =
-      eq.cartridge_filters?.flow_per_unit_kgs ??
+      flt.flow_per_unit_kgs ??
       (Number(sm.total_mass_flow_kgs) > 0
         ? (Number(sm.total_mass_flow_kgs) / opFlt).toFixed(2)
         : 12.0);
@@ -80,14 +86,15 @@ function infoRows(key, ctx, lang = "tr") {
     const pFltOut = Math.max(0.5, pFltIn - dpFlt);
     const endTag = `F-${100 + nFlt}`;
     return [
-      [isEn ? "Equipment" : "Ekipman", `F-101 … ${endTag} · ${nFlt} ${isEn ? "units" : "ünite"}`],
+      [isEn ? "Equipment" : "Ekipman", `F-101 … ${endTag} · ${nFlt} ${isEn ? "units" : "ünite"} (%${flt.unit_capacity_pct ?? 50})`],
       [isEn ? "Inlet / outlet pressure" : "Giriş / çıkış basıncı", `${pFltIn.toFixed(2)} → ${pFltOut.toFixed(2)} bar(a)`],
-      [isEn ? "Clean filter ΔP" : "Temiz filtre ΔP", `${dpFlt} bar (${isEn ? "max." : "maks."} 0.70 bar)`],
-      [isEn ? "Filtration grade" : "Filtrasyon", eq.cartridge_filters?.filter_efficiency_micron || (isEn ? "0.3 µm · 99.98% aerosol retention" : "0.3 µm · %99.98 aerosol tutma")],
-      [isEn ? "Unit mass flow" : "Ünite debisi", `${flowFlt} kg/s`],
-      [isEn ? "Inlet / outlet branch" : "Giriş / çıkış branşmanı", `${eq.cartridge_filters?.inlet_pipe_size || '12"'} / ${eq.cartridge_filters?.outlet_pipe_size || eq.cartridge_filters?.inlet_pipe_size || '12"'} NPS`],
-      [isEn ? "Configuration" : "Konfigürasyon", isEn ? `${opFlt} duty + 1 standby` : `${opFlt} aktif + 1 yedek`],
-      [isEn ? "Instrumentation" : "Enstrümantasyon", isEn ? "PDT differential pressure transmitter" : "PDT diferansiyel basınç transmitteri"],
+      [isEn ? "Clean / change / burst ΔP" : "Temiz / değişim / patlama ΔP", `${dpFlt} bar (≤ 140 mbar / 300 mbar / 3 bar)`],
+      [isEn ? "Filtration grade (5210)" : "Filtrasyon (5210)", flt.filter_efficiency_micron || (isEn ? "≥ 3 µm (99.8%) · ≥ 10 µm liquid" : "≥ 3 µm (%99.8 katı) · ≥ 10 µm (sıvı)")],
+      [isEn ? "Unit flow / cartridges" : "Ünite debisi / kartuş", `${flowFlt} kg/s · ${flt.cartridge_elements_count ?? "-"} ${isEn ? "elements" : "eleman"}`],
+      [isEn ? "Closure & standard" : "Kapak & standart", `${flt.closure_type || "QOC + Davit"} · ASME VIII CE`],
+      [isEn ? "Blow-Flask & heat trace" : "Blow-Flask & ısıtma", `Ø${bf.diameter_mm ?? 600}×${bf.length_mm ?? 1800} mm · ≥ 2 °C`],
+      [isEn ? "Inlet / outlet branch" : "Giriş / çıkış branşmanı", `${flt.inlet_pipe_size || '12"'} / ${flt.outlet_pipe_size || flt.inlet_pipe_size || '12"'} NPS`],
+      [isEn ? "Configuration & spares" : "Konfigürasyon & yedek", isEn ? `${opFlt} duty + 1 standby · 3 spare sets` : `${opFlt} aktif + 1 yedek · 3 set yedek`],
     ];
   }
   if (key === "air_coolers") {
@@ -589,6 +596,41 @@ export function openEquipmentTeardown(key, context = {}) {
       "#2d6fa8"
     );
 
+    const blowFlaskGrp = new THREE.Group();
+    blowFlaskGrp.add(makeMesh(new THREE.CylinderGeometry(0.36, 0.36, 1.65, 18), matShellDark, [0, 0.25, 0], [0, 0, Math.PI / 2]));
+    [-0.82, 0.82].forEach((dx) => {
+      const cap = makeMesh(new THREE.SphereGeometry(0.36, 12, 10), matShellDark, [dx, 0.25, 0]);
+      cap.scale.set(0.5, 1, 1);
+      blowFlaskGrp.add(cap);
+    });
+    [-0.45, 0.0, 0.45].forEach((dx) => {
+      blowFlaskGrp.add(makeMesh(new THREE.TorusGeometry(0.39, 0.03, 6, 18), matCopper, [dx, 0.25, 0], [0, Math.PI / 2, 0]));
+    });
+    addPart(
+      "Blow-Flask & Heat Tracing (≥ 2 °C)",
+      "Spec 4500 §5.2 gereği MFS gövde altı yatay kondensat blow-flask tamburu, izolasyon ve ≥ 2 °C elektrikli heat tracing; otomatik (LCV) ve manuel ortak drenaj manifoldlarına bağlanır.",
+      blowFlaskGrp,
+      [0, -0.85, 1.05],
+      [0, 0.25, 0],
+      "#f97316"
+    );
+
+    const levelBottlesGrp = new THREE.Group();
+    [-0.36, 0.36].forEach((dz) => {
+      levelBottlesGrp.add(makeMesh(new THREE.CylinderGeometry(0.08, 0.08, 1.35, 12), matBlue, [1.12, 1.45, dz]));
+      [0.95, 1.95].forEach((ty) => {
+        levelBottlesGrp.add(makeMesh(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 8), matFlange, [0.92, ty, dz], [0, 0, Math.PI / 2]));
+      });
+    });
+    addPart(
+      "Çift Enstrüman Seviye Şişesi",
+      "Spec 4500 §5.2 gereği nozuldan uzak, işletme sırasında tek tek izole edilebilen 2 ayrı seviye tüpü (LG/LT/LSH/LSL) ve PDT/PDSH bağlantısı.",
+      levelBottlesGrp,
+      [1.25, 0.1, 0],
+      [1.12, 1.45, 0],
+      "#38bdf8"
+    );
+
     camera.position.set(8.8, 7.6, 11.4);
     if (controls) controls.target.set(0, 3.2, 0);
   };
@@ -623,9 +665,11 @@ export function openEquipmentTeardown(key, context = {}) {
     );
     rearCap.scale.y = 0.42;
     rearClosure.add(rearCap);
+    rearClosure.add(makeMesh(new THREE.CylinderGeometry(0.06, 0.06, 1.35, 10), matBlue, [0.98, 2.15, -2.08]));
+    rearClosure.add(makeMesh(new THREE.BoxGeometry(0.98, 0.09, 0.09), matBlue, [0.49, 2.8, -2.14]));
     addPart(
-      "Hızlı Açılır Kapak",
-      "Kartuş değişimi için eksenel (-Z) açılan hızlı kapak (quick-opening closure).",
+      "QOC Hızlı Açılır Kapak & Davit",
+      "Spec 5210 §4.1 & Özel §4.8.2: Hızlı açılma/kapanmaya uygun QOC kapak ve Davit kolu; 3 set kapak contası yedekli.",
       rearClosure,
       [0, 0, -1.35],
       [0, 1.85, -2.38],
@@ -702,11 +746,25 @@ export function openEquipmentTeardown(key, context = {}) {
     }
     addPart(
       "Kartuş Filtreler",
-      "0.3 µm kartuş filtre demeti; hızlı açılır kapaktan eksenel olarak çekilir.",
+      "Spec 5210 §4.4 (≥ 3 µm %99.8 katı · ≥ 10 µm sıvı) kartuş demeti; temiz ≤ 140 mbar, değişim 300 mbar, patlama 3 bar; QOC kapaktan çekilir.",
       cartridges,
       [0, 0, -0.75],
       [0.52, 2.25, -1.15],
       "#2f7f6f"
+    );
+
+    const cfsBlowFlaskGrp = new THREE.Group();
+    cfsBlowFlaskGrp.add(makeMesh(new THREE.CylinderGeometry(0.32, 0.32, 1.85, 16), matShellDark, [0, 0.36, 0], [Math.PI / 2, 0, 0]));
+    [-0.55, 0.0, 0.55].forEach((dz) => {
+      cfsBlowFlaskGrp.add(makeMesh(new THREE.TorusGeometry(0.35, 0.03, 6, 16), matCopper, [0, 0.36, dz], [0, 0, 0]));
+    });
+    addPart(
+      "Blow-Flask & Heat Tracing (≥ 2 °C)",
+      "Spec 5210 §4.1 & Özel §4.8.2: Yatay kondensat rezervuarı, izolasyon braketleri ve kendinden regüleli ≥ 2 °C heat tracing + LCV/PDT.",
+      cfsBlowFlaskGrp,
+      [0, -0.75, 0],
+      [0, 0.36, 0],
+      "#f97316"
     );
 
     const saddles = new THREE.Group();

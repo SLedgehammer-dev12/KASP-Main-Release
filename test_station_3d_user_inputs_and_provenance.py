@@ -677,3 +677,276 @@ class TestParameterProvenanceMatrixAndWebSyntax:
         assert 'lineKey: "filter_outlet_branch"' in s3d_src
         assert "rCycloneInlet" in s3d_src and "rCycloneOutlet" in s3d_src
         assert "rFilterInlet" in s3d_src and "rFilterOutlet" in s3d_src
+
+    def test_station_3d_cfs_elevated_above_headers_with_equal_diameter_ball_valves_and_wide_spacing(self):
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+
+        # Elevated CFS vessels above CFS inlet/outlet header level + dedicated inlet & outlet headers
+        assert "cfsHeaderY" in s3d and "cfsVesselY" in s3d
+        assert "cfsInletHeaderZ" in s3d and "cfsOutletHeaderZ" in s3d
+        assert "cfsPitchX" in s3d
+
+        # Inside the CFS per-filter loop, both inlet and outlet ball valves use exact branch pipe radii
+        cfs_loop_start = s3d.index("for (let i = 0; i < numFilters; i++)")
+        cfs_loop_end = s3d.index("registerClickable(cfsGroup", cfs_loop_start)
+        cfs_block = s3d[cfs_loop_start:cfs_loop_end]
+        assert "createValveStation(" in cfs_block
+        assert "rFilterInlet" in cfs_block
+        assert "rFilterOutlet" in cfs_block
+        inlet_valve_matches = [line for line in cfs_block.splitlines() if "createValveStation(" in line and "rFilterInlet" in line]
+        outlet_valve_matches = [line for line in cfs_block.splitlines() if "createValveStation(" in line and "rFilterOutlet" in line]
+        assert inlet_valve_matches, "CFS per-filter inlet ball valve must use exact rFilterInlet pipe radius"
+        assert outlet_valve_matches, "CFS per-filter outlet ball valve must use exact rFilterOutlet pipe radius"
+        assert "rotationY: Math.PI / 2" in "\n".join(inlet_valve_matches)
+        assert "rotationY: Math.PI / 2" in "\n".join(outlet_valve_matches)
+
+        # Expanded equipment spacing constants
+        assert "const compPitch = 58" in s3d
+        assert "frontSuctionZ" in s3d and "frontRecycleZ" in s3d and "frontDischargeZ" in s3d
+
+    def test_station_3d_compressors_start_from_cooler_side_and_grow_westward(self):
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+
+        # Compressors must anchor near Gas Cooler (coolerX0) and step westward (- i * compPitch) toward PIG traps
+        assert "compStartX - i * compPitch" in s3d
+        assert "compStartX - Math.max(0, numComps - 1) * compPitch" in s3d
+        assert "compStartX - (cutawayUnitIdx - 1) * compPitch" in s3d
+        assert "coolerX0" in s3d.split("const compStartX")[1].splitlines()[0]
+        assert "const westLoopRoadX" in s3d
+
+    def test_station_3d_has_station_recycle_control_valve_with_block_valves_and_canopy(self):
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+
+        # Spec 4-NGTL 0-CS-M-002-4500 Sec 5.8 Station Recycle Valve downstream of Gas Cooler -> filtered suction
+        assert "stationRecycleTakeoffX" in s3d
+        assert "stationRecycleValveX" in s3d
+        assert "stationRecycleZ" in s3d
+        assert "stationRecycleCanopy" in s3d
+        # Must branch downstream of Gas Cooler on dischargeReturnZ and return to filtered suction spine at cfsOutletTieX
+        skid_start = s3d.index("stationRecycleTakeoffX")
+        skid_end = s3d.index("registerClickable(stationRecycleSkid", skid_start)
+        skid_block = s3d[skid_start:skid_end]
+        assert "dischargeReturnZ" in skid_block
+        assert "cfsOutletTieX" in skid_block
+        assert skid_block.count("createValveStation(") >= 3, (
+            "Station Recycle skid must include control valve + 2 flanking block valves"
+        )
+        assert "lineKey: \"station_recycle\"" in skid_block
+        assert "equipKey: \"station_recycle\"" in skid_block
+
+    def test_station_service_accepts_equiv_pipe_lengths_and_exposes_spec_4500_compliance_and_ui(self):
+        from kasp.services.station_service import calculate_station_process_model
+
+        res = calculate_station_process_model({
+            "flow": 95.0,
+            "flow_unit": "kg/s",
+            "p_in": 40.0,
+            "p_in_unit": "bar(a)",
+            "p_out": 74.0,
+            "p_out_unit": "bar(a)",
+            "t_in": 20.0,
+            "gas_comp": NATURAL_GAS,
+            "suction_equiv_length_m": 220.0,
+            "discharge_equiv_length_m": 280.0,
+        })
+        comp = res["station_piping"].get("spec_4500_compliance")
+        assert isinstance(comp, dict)
+        assert comp["suction_piping"]["equiv_length_m"] == pytest.approx(220.0)
+        assert comp["discharge_piping"]["equiv_length_m"] == pytest.approx(280.0)
+
+        ps = res["parameter_sources"]
+        assert "spec_4500_piping_compliance" in ps["coupling_checks"]
+        equip_by_key = {item["key"]: {p["param"]: p["source"] for p in item["parameters"]} for item in ps["equipment"]}
+        assert "spec_4500_piping_compliance" in equip_by_key
+        assert equip_by_key["spec_4500_piping_compliance"]["suction_equiv_length_m"] == "user_input"
+        assert equip_by_key["spec_4500_piping_compliance"]["discharge_equiv_length_m"] == "user_input"
+
+        stab = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "stationTab.js").read_text(encoding="utf-8")
+        assert "suction_equiv_length_m" in stab
+        assert "discharge_equiv_length_m" in stab
+        assert "input-param-suct-len" in stab
+        assert "input-param-disch-len" in stab
+        assert "spec_4500_compliance" in stab
+
+    def test_station_3d_mfs_dynamic_provenance_blow_flask_dual_bottles_and_heat_tracing(self):
+        from kasp.services.station_service import calculate_station_process_model
+
+        res = calculate_station_process_model({
+            "flow": 84.0,
+            "flow_unit": "kg/s",
+            "p_in": 32.0,
+            "p_in_unit": "bar(a)",
+            "p_out": 70.0,
+            "p_out_unit": "bar(a)",
+            "t_in": 18.0,
+            "gas_comp": NATURAL_GAS,
+        })
+        ps = res["parameter_sources"]
+        equip_by_key = {item["key"]: item["parameters"] for item in ps["equipment"]}
+        cyc_params = {p["param"]: p for p in equip_by_key["cyclones"]}
+        # Dynamic sizing must NOT claim fixed 22.0 kg/s default capacity
+        assert cyc_params["unit_cap_cyclone_kgs"]["value"] == pytest.approx(42.0, abs=0.1)
+        assert cyc_params["unit_cap_cyclone_kgs"]["source"] == "station_3d_calc"
+        assert "efficiency_spec" in cyc_params
+        assert "heat_tracing_min_c" in cyc_params
+
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+        stab = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "stationTab.js").read_text(encoding="utf-8")
+        td = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "equipmentTeardown.js").read_text(encoding="utf-8")
+
+        assert "blowFlask" in s3d
+        assert "levelBottle" in s3d
+        assert "heatTrace" in s3d
+        assert "8 µm" in s3d and "400 mbar" in s3d and "700 mbar" in s3d and "1.6 mm" in s3d
+        assert "8 µm" in stab and "Blow-Flask" in stab and "2 °C" in stab
+        assert "8 µm" in td and "Blow-Flask" in td and "corrosion_allowance_mm" in td and "mm CA" in td
+
+    def test_station_3d_cfs_dynamic_provenance_qoc_davit_blow_flask_and_specs(self):
+        from kasp.services.station_service import calculate_station_process_model
+
+        res = calculate_station_process_model({
+            "flow": 84.0,
+            "flow_unit": "kg/s",
+            "p_in": 32.0,
+            "p_in_unit": "bar(a)",
+            "p_out": 70.0,
+            "p_out_unit": "bar(a)",
+            "t_in": 18.0,
+            "gas_comp": NATURAL_GAS,
+        })
+        ps = res["parameter_sources"]
+        equip_by_key = {item["key"]: item["parameters"] for item in ps["equipment"]}
+        flt_params = {p["param"]: p for p in equip_by_key["cartridge_filters"]}
+        assert flt_params["unit_cap_filter_kgs"]["value"] == pytest.approx(42.0, abs=0.1)
+        assert flt_params["unit_cap_filter_kgs"]["source"] == "station_3d_calc"
+        assert "efficiency_spec" in flt_params
+        assert "heat_tracing_min_c" in flt_params
+
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+        stab = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "stationTab.js").read_text(encoding="utf-8")
+        td = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "equipmentTeardown.js").read_text(encoding="utf-8")
+
+        assert "cfsBlowFlask" in s3d
+        assert "qocDavit" in s3d
+        assert "140 mbar" in s3d and "300 mbar" in s3d and "3 µm" in s3d
+        assert "select-param-filters" in stab
+        assert "QOC" in stab and "140 mbar" in stab and "300 mbar" in stab
+        assert "QOC" in td and "140" in td and "300" in td and "Davit" in td
+
+    def test_station_3d_turbo_compressor_auxiliaries_fuel_dgs_lube_and_provenance(self):
+        from kasp.services.station_service import calculate_station_process_model
+
+        res = calculate_station_process_model({
+            "flow": 90.0,
+            "flow_unit": "kg/s",
+            "p_in": 35.0,
+            "p_in_unit": "bar(a)",
+            "p_out": 75.0,
+            "p_out_unit": "bar(a)",
+            "t_in": 20.0,
+            "gas_comp": NATURAL_GAS,
+        })
+        ps = res["parameter_sources"]
+        equip_by_key = {item["key"]: item["parameters"] for item in ps["equipment"]}
+        assert "fuel_gas" in equip_by_key
+        tc_params = {p["param"]: p for p in equip_by_key["turbo_compressors"]}
+        assert "dgs_spec" in tc_params
+        assert "lube_oil_spec" in tc_params
+        assert "unit_valves_spec" in tc_params
+        assert "air_intake_spec" in tc_params
+
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+        stab = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "stationTab.js").read_text(encoding="utf-8")
+
+        # 3D models & HUD reflect temporary strainer, dual unit valves, DGS skid, fuel gas pre-cooler skid, lube oil cooler
+        assert "tempStrainer" in s3d
+        assert "dgsPanel" in s3d
+        assert "lubeCooler" in s3d
+        assert "fuelGasSkid" in s3d
+        assert "0.195" not in s3d
+        assert "10 µm" in s3d and "1 µm" in s3d
+        assert "fuel_gas_system" in s3d
+
+        # 2D SVG & Inspector replace hardcoded 0.195 factor with live ISO 6976 & Item 4 auxiliaries
+        assert "0.195" not in stab
+        assert "fuel_gas_system" in stab
+        assert "dry_gas_seal" in stab
+        assert "lube_oil_system" in stab
+
+    def test_station_3d_cooler_dynamic_dp_tcv_and_utilities_ui(self):
+        from kasp.services.station_service import calculate_station_process_model
+
+        res = calculate_station_process_model({
+            "flow": 95.0,
+            "flow_unit": "kg/s",
+            "p_in": 38.0,
+            "p_in_unit": "bar(a)",
+            "p_out": 76.0,
+            "p_out_unit": "bar(a)",
+            "t_in": 20.0,
+            "gas_comp": NATURAL_GAS,
+        })
+        ps = res["parameter_sources"]
+        equip_by_key = {item["key"]: item["parameters"] for item in ps["equipment"]}
+        assert "station_utilities" in equip_by_key
+        ac_params = {p["param"]: p for p in equip_by_key["air_coolers"]}
+        assert ac_params["pressure_drop_bar"]["source"] == "station_3d_calc"
+
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+        stab = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "stationTab.js").read_text(encoding="utf-8")
+
+        assert "Forced-Draft" in stab
+        assert "Induced-Draft" not in stab
+        assert "station_utilities" in s3d
+        assert "station_utilities" in stab
+        assert "Gas-over-Oil" in s3d and "Fail-Open" in s3d
+        assert "utilityGasSkid" in s3d or "airReceiverTank" in s3d
+
+    def test_station_3d_recycle_pigging_condensate_5250_and_fire_water_ui(self):
+        from kasp.services.station_service import calculate_station_process_model
+
+        res = calculate_station_process_model({
+            "flow": 95.0,
+            "flow_unit": "kg/s",
+            "p_in": 38.0,
+            "p_in_unit": "bar(a)",
+            "p_out": 76.0,
+            "p_out_unit": "bar(a)",
+            "t_in": 20.0,
+            "gas_comp": NATURAL_GAS,
+        })
+        equip_by_key = {item["key"]: item["parameters"] for item in res["parameter_sources"]["equipment"]}
+        assert "pigging" in equip_by_key
+        assert "fire_water" in equip_by_key
+        cond_params = {p["param"]: p for p in equip_by_key["condensate_system"]}
+        assert "spec_5250_pump" in cond_params
+
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+        stab = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "stationTab.js").read_text(encoding="utf-8")
+
+        assert "DIN 6608" in s3d and ("300 m³" in s3d or "300} m³" in s3d)
+        assert "DIN 6608" in stab and ("300 m³" in stab or "300} m³" in stab)
+        assert 'key === "fire_water"' in s3d and 'key === "fire_water"' in stab
+        assert "0.5–4.0 barg" in s3d or "0.5-4.0 barg" in s3d
+
+    def test_station_3d_and_2d_expose_4500_valves_loading_and_bypass(self):
+        s3d = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "station3dView.js").read_text(encoding="utf-8")
+        stab = (REPO_ROOT / "kasp" / "web" / "src" / "components" / "stationTab.js").read_text(encoding="utf-8")
+
+        for key in (
+            "station_suction_valve",
+            "station_discharge_valve",
+            "mainline_block_valve",
+            "station_loading_line",
+            "station_bypass_valve",
+        ):
+            assert f'"{key}"' in s3d, f"{key} missing in station3dView.js"
+            assert f'data-equip-key="{key}"' in stab, f"{key} missing in 2D SVG in stationTab.js"
+            assert f'key === "{key}"' in stab, f"{key} inspector missing in stationTab.js"
+        assert 'data-equip-key="ultrasonic_meter"' in stab
+
+
+
+
+
+

@@ -92,6 +92,8 @@ class PipeSizingService:
         cyclone_outlet_nominal: Optional[str] = None,
         filter_inlet_nominal: Optional[str] = None,
         filter_outlet_nominal: Optional[str] = None,
+        suction_equiv_length_m: float = 120.0,
+        discharge_equiv_length_m: float = 150.0,
     ) -> Dict[str, Any]:
         """
         Calculates exact ASME B36.10M commercial pipe sizes, schedules, wall thicknesses,
@@ -150,7 +152,13 @@ class PipeSizingService:
 
         def _eos_props_at(p_bar_val: float, t_c_val: float) -> Dict[str, Optional[float]]:
             if gas_obj is None or solver is None:
-                return {"density_kgm3": None, "viscosity_pa_s": None, "z_factor": None}
+                return {
+                    "density_kgm3": None,
+                    "viscosity_pa_s": None,
+                    "z_factor": None,
+                    "speed_of_sound_ms": None,
+                    "isentropic_k": None,
+                }
             key = (round(float(p_bar_val), 3), round(float(t_c_val), 2))
             if key not in state_cache:
                 try:
@@ -161,11 +169,21 @@ class PipeSizingService:
                     z_val = float(st.Z) if st.Z and math.isfinite(st.Z) and st.Z > 0 else None
                     raw_mu = st.raw_props.get("mu") if hasattr(st, "raw_props") and isinstance(st.raw_props, dict) else None
                     mu_val = float(raw_mu) if raw_mu is not None and math.isfinite(float(raw_mu)) and float(raw_mu) > 0 else None
-                    state_cache[key] = (rho_val, mu_val, z_val)
+                    c_raw = getattr(st, "speed_of_sound", None)
+                    c_val = float(c_raw) if c_raw is not None and math.isfinite(float(c_raw)) and float(c_raw) > 0 else None
+                    k_raw = getattr(st, "k", None)
+                    k_val = float(k_raw) if k_raw is not None and math.isfinite(float(k_raw)) and float(k_raw) > 0 else None
+                    state_cache[key] = (rho_val, mu_val, z_val, c_val, k_val)
                 except Exception:
-                    state_cache[key] = (None, None, None)
-            rho_c, mu_c, z_c = state_cache[key]
-            return {"density_kgm3": rho_c, "viscosity_pa_s": mu_c, "z_factor": z_c}
+                    state_cache[key] = (None, None, None, None, None)
+            rho_c, mu_c, z_c, c_c, k_c = state_cache[key]
+            return {
+                "density_kgm3": rho_c,
+                "viscosity_pa_s": mu_c,
+                "z_factor": z_c,
+                "speed_of_sound_ms": c_c,
+                "isentropic_k": k_c,
+            }
 
         def _norm_nominal(val: Optional[str]) -> Optional[str]:
             if val is None:
@@ -806,6 +824,29 @@ class PipeSizingService:
                     f"{tag} ({name}): Seçilen boru et kalınlığı {standard_code} standardı için yetersiz."
                 )
 
+        from kasp.core.station_piping_compliance import evaluate_station_piping_compliance
+
+        spec_4500_compliance, compliance_warnings = evaluate_station_piping_compliance(
+            lines=lines,
+            mass_flow_kgs=mass_flow_kgs,
+            p_in_bar=p_in_bar,
+            p_out_bar=p_out_bar,
+            p_cooled_bar=p_cooled,
+            t_in_c=t_in_c,
+            t_discharge_c=t_discharge_c,
+            t_cooled_c=t_cooled_c,
+            gas_mw=gas_mw,
+            pipe_material=pipe_material,
+            design_factor_F=design_factor_F,
+            dp_cyclone_bar=float(dp_cyclone_bar or 0.0),
+            dp_filter_bar=float(dp_filter_bar or 0.0),
+            dp_cooler_bar=float(dp_cooler_bar or 0.0),
+            suction_equiv_length_m=suction_equiv_length_m,
+            discharge_equiv_length_m=discharge_equiv_length_m,
+            eos_state_fn=_eos_props_at if gas_obj is not None else None,
+        )
+        piping_warnings.extend(compliance_warnings)
+
         # Overall network statistics & Station Main-Header / Equipment Boundary Architecture
         total_steel_weight_ton_per_km = sum(l["pipe_weight_kg_m"] for l in lines.values()) / 1000.0
         avg_velocity = sum(l["actual_velocity_ms"] for l in lines.values()) / len(lines)
@@ -926,6 +967,7 @@ class PipeSizingService:
             "average_network_velocity_ms": round(avg_velocity, 2),
             "estimated_steel_weight_ton_per_km": round(total_steel_weight_ton_per_km, 2),
             "warnings": piping_warnings,
+            "spec_4500_compliance": spec_4500_compliance,
             "piping_architecture": piping_architecture,
             "lines": lines,
         }

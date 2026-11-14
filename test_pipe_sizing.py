@@ -183,3 +183,113 @@ def test_pipe_sizing_api_endpoint():
     assert "wall_thickness_mm" in data
     assert "actual_velocity_ms" in data
     assert "velocity_status" in data
+
+
+def test_compressible_multisegment_hydraulic_engine_and_empirical_crosscheck():
+    """Verify multi-segment compressible Darcy-Weisbach ΔP & Weymouth/Panhandle empirical cross-checks."""
+    from kasp.core.station_piping_compliance import calculate_compressible_pipe_dp
+
+    res_short = calculate_compressible_pipe_dp(
+        mass_flow_kgs=120.0,
+        p_in_bar=45.0,
+        t_c=15.0,
+        id_mm=660.4,
+        equiv_length_m=120.0,
+        gas_mw=18.2,
+    )
+    res_long = calculate_compressible_pipe_dp(
+        mass_flow_kgs=120.0,
+        p_in_bar=45.0,
+        t_c=15.0,
+        id_mm=660.4,
+        equiv_length_m=1200.0,
+        gas_mw=18.2,
+    )
+    assert res_short["method"] == "compressible_darcy_weisbach_20seg"
+    assert res_short["dp_total_bar"] > 0.0
+    assert res_long["dp_total_bar"] > res_short["dp_total_bar"] * 9.0
+    assert res_long["velocity_out_ms"] > res_long["velocity_in_ms"]
+    assert 0.0 < res_short["mach_max"] < 0.25
+    assert res_short["choked"] is False
+    emp = res_short["empirical_dp_bar"]
+    assert emp["weymouth"] > 0.0
+    assert emp["panhandle_a"] > 0.0
+    assert emp["panhandle_b"] > 0.0
+
+
+def test_spec_4500_piping_compliance_checks_dp_stress_and_acoustics():
+    """Verify Spec 4-NGTL 0-CS-M-002-4500 §5.1 suction/discharge ΔP, B31.3/B31.8 stress & acoustic checks."""
+    res_ok = PipeSizingService.size_station_network(
+        mass_flow_kgs=120.0,
+        p_in_bar=45.0,
+        p_out_bar=75.0,
+        t_in_c=15.0,
+        t_discharge_c=82.0,
+        t_cooled_c=45.0,
+        comp_op_count=4,
+        cyclone_op_count=3,
+        filter_op_count=3,
+        cooler_bays_count=6,
+        dp_cyclone_bar=0.85,
+        dp_filter_bar=0.75,
+        dp_cooler_bar=0.40,
+        suction_equiv_length_m=120.0,
+        discharge_equiv_length_m=150.0,
+    )
+    comp = res_ok.get("spec_4500_compliance")
+    assert isinstance(comp, dict)
+    assert comp["spec_ref"] == "4-NGTL 0-CS-M-002-4500 §5.1"
+
+    # Suction ΔP excludes MFS/CFS (which together exceed 1.5 bar here, while piping alone stays <= 1.0 bar)
+    suct = comp["suction_piping"]
+    assert suct["equiv_length_m"] == pytest.approx(120.0)
+    assert suct["limit_bar"] == pytest.approx(1.0)
+    assert suct["dp_piping_bar"] <= 1.0
+    assert suct["dp_excluded_scrubber_bar"] == pytest.approx(1.60, 0.01)
+    assert suct["compliant"] is True
+
+    # Discharge ΔP excludes Gas Cooler (0.40 bar) and remains <= 0.5 bar at 150 m equiv length
+    disch = comp["discharge_piping"]
+    assert disch["equiv_length_m"] == pytest.approx(150.0)
+    assert disch["limit_bar"] == pytest.approx(0.5)
+    assert disch["dp_piping_bar"] <= 0.5
+    assert disch["dp_excluded_cooler_bar"] == pytest.approx(0.40, 0.01)
+    assert disch["compliant"] is True
+
+    # Velocity <= 20 m/s, B31.3/B31.8 stress, and acoustic/pulsation sections present & compliant
+    assert comp["velocity_check"]["limit_ms"] == pytest.approx(20.0)
+    assert comp["velocity_check"]["compliant"] is True
+    assert comp["stress_b313_b318"]["compliant"] is True
+    assert comp["stress_b313_b318"]["b318_max_hoop_pct_smys"] <= 50.0
+    assert comp["stress_b313_b318"]["b313_allowable_stress_mpa"] > 0.0
+    assert comp["stress_b313_b318"]["recommended_support_span_m"] > 0.0
+    assert comp["acoustic_pulsation"]["compliant"] is True
+    assert comp["acoustic_pulsation"]["max_mach"] < 0.30
+    assert comp["overall_compliant"] is True
+
+    # Extreme equivalent pipe lengths must trigger Spec 4500 §5.1 ΔP non-compliance + warnings
+    res_fail = PipeSizingService.size_station_network(
+        mass_flow_kgs=120.0,
+        p_in_bar=45.0,
+        p_out_bar=75.0,
+        t_in_c=15.0,
+        t_discharge_c=82.0,
+        t_cooled_c=45.0,
+        comp_op_count=4,
+        cyclone_op_count=3,
+        filter_op_count=3,
+        cooler_bays_count=6,
+        dp_cyclone_bar=0.25,
+        dp_filter_bar=0.20,
+        dp_cooler_bar=0.40,
+        suction_equiv_length_m=15000.0,
+        discharge_equiv_length_m=12000.0,
+    )
+    comp_fail = res_fail["spec_4500_compliance"]
+    assert comp_fail["suction_piping"]["dp_piping_bar"] > 1.0
+    assert comp_fail["suction_piping"]["compliant"] is False
+    assert comp_fail["discharge_piping"]["dp_piping_bar"] > 0.5
+    assert comp_fail["discharge_piping"]["compliant"] is False
+    assert comp_fail["overall_compliant"] is False
+    assert any("1.0 bar" in w or "§5.1" in w for w in res_fail["warnings"])
+    assert any("0.5 bar" in w or "§5.1" in w for w in res_fail["warnings"])
