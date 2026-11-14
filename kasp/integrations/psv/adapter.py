@@ -7,9 +7,10 @@ US-unit contract expected by the upstream API 520 engine.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List
 
-from kasp.core.constants import SUPPORTED_GASES
+from kasp.core.constants import R_UNIVERSAL_J_MOL_K, SUPPORTED_GASES
 from kasp.core.mixture import GasMixtureBuilder
 from kasp.integrations.base import ModuleManifest, module_response
 from kasp.integrations.psv.vendor.core.engine import ReliefCase, size_relief_case
@@ -18,6 +19,23 @@ from kasp.integrations.psv.vendor.core.engine import STANDARD_EDITION
 BAR_TO_PSIA = 14.5037738
 KGS_TO_LB_H = 7936.64144
 ATM_PSIA = 14.6959488
+
+_API526_OUTLET_ID_IN = {
+    "D": 2.067,
+    "E": 2.067,
+    "F": 2.067,
+    "G": 3.068,
+    "H": 3.068,
+    "J": 4.026,
+    "K": 4.026,
+    "L": 6.065,
+    "M": 6.065,
+    "N": 6.065,
+    "P": 6.065,
+    "Q": 7.981,
+    "R": 10.020,
+    "T": 10.020,
+}
 
 
 def _as_float(value, default=None):
@@ -64,7 +82,9 @@ class PSVAdapter:
         return {
             "service": "gas | liquid | steam | fire_wetted | fire_unwetted | thermal_expansion | two_phase",
             "p1_bar": "Relieving pressure, bar(a). If omitted, derived from set_pressure_bar and overpressure_pct.",
-            "p2_bar": "Total back pressure, bar(a). Default 1.01325.",
+            "p2_bar": "Total back pressure, bar(a). Defaults to p_atm_bar (Design Tab atmospheric pressure).",
+            "p_atm_bar": "Atmospheric pressure, bar(a). Default 1.01325 (coupled from Design Tab).",
+            "ambient_temp_c": "Ambient atmospheric temperature, °C. Default 15.0 (coupled from Design Tab).",
             "set_pressure_bar": "Set pressure, bar(g). Optional.",
             "overpressure_pct": "Default 10.0",
             "mass_flow_kgs": "Gas/steam mass flow, kg/s",
@@ -81,23 +101,36 @@ class PSVAdapter:
 
     def calculate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         service = str(payload.get("service", "gas")).strip().lower()
-        p2_bar = _as_float(payload.get("p2_bar"), ATM_PSIA / BAR_TO_PSIA)
+        raw_p_atm = _as_float(payload.get("p_atm_bar"))
+        p_atm_bar = raw_p_atm if (raw_p_atm is not None and math.isfinite(raw_p_atm) and raw_p_atm > 0.05) else (ATM_PSIA / BAR_TO_PSIA)
+        atm_psia = p_atm_bar * BAR_TO_PSIA
+        ambient_temp_c = _as_float(payload.get("ambient_temp_c"), 15.0)
+        if ambient_temp_c is None or not math.isfinite(ambient_temp_c):
+            ambient_temp_c = 15.0
+
+        p2_bar = _as_float(payload.get("p2_bar"), p_atm_bar)
+        if p2_bar is None or not math.isfinite(p2_bar) or p2_bar < 0:
+            p2_bar = p_atm_bar
         overpressure = _as_float(payload.get("overpressure_pct"), 10.0)
-        set_bar_g = _as_float(payload.get("set_pressure_bar"))
+        set_bar_g = _as_float(payload.get("set_pressure_bar_g"))
+        if set_bar_g is None:
+            set_bar_g = _as_float(payload.get("set_pressure_bar"))
         p1_bar = _as_float(payload.get("p1_bar"))
         if p1_bar is None and set_bar_g is not None:
-            p1_bar = (set_bar_g + ATM_PSIA / BAR_TO_PSIA) * (1.0 + overpressure / 100.0)
+            p1_bar = set_bar_g * (1.0 + overpressure / 100.0) + p_atm_bar
         if p1_bar is None:
-            p1_bar = ATM_PSIA / BAR_TO_PSIA
+            p1_bar = p_atm_bar
 
+        num_valves = max(1, int(_as_float(payload.get("num_valves"), 1)))
         common = {
             "p1_psia": p1_bar * BAR_TO_PSIA,
             "p2_psia": p2_bar * BAR_TO_PSIA,
-            "set_pressure_psig": set_bar_g,
+            "set_pressure_psig": (set_bar_g * BAR_TO_PSIA) if (set_bar_g is not None and set_bar_g > 0) else None,
             "overpressure_pct": overpressure,
-            "num_valves": max(1, int(_as_float(payload.get("num_valves"), 1))),
+            "num_valves": num_valves,
             "valve_type": payload.get("valve_type", "conventional"),
             "capacity_certified": bool(payload.get("capacity_certified", True)),
+            "atm_psia": atm_psia,
         }
 
         case_fields: Dict[str, Any] = {"service": service, **common}
@@ -163,6 +196,22 @@ class PSVAdapter:
 
         case = ReliefCase(**case_fields)
         raw = size_relief_case(case)
+        raw["p_atm_bar"] = round(p_atm_bar, 5)
+        raw["atm_psia"] = round(atm_psia, 4)
+        raw["ambient_temp_c"] = round(ambient_temp_c, 2)
+
+        if service == "gas":
+            mw_eff = _as_float(payload.get("mw"), 18.2) or 18.2
+            t_amb_k = max(180.0, min(500.0, ambient_temp_c + 273.15))
+            rho_atm = (p_atm_bar * 1e5 * (mw_eff * 1e-3)) / (R_UNIVERSAL_J_MOL_K * t_amb_k)
+            letter = str(raw.get("Selected_Orifice_Letter") or "")
+            outlet_id_in = _API526_OUTLET_ID_IN.get(letter, 10.020)
+            outlet_area_m2 = math.pi * ((outlet_id_in * 0.0254) / 2.0) ** 2
+            mass_flow_val = max(0.0, _as_float(payload.get("mass_flow_kgs"), 0.0) or 0.0) / max(1, num_valves)
+            vent_vel = (mass_flow_val / max(1e-6, rho_atm * outlet_area_m2)) if mass_flow_val > 0 else 0.0
+            raw["atm_gas_density_kgm3"] = round(rho_atm, 4)
+            raw["vent_exit_velocity_ms"] = round(vent_vel, 2)
+
         warnings = list(raw.get("warnings", []) or [])
         if raw.get("Result_Meta", {}).get("Warnings"):
             warnings.extend(raw["Result_Meta"]["Warnings"])

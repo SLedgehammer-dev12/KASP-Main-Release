@@ -65,7 +65,7 @@ function infoRows(key, ctx, lang = "tr") {
       [isEn ? "Inlet temperature" : "Giriş sıcaklığı", `${tSuc} °C`],
       [isEn ? "Unit mass flow" : "Ünite debisi", `${flowCyc} kg/s`],
       [isEn ? "Liquid / solid knockout" : "Sıvı / katı ayırma", `> %${eq.cyclones?.liquid_knockout_pct ?? 99.5} · > 10 µm`],
-      [isEn ? "Inlet branch" : "Giriş branşmanı", eq.cyclones?.inlet_pipe_size || `${suc.nominal_size_in || '10"'} NPS`],
+      [isEn ? "Inlet / outlet branch" : "Giriş / çıkış branşmanı", `${eq.cyclones?.inlet_pipe_size || `${suc.nominal_size_in || '10"'}`} / ${eq.cyclones?.outlet_pipe_size || eq.cyclones?.inlet_pipe_size || `${suc.nominal_size_in || '10"'}`} NPS`],
       [isEn ? "Configuration" : "Konfigürasyon", isEn ? `${opCyc} duty + 1 standby` : `${opCyc} aktif + 1 yedek`],
     ];
   }
@@ -85,7 +85,7 @@ function infoRows(key, ctx, lang = "tr") {
       [isEn ? "Clean filter ΔP" : "Temiz filtre ΔP", `${dpFlt} bar (${isEn ? "max." : "maks."} 0.70 bar)`],
       [isEn ? "Filtration grade" : "Filtrasyon", eq.cartridge_filters?.filter_efficiency_micron || (isEn ? "0.3 µm · 99.98% aerosol retention" : "0.3 µm · %99.98 aerosol tutma")],
       [isEn ? "Unit mass flow" : "Ünite debisi", `${flowFlt} kg/s`],
-      [isEn ? "Inlet branch" : "Giriş branşmanı", eq.cartridge_filters?.inlet_pipe_size || '12" NPS'],
+      [isEn ? "Inlet / outlet branch" : "Giriş / çıkış branşmanı", `${eq.cartridge_filters?.inlet_pipe_size || '12"'} / ${eq.cartridge_filters?.outlet_pipe_size || eq.cartridge_filters?.inlet_pipe_size || '12"'} NPS`],
       [isEn ? "Configuration" : "Konfigürasyon", isEn ? `${opFlt} duty + 1 standby` : `${opFlt} aktif + 1 yedek`],
       [isEn ? "Instrumentation" : "Enstrümantasyon", isEn ? "PDT differential pressure transmitter" : "PDT diferansiyel basınç transmitteri"],
     ];

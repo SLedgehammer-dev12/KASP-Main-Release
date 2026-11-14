@@ -1,6 +1,6 @@
 /**
  * KASP Design Sidebar Component
- * Presets bar, 6 Accordion Input Steps, Live PR/dP badges, and Calculate trigger.
+ * Presets bar, 5 Accordion Input Steps, Live PR/dP badges, and Calculate trigger.
  * Built with selective DOM updates and automatic engineering unit conversions.
  */
 
@@ -15,6 +15,8 @@ import {
   convertFlowWithMW,
   convertPressureUnit,
   convertTemperatureUnit,
+  altitudeToAmbientPressureKpa,
+  resolveAmbientBarA,
   computeGasMixtureMW,
   recalculateLiveMetrics,
   scheduleRecommendationsRefresh,
@@ -116,7 +118,7 @@ function formatEquivalentHeatRate(thermEffPct) {
 }
 
 export function renderDesignSidebar(container) {
-  let openSteps = { 1: true, 2: true, 3: true, 4: false, 5: false, 6: false };
+  let openSteps = { 1: true, 2: true, 3: true, 4: false, 5: false };
   let isBuilt = false;
 
   function bindModelRecApply() {
@@ -179,12 +181,13 @@ export function renderDesignSidebar(container) {
       }
       const unitBadge = container.querySelector("#sidebar-unit-badge");
       if (unitBadge) {
-        unitBadge.textContent = `${inp.num_units || 1} Ünite`;
+        const nOp = Math.max(1, parseInt(inp.num_units || 1, 10));
+        unitBadge.textContent = `${nOp}+1 (${nOp} Çalışan + 1 Yedek)`;
       }
       const unitFlowBadge = container.querySelector("#sidebar-unit-flow-badge");
       if (unitFlowBadge) {
         const uFlow = (Number(inp.flow || 0) / Math.max(1, Number(inp.num_units) || 1)).toFixed(1);
-        unitFlowBadge.textContent = `${uFlow} ${inp.flow_unit || 'kg/s'} / ünite`;
+        unitFlowBadge.textContent = `${uFlow} ${inp.flow_unit || 'kg/s'} / çalışan ünite`;
       }
 
       // 2. Step summary labels
@@ -208,9 +211,6 @@ export function renderDesignSidebar(container) {
         bindModelRecApply();
       }
 
-      const stagesLabel = container.querySelector("#sidebar-stages-summary");
-      if (stagesLabel) stagesLabel.textContent = `${inp.num_stages} Kademe`;
-
       const effLabel = container.querySelector("#sidebar-eff-summary");
       if (effLabel) {
         effLabel.textContent = `ηp %${inp.poly_eff} • ηth %${inp.therm_eff ?? 35}`;
@@ -223,7 +223,12 @@ export function renderDesignSidebar(container) {
 
       const siteLabel = container.querySelector("#sidebar-site-summary");
       if (siteLabel) {
-        siteLabel.textContent = `${inp.ambient_temp ?? 19}°C • ${inp.altitude ?? 0} m`;
+        const pAtmKpa = Number(inp.ambient_pressure ?? 101.325);
+        siteLabel.textContent = `${inp.ambient_temp ?? 15}°C • ${(Number.isFinite(pAtmKpa) ? pAtmKpa : 101.325).toFixed(1)} kPa • ${inp.altitude ?? 0} m`;
+      }
+      const pAtmHint = container.querySelector("#sidebar-ambient-pressure-hint");
+      if (pAtmHint) {
+        pAtmHint.textContent = `= ${resolveAmbientBarA(inp.ambient_pressure ?? 101.325).toFixed(4)} bar(a) (ESD & PSV P_atm)`;
       }
 
       // 3. Calculate button, validation alert & stale state
@@ -268,7 +273,7 @@ export function renderDesignSidebar(container) {
       return;
     }
 
-    const allStepsOpen = [1, 2, 3, 4, 5, 6].every((n) => !!openSteps[n]);
+    const allStepsOpen = [1, 2, 3, 4, 5].every((n) => !!openSteps[n]);
     const valErr = computeValidationError(proj, ui.lang);
 
     container.innerHTML = `
@@ -309,7 +314,7 @@ export function renderDesignSidebar(container) {
               <span>${t("step_process", ui.lang)}</span>
             </div>
             <div style="display: flex; align-items: center; gap: 4px;">
-              <span id="sidebar-unit-badge" class="badge badge-secondary">${inp.num_units || 1} Ünite</span>
+              <span id="sidebar-unit-badge" class="badge badge-secondary">${Math.max(1, parseInt(inp.num_units || 1, 10))}+1 (${Math.max(1, parseInt(inp.num_units || 1, 10))} Çalışan + 1 Yedek)</span>
               <span id="sidebar-pr-badge" class="badge ${prClass}" style="${live.pr ? '' : 'display:none;'}">${prText}</span>
               <span id="sidebar-dp-badge" class="badge ${dpClass}" style="${live.delta_p_bar ? '' : 'display:none;'}">${dpText}</span>
             </div>
@@ -374,22 +379,34 @@ export function renderDesignSidebar(container) {
 
                   <div class="form-group" style="grid-column: span 2;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                      <label class="form-label" style="margin-bottom: 0;">Ünite Sayısı (N+1 Paralel Tren)</label>
+                      <label class="form-label" style="margin-bottom: 0;">Ünite Sayısı (N Çalışan + 1 Yedek)</label>
                       <span class="badge badge-info" id="sidebar-unit-flow-badge" style="font-size: 10px;">
-                        ${(Number(inp.flow || 0) / Math.max(1, Number(inp.num_units) || 1)).toFixed(1)} ${inp.flow_unit || 'kg/s'} / ünite
+                        ${(Number(inp.flow || 0) / Math.max(1, Number(inp.num_units) || 1)).toFixed(1)} ${inp.flow_unit || 'kg/s'} / çalışan ünite
                       </span>
                     </div>
                     <div class="form-control-row">
-                      <select class="form-select inp-field" data-field="num_units" style="font-weight: 600;">
-                        <option value="1" ${Number(inp.num_units || 1) === 1 ? 'selected' : ''}>1 Ünite (1 Çalışan + 0 Yedek - Tekil Ünite)</option>
-                        <option value="2" ${Number(inp.num_units) === 2 ? 'selected' : ''}>2 Ünite (1 Çalışan + 1 Yedek)</option>
-                        <option value="3" ${Number(inp.num_units) === 3 ? 'selected' : ''}>3 Ünite (2 Çalışan + 1 Yedek)</option>
-                        <option value="4" ${Number(inp.num_units) === 4 ? 'selected' : ''}>4 Ünite (3 Çalışan + 1 Yedek)</option>
-                        <option value="5" ${Number(inp.num_units) === 5 ? 'selected' : ''}>5 Ünite (4 Çalışan + 1 Yedek - BOTAŞ Tipik)</option>
-                        <option value="6" ${Number(inp.num_units) === 6 ? 'selected' : ''}>6 Ünite (5 Çalışan + 1 Yedek)</option>
-                        <option value="8" ${Number(inp.num_units) === 8 ? 'selected' : ''}>8 Ünite (7 Çalışan + 1 Yedek - Yüksek Kapasite)</option>
+                      <select id="inp-num-units" class="form-select inp-field" data-field="num_units" style="font-weight: 600;">
+                        <option value="1" ${Number(inp.num_units || 1) === 1 ? 'selected' : ''}>1+1 (1 Çalışan + 1 Yedek = 2 Kurulu)</option>
+                        <option value="2" ${Number(inp.num_units) === 2 ? 'selected' : ''}>2+1 (2 Çalışan + 1 Yedek = 3 Kurulu)</option>
+                        <option value="3" ${Number(inp.num_units) === 3 ? 'selected' : ''}>3+1 (3 Çalışan + 1 Yedek = 4 Kurulu)</option>
+                        <option value="4" ${Number(inp.num_units) === 4 ? 'selected' : ''}>4+1 (4 Çalışan + 1 Yedek = 5 Kurulu - BOTAŞ Tipik)</option>
+                        <option value="5" ${Number(inp.num_units) === 5 ? 'selected' : ''}>5+1 (5 Çalışan + 1 Yedek = 6 Kurulu)</option>
+                        <option value="6" ${Number(inp.num_units) === 6 ? 'selected' : ''}>6+1 (6 Çalışan + 1 Yedek = 7 Kurulu)</option>
+                        <option value="7" ${Number(inp.num_units) === 7 ? 'selected' : ''}>7+1 (7 Çalışan + 1 Yedek = 8 Kurulu - Yüksek Kapasite)</option>
                       </select>
                     </div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="inp-num-stages">Kademe Sayısı</label>
+                    <input id="inp-num-stages" type="number" min="1" max="6" class="form-input inp-field" data-field="num_stages" value="${inp.num_stages}" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="inp-intercooler-t">Ara Soğutucu (°C)</label>
+                    <input id="inp-intercooler-t" type="number" step="0.5" class="form-input inp-field" data-field="intercooler_t" value="${inp.intercooler_t}" />
+                  </div>
+                  <div class="form-group" style="grid-column: span 2;">
+                    <label class="form-label" for="inp-intercooler-dp">Ara Soğutucu ΔP (%)</label>
+                    <input id="inp-intercooler-dp" type="number" step="0.1" class="form-input inp-field" data-field="intercooler_dp_pct" value="${inp.intercooler_dp_pct}" />
                   </div>
                 </div>
               </div>
@@ -466,54 +483,17 @@ export function renderDesignSidebar(container) {
           }
         </div>
 
-        <!-- Step 4: Stages & Intercooling -->
+        <!-- Step 4: Target Efficiencies -->
         <div class="step-section">
           <div class="step-header" data-step="4">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span class="step-badge">4</span>
-              <span>${t("step_stages", ui.lang)}</span>
-            </div>
-            <span id="sidebar-stages-summary" style="font-size: 11px; color: var(--color-text-secondary);">${inp.num_stages} Kademe</span>
-          </div>
-          ${
-            openSteps[4]
-              ? `
-              <div class="step-content">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                  <div class="form-group">
-                    <label class="form-label" for="inp-num-stages">Kademe Sayısı</label>
-                    <input id="inp-num-stages" type="number" min="1" max="6" class="form-input inp-field" data-field="num_stages" value="${inp.num_stages}" />
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label" for="inp-step4-num-units">Ünite Sayısı (N+1)</label>
-                    <input id="inp-step4-num-units" type="number" min="1" max="10" class="form-input inp-field" data-field="num_units" value="${inp.num_units}" />
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label" for="inp-intercooler-t">Ara Soğutucu (°C)</label>
-                    <input id="inp-intercooler-t" type="number" step="0.5" class="form-input inp-field" data-field="intercooler_t" value="${inp.intercooler_t}" />
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label" for="inp-intercooler-dp">Ara Soğutucu ΔP (%)</label>
-                    <input id="inp-intercooler-dp" type="number" step="0.1" class="form-input inp-field" data-field="intercooler_dp_pct" value="${inp.intercooler_dp_pct}" />
-                  </div>
-                </div>
-              </div>
-            `
-              : ""
-          }
-        </div>
-
-        <!-- Step 5: Target Efficiencies -->
-        <div class="step-section">
-          <div class="step-header" data-step="5">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span class="step-badge">5</span>
               <span>${t("step_efficiencies", ui.lang)}</span>
             </div>
             <span id="sidebar-eff-summary" style="font-size: 11px; color: var(--color-text-secondary);">ηp %${inp.poly_eff} • ηth %${inp.therm_eff ?? 35}</span>
           </div>
           ${
-            openSteps[5]
+            openSteps[4]
               ? `
               <div class="step-content">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
@@ -550,17 +530,17 @@ export function renderDesignSidebar(container) {
           }
         </div>
 
-        <!-- Step 6: Site & Ambient Conditions (ISO 2314 Derating) -->
+        <!-- Step 5: Site & Ambient Conditions (ISO 2314 Derating + ESD/PSV Atmospheric Coupling) -->
         <div class="step-section">
-          <div class="step-header" data-step="6">
+          <div class="step-header" data-step="5">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <span class="step-badge">6</span>
+              <span class="step-badge">5</span>
               <span>${t("step_site", ui.lang)}</span>
             </div>
-            <span id="sidebar-site-summary" style="font-size: 11px; color: var(--color-text-secondary);">${inp.ambient_temp ?? 19}°C • ${inp.altitude ?? 0} m</span>
+            <span id="sidebar-site-summary" style="font-size: 11px; color: var(--color-text-secondary);">${inp.ambient_temp ?? 15}°C • ${Number(inp.ambient_pressure ?? 101.325).toFixed(1)} kPa • ${inp.altitude ?? 0} m</span>
           </div>
           ${
-            openSteps[6]
+            openSteps[5]
               ? `
               <div class="step-content">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
@@ -570,13 +550,30 @@ export function renderDesignSidebar(container) {
                       id="inp-ambient-temp"
                       type="number"
                       inputmode="decimal"
-                      step="1"
+                      step="0.5"
                       min="-40"
                       max="55"
                       class="form-input inp-field"
                       data-field="ambient_temp"
-                      value="${inp.ambient_temp ?? 19}"
+                      value="${inp.ambient_temp ?? 15}"
                     />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="inp-ambient-pressure">${escapeHtml(t("label_ambient_pressure", ui.lang))}</label>
+                    <input
+                      id="inp-ambient-pressure"
+                      type="number"
+                      inputmode="decimal"
+                      step="0.1"
+                      min="50"
+                      max="120"
+                      class="form-input inp-field"
+                      data-field="ambient_pressure"
+                      value="${inp.ambient_pressure ?? 101.325}"
+                    />
+                    <div id="sidebar-ambient-pressure-hint" style="font-size: 9.5px; color: var(--color-text-secondary); margin-top: 2px; font-family: var(--font-mono);">
+                      = ${resolveAmbientBarA(inp.ambient_pressure ?? 101.325).toFixed(4)} bar(a) (ESD &amp; PSV P_atm)
+                    </div>
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="inp-altitude">${escapeHtml(t("label_altitude", ui.lang))}</label>
@@ -592,7 +589,7 @@ export function renderDesignSidebar(container) {
                       value="${inp.altitude ?? 0}"
                     />
                   </div>
-                  <div class="form-group" style="grid-column: span 2;">
+                  <div class="form-group">
                     <label class="form-label" for="inp-humidity">${escapeHtml(t("label_humidity", ui.lang))}</label>
                     <input
                       id="inp-humidity"
@@ -657,8 +654,8 @@ export function renderDesignSidebar(container) {
     const toggleAllBtn = container.querySelector("#btn-toggle-all-steps");
     if (toggleAllBtn) {
       toggleAllBtn.addEventListener("click", () => {
-        const nextOpen = ![1, 2, 3, 4, 5, 6].every((n) => !!openSteps[n]);
-        for (let s = 1; s <= 6; s++) openSteps[s] = nextOpen;
+        const nextOpen = ![1, 2, 3, 4, 5].every((n) => !!openSteps[n]);
+        for (let s = 1; s <= 5; s++) openSteps[s] = nextOpen;
         render(true);
       });
     }
@@ -711,7 +708,7 @@ export function renderDesignSidebar(container) {
           const oldUnit = currentInputs.p_in_unit || "bar(a)";
           const newUnit = v;
           const oldP = parseFloat(currentInputs.p_in) || 20.0;
-          const nextP = convertPressureUnit(oldP, oldUnit, newUnit);
+          const nextP = convertPressureUnit(oldP, oldUnit, newUnit, currentInputs.ambient_pressure);
           const pEl = container.querySelector('[data-field="p_in"]');
           if (pEl) pEl.value = nextP;
           invalidateAirCoolerCache();
@@ -727,7 +724,7 @@ export function renderDesignSidebar(container) {
           const oldUnit = currentInputs.p_out_unit || "bar(a)";
           const newUnit = v;
           const oldP = parseFloat(currentInputs.p_out) || 60.0;
-          const nextP = convertPressureUnit(oldP, oldUnit, newUnit);
+          const nextP = convertPressureUnit(oldP, oldUnit, newUnit, currentInputs.ambient_pressure);
           const pEl = container.querySelector('[data-field="p_out"]');
           if (pEl) pEl.value = nextP;
           invalidateAirCoolerCache();
@@ -767,6 +764,7 @@ export function renderDesignSidebar(container) {
             "mech_eff",
             "therm_eff",
             "ambient_temp",
+            "ambient_pressure",
             "altitude",
             "humidity",
           ].includes(f)
@@ -774,8 +772,23 @@ export function renderDesignSidebar(container) {
           const parsed = parseFloat(v);
           v = Number.isFinite(parsed) ? parsed : 0;
           if (f === "num_units" || f === "num_stages") v = Math.max(1, Math.round(v));
+          if (f === "ambient_pressure") v = Math.max(40, Math.min(130, v));
+          if (f === "altitude") {
+            const prevAlt = Number(currentInputs.altitude ?? 0);
+            const prevIsa = altitudeToAmbientPressureKpa(prevAlt);
+            const curPatm = Number(currentInputs.ambient_pressure ?? 101.325);
+            if (!Number.isFinite(curPatm) || Math.abs(curPatm - prevIsa) <= 0.25) {
+              const nextPatm = Math.round(altitudeToAmbientPressureKpa(v) * 1000) / 1000;
+              const patmEl = container.querySelector('[data-field="ambient_pressure"]');
+              if (patmEl) patmEl.value = nextPatm;
+              updateInput("ambient_pressure", nextPatm);
+            }
+          }
         }
         updateInput(f, v);
+        if (f === "ambient_pressure" || f === "altitude") {
+          recalculateLiveMetrics();
+        }
       });
     });
 

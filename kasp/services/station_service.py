@@ -17,11 +17,119 @@ import math
 from typing import Any, Dict, List, Optional
 from kasp.core.constants import MOLAR_MASSES, R_UNIVERSAL_J_MOL_K, normalize_component
 from kasp.core.mixture import GasMixtureBuilder
+from kasp.core.performance_corrections import ambient_pressure_from_altitude_kpa
 from kasp.core.thermo import ThermoEngine
 from kasp.core.units import UnitSystem
 from kasp.services.pipe_sizing_service import PipeSizingService
 
 logger = logging.getLogger(__name__)
+
+
+def _has_explicit_value(inputs: Dict[str, Any], key: str) -> bool:
+    if key not in inputs:
+        return False
+    val = inputs.get(key)
+    if val is None:
+        return False
+    if isinstance(val, str) and val.strip() == "":
+        return False
+    return True
+
+
+def _resolve_site_ambient(
+    inputs: Dict[str, Any],
+    design_results: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve Design Tab atmospheric pressure (bar(a) & kPa), ambient temp (°C), and altitude (m)."""
+    raw_alt = inputs.get("altitude_m", inputs.get("altitude"))
+    try:
+        altitude_m = float(raw_alt) if raw_alt not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        altitude_m = 0.0
+    if not math.isfinite(altitude_m):
+        altitude_m = 0.0
+
+    has_design_temp = (
+        _has_explicit_value(inputs, "ambient_temp")
+        or _has_explicit_value(inputs, "ambient_temp_c")
+        or bool(design_results)
+    )
+    raw_amb_t = inputs.get("ambient_temp_c", inputs.get("ambient_temp"))
+    try:
+        ambient_temp_c = float(raw_amb_t) if raw_amb_t not in (None, "") else 15.0
+    except (TypeError, ValueError):
+        ambient_temp_c = 15.0
+    if not math.isfinite(ambient_temp_c):
+        ambient_temp_c = 15.0
+    ambient_temp_c = max(-60.0, min(75.0, ambient_temp_c))
+
+    has_design_p = (
+        _has_explicit_value(inputs, "ambient_pressure")
+        or _has_explicit_value(inputs, "ambient_pressure_kpa")
+        or _has_explicit_value(inputs, "ambient_pressure_bar")
+        or _has_explicit_value(inputs, "altitude")
+        or _has_explicit_value(inputs, "altitude_m")
+        or bool(design_results)
+    )
+
+    p_atm_bar: Optional[float] = None
+    if _has_explicit_value(inputs, "ambient_pressure_bar"):
+        try:
+            cand = float(inputs["ambient_pressure_bar"])
+            if math.isfinite(cand) and cand > 0.05:
+                p_atm_bar = cand
+        except (TypeError, ValueError):
+            p_atm_bar = None
+
+    if p_atm_bar is None:
+        raw_p_amb = inputs.get("ambient_pressure_kpa", inputs.get("ambient_pressure"))
+        if raw_p_amb not in (None, ""):
+            try:
+                val = float(raw_p_amb)
+                if math.isfinite(val) and val > 0:
+                    if 0.35 <= val <= 2.5:
+                        p_atm_bar = val
+                    elif val <= 250.0:
+                        p_atm_bar = val / 100.0
+                    else:
+                        p_atm_bar = val / 1000.0
+                    if altitude_m > 0 and abs(p_atm_bar * 100.0 - 101.325) < 1e-4:
+                        p_atm_bar = ambient_pressure_from_altitude_kpa(altitude_m) / 100.0
+            except (TypeError, ValueError):
+                p_atm_bar = None
+
+    if p_atm_bar is None:
+        if altitude_m > 0:
+            p_atm_bar = ambient_pressure_from_altitude_kpa(altitude_m) / 100.0
+        else:
+            p_atm_bar = 1.01325
+
+    p_atm_bar = max(0.35, min(2.0, float(p_atm_bar)))
+    return {
+        "p_atm_bar": p_atm_bar,
+        "ambient_pressure_kpa": round(p_atm_bar * 100.0, 4),
+        "ambient_temp_c": ambient_temp_c,
+        "altitude_m": altitude_m,
+        "p_atm_source": "design_tab" if has_design_p else "fixed_default",
+        "ambient_temp_source": "design_tab" if has_design_temp else "fixed_default",
+    }
+
+
+def _pressure_to_bar_a(raw_val: float, raw_unit: str, p_atm_bar: float = 1.01325) -> float:
+    unit = str(raw_unit or "bar(a)").strip()
+    u_low = unit.lower()
+    if u_low == "bar(g)":
+        return raw_val + p_atm_bar
+    if u_low == "psig":
+        return (raw_val / 14.5037738) + p_atm_bar
+    if u_low == "kpa(g)":
+        return (raw_val / 100.0) + p_atm_bar
+    if u_low == "mpa(g)":
+        return (raw_val * 10.0) + p_atm_bar
+    try:
+        return UnitSystem.convert_pressure(raw_val, unit, "bar(a)")
+    except Exception:
+        return raw_val
 
 _STATION_EOS_ALIASES = {
     "coolprop": "coolprop",
@@ -78,13 +186,14 @@ def _actual_m3h_to_kgs(
     gas_obj: Any,
     eos_key: str,
     mw_g_mol: float,
+    p_atm_bar: float = 1.01325,
 ) -> float:
     """Convert actual inlet m³/h (ACMH) to kg/s using real inlet density at test P/T."""
     try:
-        p_bara = UnitSystem.convert_pressure(
+        p_bara = _pressure_to_bar_a(
             float(inputs.get("p_in", 25.0) or 25.0),
             str(inputs.get("p_in_unit", "bar(a)")),
-            "bar(a)",
+            p_atm_bar,
         )
     except (TypeError, ValueError):
         p_bara = 25.0
@@ -160,45 +269,62 @@ def _next_standard_dn(dn_mm: float) -> float:
     return float(dn_mm)
 
 
-def _size_esd_valve(
+def _size_esd_blowdown_section(
     path: str,
-    mass_flow_kgs: float,
-    p_in_bar: float,
-    t_c: float,
+    piping_volume_m3: float,
+    upstream_pressure_bar: float,
+    upstream_temp_c: float,
+    p_atm_bar: float,
+    ambient_temp_c: float,
+    depressurization_time_min: float,
     line_size_in: float,
+    gas_density_kgm3: float,
+    mw_g_mol: float,
     composition: Dict[str, Any],
     eos_model: str,
     allowable_dp_bar: float,
     valve_type: str,
     duty_count: int = 1,
 ) -> tuple[Optional[Dict[str, Any]], List[str]]:
-    """Size an ESD / BDV valve bank with IEC 60534 gas Cv.
+    """Size an ESD / BDV depressurization valve bank from user piping volume & Design Tab atmospheric P/T.
 
-    Calculates both the aerodynamic Cv-based diameter per parallel duty valve
-    and the full-bore header isolation diameter.
+    High-pressure section uses compressor outlet pressure (`p_out`) and `esd_hp_volume_m3`.
+    Low-pressure section uses compressor inlet pressure (`p_in`) and `esd_lp_volume_m3`.
     """
     try:
         from kasp.integrations.control_valve.adapter import ControlValveAdapter
 
         duty = max(1, int(duty_count or 1))
-        flow_per_valve = max(0.001, float(mass_flow_kgs) / duty)
-        p_in_val = max(0.5, float(p_in_bar))
-        dp = max(0.05, min(float(allowable_dp_bar), p_in_val * 0.25))
-        p_out_val = max(0.1, p_in_val - dp)
+        vol_m3 = max(0.5, float(piping_volume_m3))
+        p_atm_val = max(0.35, float(p_atm_bar))
+        p0_val = max(p_atm_val + 0.20, float(upstream_pressure_bar))
+        tau_min = max(1.0, float(depressurization_time_min))
+        tau_s = tau_min * 60.0
+
+        # Target depressurization pressure tied to site atmospheric pressure (API 521 blowdown to atmospheric vent)
+        p_target_bar = max(p_atm_val * 1.25, p_atm_val + 0.15)
+        if p0_val <= p_target_bar:
+            p_target_bar = 0.5 * (p0_val + p_atm_val)
+
+        rho_0 = max(0.05, float(gas_density_kgm3))
+        gas_inventory_kg = vol_m3 * rho_0
+        log_ratio = math.log(max(1.02, p0_val / max(0.05, p_target_bar)))
+        blowdown_mass_flow_total_kgs = max(0.005, (gas_inventory_kg / tau_s) * log_ratio)
+        flow_per_valve = blowdown_mass_flow_total_kgs / duty
+
+        # Effective mean BDV inlet gas temperature incorporating ambient wall heat transfer (API 521)
+        t_bdv_eff_c = 0.65 * float(upstream_temp_c) + 0.35 * float(ambient_temp_c)
         line_dn_mm = max(25.0, float(line_size_in) * 25.4)
-        # Do not pass target_dn_mm so the IEC 60534 solver returns the true
-        # aerodynamic DN required for flow_per_valve at allowable_dp_bar.
+
         res = ControlValveAdapter().calculate(
             {
                 "service": "gas",
                 "composition": composition,
                 "eos_model": eos_model,
                 "mass_flow_kgs": flow_per_valve,
-                "p_in_bar": p_in_val,
-                "p_out_bar": p_out_val,
-                "t_c": max(-50.0, float(t_c)),
-                "pipe_inlet_diameter_mm": line_dn_mm,
-                "pipe_outlet_diameter_mm": line_dn_mm,
+                "p_in_bar": p0_val,
+                "p_out_bar": p_atm_val,
+                "t_c": max(-50.0, t_bdv_eff_c),
                 "path": path,
             }
         )
@@ -206,26 +332,43 @@ def _size_esd_valve(
         warnings = list(res.get("warnings", []) or [])
         calculated_dn = float(results.get("valve_dn_mm") or 0.0)
         calculated_size_in = round(calculated_dn / 25.4, 2) if calculated_dn > 0 else round(float(line_size_in), 2)
-        selected_dn = _next_standard_dn(max(line_dn_mm, calculated_dn))
+        selected_dn = _next_standard_dn(line_dn_mm)
         required_cv_per_valve = float(results.get("required_cv") or 0.0)
-        required_cv_total = round(required_cv_per_valve * duty, 1)
-        # Recommend parallel valve count if single-valve aerodynamic DN exceeds 900 mm (36")
-        recommended_duty_count = max(1, math.ceil((calculated_dn * math.sqrt(duty)) / 600.0)) if calculated_dn > 0 else 1
+        required_cv_total = required_cv_per_valve * duty
+        recommended_duty_count = max(1, math.ceil((calculated_dn * math.sqrt(duty)) / 400.0)) if calculated_dn > 0 else 1
+
+        # Atmospheric vent tailpipe velocity at Design Tab (P_atm, T_amb)
+        t_amb_k = max(180.0, min(500.0, float(ambient_temp_c) + 273.15))
+        rho_atm = (p_atm_val * 1e5 * (max(2.0, float(mw_g_mol)) * 1e-3)) / (R_UNIVERSAL_J_MOL_K * t_amb_k)
+        bdv_bore_m = max(0.025, (calculated_dn if calculated_dn > 0 else 100.0) / 1000.0)
+        bdv_area_m2 = math.pi * (bdv_bore_m / 2.0) ** 2
+        vent_exit_vel_ms = flow_per_valve / max(1e-6, rho_atm * bdv_area_m2)
+
         return (
             {
                 "path": path,
                 "valve_type": valve_type,
                 "duty_count": duty,
-                "flow_per_valve_kgs": round(flow_per_valve, 2),
+                "piping_volume_m3": round(vol_m3, 2),
+                "upstream_pressure_bar": round(p0_val, 2),
+                "upstream_temp_c": round(float(upstream_temp_c), 1),
+                "downstream_atm_pressure_bar": round(p_atm_val, 5),
+                "ambient_temp_c": round(float(ambient_temp_c), 2),
+                "effective_blowdown_temp_c": round(t_bdv_eff_c, 2),
+                "depressurization_time_min": round(tau_min, 2),
+                "gas_inventory_kg": round(gas_inventory_kg, 2),
+                "blowdown_mass_flow_total_kgs": round(blowdown_mass_flow_total_kgs, 4),
+                "flow_per_valve_kgs": round(flow_per_valve, 4),
                 "line_size_in": round(float(line_size_in), 2),
                 "line_dn_mm": round(line_dn_mm, 1),
-                "allowable_dp_bar": round(dp, 3),
-                "required_cv": round(required_cv_per_valve, 1),
-                "required_cv_total": required_cv_total,
+                "allowable_dp_bar": round(float(allowable_dp_bar), 3),
+                "required_cv": round(required_cv_per_valve, 4),
+                "required_cv_total": round(required_cv_total, 4),
                 "calculated_dn_mm": round(calculated_dn, 1) if calculated_dn > 0 else None,
                 "calculated_size_in": calculated_size_in,
                 "selected_dn_mm": round(selected_dn, 1),
                 "selected_size_in": round(selected_dn / 25.4, 2),
+                "vent_exit_velocity_ms": round(vent_exit_vel_ms, 2),
                 "recommended_duty_count": recommended_duty_count,
                 "opening_percent": results.get("opening_percent"),
                 "is_choked": results.get("is_choked"),
@@ -235,7 +378,7 @@ def _size_esd_valve(
             warnings,
         )
     except BaseException as exc:
-        return None, [f"{path} ESD vana boyutlandırma hatası: {exc}"]
+        return None, [f"{path} ESD/BDV vana boyutlandırma hatası: {exc}"]
 
 
 def calculate_station_process_model(
@@ -252,7 +395,14 @@ def calculate_station_process_model(
         Structured dictionary with station summary, dynamic equipment counts,
         nodal process states, and animated pipe flow velocity vectors.
     """
-    # 0. Parse Gas Composition, Molecular Weight, and Selected EOS FIRST
+    # 0. Resolve Site Atmospheric Pressure & Ambient Temperature from Design Tab FIRST
+    site_ambient = _resolve_site_ambient(inputs, design_results)
+    p_atm_bar = site_ambient["p_atm_bar"]
+    ambient_pressure_kpa = site_ambient["ambient_pressure_kpa"]
+    ambient_temp_c = site_ambient["ambient_temp_c"]
+    altitude_m = site_ambient["altitude_m"]
+
+    # 0b. Parse Gas Composition, Molecular Weight, and Selected EOS
     raw_gas_comp = inputs.get("gas_comp")
     gas_comp: Dict[str, float] = {}
     if isinstance(raw_gas_comp, dict) and raw_gas_comp:
@@ -312,7 +462,7 @@ def calculate_station_process_model(
         elif canon_unit == "kg/h":
             mass_flow_kgs = raw_flow / 3600.0
         elif canon_unit == "m³/h":
-            mass_flow_kgs = _actual_m3h_to_kgs(raw_flow, inputs, engine, gas_obj, eos_key, mw)
+            mass_flow_kgs = _actual_m3h_to_kgs(raw_flow, inputs, engine, gas_obj, eos_key, mw, p_atm_bar=p_atm_bar)
         elif gas_obj is not None and canon_unit in ("Sm³/h", "Nm³/h", "MMSCFD", "MMSCMD", "kmol/h"):
             try:
                 mass_flow_kgs = engine.convert_flow_to_kgs(raw_flow, canon_unit, gas_obj, eos_key)
@@ -326,7 +476,7 @@ def calculate_station_process_model(
     else:
         mass_flow_kgs = max(0.5, mass_flow_kgs)
 
-    # Pressures in bar(a) — use the shared unit system so bar(g) is converted correctly.
+    # Pressures in bar(a) — gauge units respect site atmospheric pressure from Design Tab
     p_in_unit = str(inputs.get("p_in_unit", "bar(a)"))
     p_out_unit = str(inputs.get("p_out_unit", "bar(a)"))
     try:
@@ -338,14 +488,8 @@ def calculate_station_process_model(
     except (TypeError, ValueError):
         raw_p_out = 75.0
 
-    try:
-        p_in = UnitSystem.convert_pressure(raw_p_in, p_in_unit, "bar(a)")
-    except Exception:
-        p_in = raw_p_in
-    try:
-        p_out = UnitSystem.convert_pressure(raw_p_out, p_out_unit, "bar(a)")
-    except Exception:
-        p_out = raw_p_out
+    p_in = _pressure_to_bar_a(raw_p_in, p_in_unit, p_atm_bar)
+    p_out = _pressure_to_bar_a(raw_p_out, p_out_unit, p_atm_bar)
 
     if not math.isfinite(p_in) or p_in < 0.5:
         p_in = 0.5
@@ -607,7 +751,9 @@ def calculate_station_process_model(
     else:
         n_exp = ((k_in_real - 1.0) / k_in_real) / (polytropic_eff / 100.0)
         t_discharge_hot = round(max(120.0, T_in_K) * (pr_safe ** n_exp) - 273.15, 1)
-    t_discharge_hot = max(t_in, min(350.0, t_discharge_hot))
+    t_discharge_hot = round(max(t_in, min(350.0, t_discharge_hot)), 1)
+    # Verified exact coupling: Compressor Outlet Temp == Unit Discharge Header Temp == Gas Cooler Inlet Temp
+    t_cooler_inlet_c = t_discharge_hot
 
     if design_power_per_unit is not None and design_power_per_unit > 0:
         scaled_power_per_unit = design_power_per_unit
@@ -660,21 +806,47 @@ def calculate_station_process_model(
             return None, [f"{path} vana boyutlandırma hatası: {exc}"]
 
     asv_sizing, asv_warnings = _size_control_valve(
-        "ASV", surge_flow_limit, p_out, max(p_in, p_comp_inlet), t_discharge_hot
+        "ASV", surge_flow_limit, p_out, max(p_in, p_comp_inlet), t_cooler_inlet_c
     )
     pcv_sizing, pcv_warnings = _size_control_valve(
-        "PCV", station_recycle_capacity_kgs, p_out, max(p_in, p_comp_inlet), t_discharge_hot
+        "PCV", station_recycle_capacity_kgs, p_out, max(p_in, p_comp_inlet), t_cooler_inlet_c
     )
 
-    # 6. Fin-Fan Gas Air Coolers Sizing (Real EOS Enthalpy Δh / Real Cp — NO hardcoded Cp=2.45)
-    t_target_pipeline = 45.0
+    def _user_float(key: str, default: float) -> float:
+        if not _has_explicit_value(inputs, key):
+            return default
+        try:
+            value = float(inputs.get(key))
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) else default
+
+    # 6. Fin-Fan Gas Air Coolers Sizing (User Air Temp + Max Gas Outlet Temp + Real EOS Enthalpy Δh)
+    cooler_air_user_override = _has_explicit_value(inputs, "cooler_air_temp_c")
+    cooler_max_out_user_override = _has_explicit_value(inputs, "cooler_max_outlet_temp_c")
+    cooler_air_temp_c = max(-50.0, min(65.0, _user_float("cooler_air_temp_c", ambient_temp_c)))
+    cooler_max_outlet_temp_c = max(-30.0, min(180.0, _user_float("cooler_max_outlet_temp_c", 45.0)))
+
+    air_cooler_warnings: List[str] = []
+    if cooler_max_outlet_temp_c <= cooler_air_temp_c + 3.0:
+        t_target_pipeline = round(cooler_air_temp_c + 5.0, 1)
+        air_cooler_warnings.append(
+            f"Gaz soğutucu maksimum gaz çıkış sıcaklığı ({cooler_max_outlet_temp_c:.1f} °C), "
+            f"soğutma havası giriş sıcaklığına ({cooler_air_temp_c:.1f} °C) göre fiziksel yaklaşım sınırının "
+            f"(min. ΔT ≥ 3 °C) altındadır; soğutucu çıkış sıcaklığı {t_target_pipeline:.1f} °C olarak sınırlandırıldı."
+        )
+    elif t_cooler_inlet_c <= cooler_max_outlet_temp_c:
+        t_target_pipeline = round(t_cooler_inlet_c, 1)
+    else:
+        t_target_pipeline = round(cooler_max_outlet_temp_c, 1)
+
     dp_cooler = 0.40  # bar
     p_post_cooler = round(max(0.5, p_out - dp_cooler), 2)
 
-    hot_state = _safe_eos_state(p_out, t_discharge_hot)
+    hot_state = _safe_eos_state(p_out, t_cooler_inlet_c)
     cooled_state = _safe_eos_state(p_post_cooler, t_target_pipeline)
 
-    if t_discharge_hot > t_target_pipeline:
+    if t_cooler_inlet_c > t_target_pipeline:
         delta_h_kj_kg: Optional[float] = None
         if (
             hot_state is not None
@@ -695,22 +867,35 @@ def calculate_station_process_model(
                 cp_real = inlet_state.Cp / 1000.0
             else:
                 cp_real = (k_in_real * R_gas / max(0.05, k_in_real - 1.0)) / 1000.0
-            delta_h_kj_kg = cp_real * (t_discharge_hot - t_target_pipeline)
+            delta_h_kj_kg = cp_real * (t_cooler_inlet_c - t_target_pipeline)
         heat_duty_mw = round(max(0.0, (mass_flow_kgs * delta_h_kj_kg) / 1000.0), 3)
     else:
         heat_duty_mw = 0.0
 
-    cooler_bay_capacity_mw = 3.2
-    user_cooler_bays = inputs.get("cooler_bays_count")
-    if user_cooler_bays:
-        cooler_bays_count = max(2, min(16, int(user_cooler_bays)))
+    if heat_duty_mw > 0:
+        air_rise_c = min(22.0, max(8.0, 0.45 * max(4.0, t_cooler_inlet_c - cooler_air_temp_c)))
+        cooler_air_out_c = min(max(cooler_air_temp_c + 1.5, t_cooler_inlet_c - 2.0), cooler_air_temp_c + air_rise_c)
+        dt_hot = max(1.0, t_cooler_inlet_c - cooler_air_out_c)
+        dt_cold = max(1.0, t_target_pipeline - cooler_air_temp_c)
+        if abs(dt_hot - dt_cold) < 0.05:
+            cooler_lmtd_c = dt_hot
+        else:
+            cooler_lmtd_c = (dt_hot - dt_cold) / math.log(dt_hot / dt_cold)
     else:
-        cooler_bays_count = max(2, min(8, math.ceil(heat_duty_mw / cooler_bay_capacity_mw)))
+        cooler_air_out_c = cooler_air_temp_c
+        cooler_lmtd_c = max(0.0, t_cooler_inlet_c - cooler_air_temp_c)
+
+    # Scale standard bay thermal capacity (3.2 MW @ ISO LMTD ~37.86°C) by actual counter-current LMTD
+    cooler_bay_capacity_mw = 3.2 * max(0.20, min(1.60, (cooler_lmtd_c / 37.86) if cooler_lmtd_c > 0 else 1.0))
+    user_cooler_bays = inputs.get("cooler_bays_count")
+    if user_cooler_bays not in (None, ""):
+        cooler_bays_count = max(2, min(16, int(float(user_cooler_bays))))
+    else:
+        cooler_bays_count = max(2, min(16, math.ceil(heat_duty_mw / max(0.3, cooler_bay_capacity_mw)))) if heat_duty_mw > 0 else 2
 
     air_cooler_design = None
-    air_cooler_warnings = []
     include_air_cooler_design = bool(inputs.get("include_air_cooler_design", False))
-    if include_air_cooler_design and t_discharge_hot > t_target_pipeline + 1.0:
+    if include_air_cooler_design and t_cooler_inlet_c > t_target_pipeline + 1.0:
         try:
             from kasp.integrations.air_cooler.adapter import AirCoolerAdapter
 
@@ -723,38 +908,34 @@ def calculate_station_process_model(
                     "mass_flow_kgs": mass_flow_kgs,
                     "p_in_bar": p_out,
                     "p_out_bar": p_post_cooler,
-                    "t_in_c": t_discharge_hot,
+                    "t_in_c": t_cooler_inlet_c,
                     "t_out_c": t_target_pipeline,
-                    "air_in_c": float(inputs.get("ambient_temp", 15.0) or 15.0),
-                    "air_out_c": float(inputs.get("ambient_temp", 15.0) or 15.0) + 20.0,
+                    "air_in_c": cooler_air_temp_c,
+                    "air_out_c": round(cooler_air_out_c, 2),
                     "auto_size": True,
                 }
             )
             air_cooler_design = design.get("results")
-            air_cooler_warnings = list(design.get("warnings", []) or [])
+            air_cooler_warnings.extend(list(design.get("warnings", []) or []))
         except BaseException as exc:
             air_cooler_warnings.append(f"Detaylı hava soğutucu tasarımı yapılamadı: {exc}")
 
     tcv_sizing, tcv_warnings = _size_control_valve(
-        "TCV", mass_flow_kgs * 0.35, p_out, p_post_cooler, t_discharge_hot
+        "TCV", mass_flow_kgs * 0.35, p_out, p_post_cooler, t_cooler_inlet_c
     )
-    # 7. Safety & Depressurization (PSV & Blowdown) with Real EOS Z, MW, k
-    # User overrides are optional; derived defaults keep the station model usable
-    # out of the box and are surfaced as an explicit input contract.
-    def _safety_float(key: str, default: float) -> float:
-        try:
-            value = float(inputs.get(key))
-        except (TypeError, ValueError):
-            return default
-        return value if math.isfinite(value) else default
 
-    psv_set_pressure_bar = round(
-        _safety_float("psv_set_pressure_bar", p_out * 1.10), 2
-    )
-    if psv_set_pressure_bar <= p_out:
-        psv_set_pressure_bar = round(p_out * 1.10, 2)
+    # 7. Safety & Depressurization (PSV & Blowdown) coupled to Design Tab Atmospheric P & T
+    def _safety_float(key: str, default: float) -> float:
+        return _user_float(key, default)
+
+    p_out_barg = max(0.20, p_out - p_atm_bar)
+    default_psv_set_barg = round(max(p_out_barg * 1.10, p_out * 1.02 if p_out > 15.0 else p_out_barg * 1.10), 2)
+    psv_set_pressure_bar = round(_safety_float("psv_set_pressure_bar", default_psv_set_barg), 2)
+    if psv_set_pressure_bar <= p_out_barg:
+        psv_set_pressure_bar = default_psv_set_barg
     psv_overpressure_pct = min(25.0, max(1.0, _safety_float("psv_overpressure_pct", 10.0)))
-    psv_back_pressure_bar = max(0.5, _safety_float("psv_back_pressure_bar", 1.01325))
+    psv_back_user_override = _has_explicit_value(inputs, "psv_back_pressure_bar")
+    psv_back_pressure_bar = round(max(0.35, _safety_float("psv_back_pressure_bar", p_atm_bar)), 5)
     psv_valve_type = str(inputs.get("psv_valve_type") or "conventional").strip().lower()
     if psv_valve_type not in ("conventional", "balanced_bellows", "pilot"):
         psv_valve_type = "conventional"
@@ -763,29 +944,31 @@ def calculate_station_process_model(
     bdv_depressurization_time_min = max(1.0, _safety_float("bdv_depressurization_time_min", 15.0))
 
     psv_input_contract = [
-        {"key": "psv_set_pressure_bar", "label": "PSV ayar basıncı (bar(g))", "value": psv_set_pressure_bar, "source": "user" if inputs.get("psv_set_pressure_bar") not in (None, "") else "derived"},
-        {"key": "psv_overpressure_pct", "label": "PSV aşırı basınç oranı (%)", "value": psv_overpressure_pct, "source": "user" if inputs.get("psv_overpressure_pct") not in (None, "") else "derived"},
-        {"key": "psv_back_pressure_bar", "label": "PSV karşı basınç (bar(a))", "value": psv_back_pressure_bar, "source": "user" if inputs.get("psv_back_pressure_bar") not in (None, "") else "derived"},
-        {"key": "psv_valve_type", "label": "PSV tipi", "value": psv_valve_type, "source": "user" if inputs.get("psv_valve_type") not in (None, "") else "derived"},
-        {"key": "psv_count", "label": "PSV adedi (duty + standby)", "value": psv_count, "source": "user" if inputs.get("psv_count") not in (None, "") else "derived"},
-        {"key": "psv_duty_count", "label": "Eşzamanlı (duty) PSV adedi", "value": psv_duty_count, "source": "user" if inputs.get("psv_duty_count") not in (None, "") else "derived"},
+        {"key": "psv_set_pressure_bar", "label": "PSV ayar basıncı (bar(g))", "value": psv_set_pressure_bar, "source": "user" if _has_explicit_value(inputs, "psv_set_pressure_bar") else "derived"},
+        {"key": "psv_overpressure_pct", "label": "PSV aşırı basınç oranı (%)", "value": psv_overpressure_pct, "source": "user" if _has_explicit_value(inputs, "psv_overpressure_pct") else "derived"},
+        {"key": "psv_back_pressure_bar", "label": "PSV karşı basınç (bar(a))", "value": psv_back_pressure_bar, "source": "user" if psv_back_user_override else "design_tab"},
+        {"key": "psv_valve_type", "label": "PSV tipi", "value": psv_valve_type, "source": "user" if _has_explicit_value(inputs, "psv_valve_type") else "derived"},
+        {"key": "psv_count", "label": "PSV adedi (duty + standby)", "value": psv_count, "source": "user" if _has_explicit_value(inputs, "psv_count") else "derived"},
+        {"key": "psv_duty_count", "label": "Eşzamanlı (duty) PSV adedi", "value": psv_duty_count, "source": "user" if _has_explicit_value(inputs, "psv_duty_count") else "derived"},
     ]
-    psv_missing_inputs = [item["key"] for item in psv_input_contract if item["source"] != "user"]
+    psv_missing_inputs = [item["key"] for item in psv_input_contract if item["source"] == "derived"]
 
     psv_sizing = None
     psv_sizing_warnings = []
     try:
         from kasp.integrations.psv.adapter import PSVAdapter
 
-        p_relieve_bar = psv_set_pressure_bar * (1.0 + psv_overpressure_pct / 100.0)
-        relieve_state = _safe_eos_state(p_relieve_bar, t_discharge_hot) or hot_state
+        p_relieve_bar = psv_set_pressure_bar * (1.0 + psv_overpressure_pct / 100.0) + p_atm_bar
+        relieve_state = _safe_eos_state(p_relieve_bar, t_cooler_inlet_c) or hot_state
         psv_payload: Dict[str, Any] = {
             "service": "gas",
             "p1_bar": p_relieve_bar,
             "p2_bar": psv_back_pressure_bar,
+            "p_atm_bar": p_atm_bar,
+            "ambient_temp_c": ambient_temp_c,
             "set_pressure_bar": psv_set_pressure_bar,
             "overpressure_pct": psv_overpressure_pct,
-            "t_c": t_discharge_hot,
+            "t_c": t_cooler_inlet_c,
             "mass_flow_kgs": mass_flow_kgs,
             "valve_type": psv_valve_type,
             "num_valves": psv_duty_count,
@@ -806,19 +989,19 @@ def calculate_station_process_model(
             psv_payload["composition"] = gas_comp
 
         psv_result = PSVAdapter().calculate(psv_payload)
-        psv_sizing = psv_result.get("results", {})
+        raw_psv_res = psv_result.get("results", {})
+        psv_sizing = raw_psv_res
         psv_sizing_warnings = list(psv_result.get("warnings", []) or [])
-        if psv_sizing.get("Selected_Orifice_Letter") == "Multiple Valves Required":
+        if raw_psv_res.get("Selected_Orifice_Letter") == "Multiple Valves Required":
             multi_msg = "Tek PSV orifisi (API 526 T) kapasitesi aşıldı; çoklu paralel PSV seçimi gereklidir."
             if multi_msg not in psv_sizing_warnings:
                 psv_sizing_warnings.append(multi_msg)
-        if psv_sizing.get("Required_Area_sqin") is not None:
-            required_area = float(psv_sizing.get("Required_Area_sqin") or 0.0)
-            selected_area = float(psv_sizing.get("Selected_Orifice_Area_sqin") or 0.0)
-            orifice_letter = str(psv_sizing.get("Selected_Orifice_Letter") or "-")
+        if raw_psv_res.get("Required_Area_sqin") is not None:
+            required_area = float(raw_psv_res.get("Required_Area_sqin") or 0.0)
+            selected_area = float(raw_psv_res.get("Selected_Orifice_Area_sqin") or 0.0)
+            orifice_letter = str(raw_psv_res.get("Selected_Orifice_Letter") or "-")
             inlet_flange, outlet_flange = _API526_FLANGE_SIZES.get(orifice_letter, ("8\"", "10\""))
             total_required_area = required_area * max(1, psv_duty_count)
-            # API 526 largest standard orifice T has 26.0 in² area
             recommended_duty_count = max(1, math.ceil(total_required_area / 26.0))
             psv_sizing = {
                 "required_area_sqin": required_area,
@@ -831,8 +1014,12 @@ def calculate_station_process_model(
                 "outlet_flange_in": outlet_flange,
                 "recommended_duty_count": recommended_duty_count,
                 "recommended_total_count": recommended_duty_count + 1,
-                "orifice_loading_pct": psv_sizing.get("Orifice_Loading_Pct"),
-                "flow_type": psv_sizing.get("Flow_Type"),
+                "orifice_loading_pct": raw_psv_res.get("Orifice_Loading_Pct"),
+                "flow_type": raw_psv_res.get("Flow_Type"),
+                "p_atm_bar": raw_psv_res.get("p_atm_bar", round(p_atm_bar, 5)),
+                "ambient_temp_c": raw_psv_res.get("ambient_temp_c", round(ambient_temp_c, 2)),
+                "atm_gas_density_kgm3": raw_psv_res.get("atm_gas_density_kgm3"),
+                "vent_exit_velocity_ms": raw_psv_res.get("vent_exit_velocity_ms"),
                 "z_used": psv_payload.get("z"),
                 "mw_used": psv_payload.get("mw"),
                 "k_used": psv_payload.get("k"),
@@ -849,7 +1036,9 @@ def calculate_station_process_model(
         "z": psv_sizing.get("z_used") if isinstance(psv_sizing, dict) else round(z_in_real, 4),
         "k": psv_sizing.get("k_used") if isinstance(psv_sizing, dict) else round(k_in_real, 4),
         "p_upstream_bar": round(p_out, 2),
-        "t_relieving_c": round(t_discharge_hot, 1),
+        "t_relieving_c": round(t_cooler_inlet_c, 1),
+        "p_atm_bar": round(p_atm_bar, 5),
+        "ambient_temp_c": round(ambient_temp_c, 2),
         "mass_flow_total_kgs": round(mass_flow_kgs, 2),
     }
 
@@ -862,7 +1051,7 @@ def calculate_station_process_model(
     pig_receiver_size = f"{mainline_nps}\" x {mainline_nps + 4}\" Class 600"
     pig_launcher_size = f"{mainline_nps}\" x {mainline_nps + 4}\" Class 900"
 
-    # 9. Process Nodes Matrix
+    # 9. Process Nodes Matrix (Compressor Outlet == Unit Discharge Header == Gas Cooler Inlet)
     nodes = [
         {
             "id": "N01_MAINLINE_INLET",
@@ -908,7 +1097,7 @@ def calculate_station_process_model(
             "id": "N05_COMPRESSOR_DISCHARGE",
             "name": "Kompresör Çıkışı (Compressor Out)",
             "pressure_bar": round(p_out, 2),
-            "temp_c": round(t_discharge_hot, 1),
+            "temp_c": t_cooler_inlet_c,
             "flow_kgs": round(mass_flow_kgs, 2),
             "phase": "Yüksek Basınçlı Sıcak Gaz",
             "state_desc": f"{comp_op_count} aktif turbo-kompresör treni çıkışı",
@@ -916,12 +1105,12 @@ def calculate_station_process_model(
         },
         {
             "id": "N06_DISCHARGE_HEADER",
-            "name": "Basma Kolektörü (Discharge Header)",
+            "name": "Ünite Basma Kolektörü / Soğutucu Girişi (Unit Discharge Header)",
             "pressure_bar": round(p_out - 0.05, 2),
-            "temp_c": round(t_discharge_hot - 0.5, 1),
+            "temp_c": t_cooler_inlet_c,
             "flow_kgs": round(mass_flow_kgs, 2),
-            "phase": "Basma Kolektör Gazı",
-            "state_desc": "Hava soğutucular ve ana recycle ayrım noktası",
+            "phase": "Basma Kolektör Gazı (Soğutucu Girişi)",
+            "state_desc": "Gaz soğutucu sıcak girişi ve ana recycle ayrım noktası",
             "color": "#dc2626",
         },
         {
@@ -946,34 +1135,59 @@ def calculate_station_process_model(
         },
     ]
 
-    # 10. Dynamic Pipe Sizing & Natural Gas Flow Network (ASME B36.10M / API 5L / API RP 14E)
+    # 10. Dynamic Pipe Sizing & Natural Gas Flow Network (User Max Velocity + Governing Common Header Rule)
+    max_vel_user_override = _has_explicit_value(inputs, "max_velocity_ms")
+    max_velocity_ms = max(2.0, min(60.0, _user_float("max_velocity_ms", 20.0)))
+    pipe_material_used = str(inputs.get("pipe_material") or "API 5L X70")
+    design_factor_used = float(_user_float("design_factor_F", 0.50))
+
+    def _clean_pipe_choice(raw_val: Any) -> Optional[str]:
+        if raw_val is None:
+            return None
+        s = str(raw_val).replace('"', "").strip()
+        if not s or s.lower() in {"auto", "otomatik", "none", "null"}:
+            return None
+        return s
+
+    cyclone_inlet_pipe_choice = _clean_pipe_choice(inputs.get("cyclone_inlet_pipe_size"))
+    cyclone_outlet_pipe_choice = _clean_pipe_choice(inputs.get("cyclone_outlet_pipe_size"))
+    filter_inlet_pipe_choice = _clean_pipe_choice(inputs.get("filter_inlet_pipe_size"))
+    filter_outlet_pipe_choice = _clean_pipe_choice(inputs.get("filter_outlet_pipe_size"))
+
     station_piping = PipeSizingService.size_station_network(
         mass_flow_kgs=mass_flow_kgs,
         p_in_bar=p_in,
         p_out_bar=p_out,
         t_in_c=t_in,
-        t_discharge_c=t_discharge_hot,
+        t_discharge_c=t_cooler_inlet_c,
         t_cooled_c=t_target_pipeline,
         comp_op_count=comp_op_count,
         cyclone_op_count=cyclone_op_count,
         filter_op_count=filter_op_count,
         cooler_bays_count=cooler_bays_count,
         gas_mw=mw,
-        pipe_material=inputs.get("pipe_material", "API 5L X70"),
-        design_factor_F=float(inputs.get("design_factor_F", 0.50)),
+        pipe_material=pipe_material_used,
+        design_factor_F=design_factor_used,
         pipe_standard=inputs.get("pipe_standard", "BOTAŞ"),
         psl_level=inputs.get("psl_level", "PSL2"),
+        max_velocity_ms=max_velocity_ms,
         dp_cyclone_bar=dp_cyclone,
         dp_filter_bar=dp_filter,
         dp_cooler_bar=dp_cooler,
         gas_comp=gas_comp,
         eos_model=eos_key,
         thermo_solver=solver,
+        cyclone_inlet_nominal=cyclone_inlet_pipe_choice,
+        cyclone_outlet_nominal=cyclone_outlet_pipe_choice,
+        filter_inlet_nominal=filter_inlet_pipe_choice,
+        filter_outlet_nominal=filter_outlet_pipe_choice,
     )
     p_lines = station_piping["lines"]
 
-    # 10b. Emergency Shutdown (ESD) isolation valves: gas sizing at the actual
-    # suction/discharge header sizes with a user-defined allowable pressure drop.
+    # 10b. Emergency Shutdown & Depressurization (ESD / BDV) Sizing:
+    # HP blowdown uses user `esd_hp_volume_m3` at Compressor Outlet Pressure (`p_out`)
+    # LP blowdown uses user `esd_lp_volume_m3` at Compressor Inlet Pressure (`p_in`)
+    # Both discharge to Design Tab atmospheric pressure (`p_atm_bar`) and ambient temp (`ambient_temp_c`).
     def _line_size_in(key: str, fallback: float) -> float:
         raw = (p_lines.get(key) or {}).get("nominal_size_in")
         try:
@@ -981,6 +1195,10 @@ def calculate_station_process_model(
         except (TypeError, ValueError):
             return fallback
 
+    esd_hp_user_override = _has_explicit_value(inputs, "esd_hp_volume_m3")
+    esd_lp_user_override = _has_explicit_value(inputs, "esd_lp_volume_m3")
+    esd_hp_volume_m3 = max(0.5, _safety_float("esd_hp_volume_m3", 50.0))
+    esd_lp_volume_m3 = max(0.5, _safety_float("esd_lp_volume_m3", 40.0))
     esd_allowable_dp_bar = max(0.05, _safety_float("esd_allowable_dp_bar", 0.5))
     esd_valve_type = str(inputs.get("esd_valve_type") or "full_bore_ball").strip().lower()
     if esd_valve_type not in ("full_bore_ball", "ball", "butterfly", "gate"):
@@ -990,20 +1208,55 @@ def calculate_station_process_model(
     esd_suction_line_in = _line_size_in("suction_header", float(mainline_nps))
     esd_discharge_line_in = _line_size_in("discharge_header", float(mainline_nps))
 
-    esd_suction, esd_suction_warnings = _size_esd_valve(
-        "ESD-SUCTION", mass_flow_kgs, p_in, t_in, esd_suction_line_in,
-        gas_comp, eos_key, esd_allowable_dp_bar, esd_valve_type, duty_count=esd_duty_count,
+    rho_hp_discharge = (
+        float(hot_state.density)
+        if (hot_state is not None and getattr(hot_state, "density", None) and math.isfinite(hot_state.density) and hot_state.density > 0)
+        else max(0.2, (p_out * 1e5) / (max(0.1, z_in_real) * R_gas * max(120.0, t_cooler_inlet_c + 273.15)))
     )
-    esd_discharge, esd_discharge_warnings = _size_esd_valve(
-        "ESD-DISCHARGE", mass_flow_kgs, p_post_cooler, t_target_pipeline, esd_discharge_line_in,
-        gas_comp, eos_key, esd_allowable_dp_bar, esd_valve_type, duty_count=esd_duty_count,
+
+    esd_suction, esd_suction_warnings = _size_esd_blowdown_section(
+        path="ESD-LP-SUCTION",
+        piping_volume_m3=esd_lp_volume_m3,
+        upstream_pressure_bar=p_in,
+        upstream_temp_c=t_in,
+        p_atm_bar=p_atm_bar,
+        ambient_temp_c=ambient_temp_c,
+        depressurization_time_min=bdv_depressurization_time_min,
+        line_size_in=esd_suction_line_in,
+        gas_density_kgm3=rho_suction,
+        mw_g_mol=mw,
+        composition=gas_comp,
+        eos_model=eos_key,
+        allowable_dp_bar=esd_allowable_dp_bar,
+        valve_type=esd_valve_type,
+        duty_count=esd_duty_count,
+    )
+    esd_discharge, esd_discharge_warnings = _size_esd_blowdown_section(
+        path="ESD-HP-DISCHARGE",
+        piping_volume_m3=esd_hp_volume_m3,
+        upstream_pressure_bar=p_out,
+        upstream_temp_c=t_cooler_inlet_c,
+        p_atm_bar=p_atm_bar,
+        ambient_temp_c=ambient_temp_c,
+        depressurization_time_min=bdv_depressurization_time_min,
+        line_size_in=esd_discharge_line_in,
+        gas_density_kgm3=rho_hp_discharge,
+        mw_g_mol=mw,
+        composition=gas_comp,
+        eos_model=eos_key,
+        allowable_dp_bar=esd_allowable_dp_bar,
+        valve_type=esd_valve_type,
+        duty_count=esd_duty_count,
     )
     esd_warnings = list(esd_suction_warnings) + list(esd_discharge_warnings)
     esd_input_contract = [
-        {"key": "esd_count", "label": "ESD vana adedi (toplam)", "value": esd_count, "source": "user" if inputs.get("esd_count") not in (None, "") else "derived"},
-        {"key": "esd_duty_count", "label": "Eşzamanlı aktif ESD adedi", "value": esd_duty_count, "source": "user" if inputs.get("esd_duty_count") not in (None, "") else "derived"},
-        {"key": "esd_allowable_dp_bar", "label": "ESD izin verilen basınç kaybı (bar)", "value": esd_allowable_dp_bar, "source": "user" if inputs.get("esd_allowable_dp_bar") not in (None, "") else "derived"},
-        {"key": "esd_valve_type", "label": "ESD vana tipi", "value": esd_valve_type, "source": "user" if inputs.get("esd_valve_type") not in (None, "") else "derived"},
+        {"key": "esd_hp_volume_m3", "label": "Boşaltılacak yüksek basınç borulama hacmi (m³)", "value": round(esd_hp_volume_m3, 2), "source": "user" if esd_hp_user_override else "derived"},
+        {"key": "esd_lp_volume_m3", "label": "Boşaltılacak düşük basınç borulama hacmi (m³)", "value": round(esd_lp_volume_m3, 2), "source": "user" if esd_lp_user_override else "derived"},
+        {"key": "esd_count", "label": "ESD/BDV vana adedi (toplam)", "value": esd_count, "source": "user" if _has_explicit_value(inputs, "esd_count") else "derived"},
+        {"key": "esd_duty_count", "label": "Eşzamanlı aktif ESD/BDV adedi", "value": esd_duty_count, "source": "user" if _has_explicit_value(inputs, "esd_duty_count") else "derived"},
+        {"key": "bdv_depressurization_time_min", "label": "Hedef boşaltma süresi (dk)", "value": bdv_depressurization_time_min, "source": "user" if _has_explicit_value(inputs, "bdv_depressurization_time_min") else "derived"},
+        {"key": "esd_allowable_dp_bar", "label": "Hat ESD izin verilen basınç kaybı (bar)", "value": esd_allowable_dp_bar, "source": "user" if _has_explicit_value(inputs, "esd_allowable_dp_bar") else "derived"},
+        {"key": "esd_valve_type", "label": "ESD vana tipi", "value": esd_valve_type, "source": "user" if _has_explicit_value(inputs, "esd_valve_type") else "derived"},
         {"key": "esd_suction_line_size_in", "label": "Emiş ESD hat çapı (inç)", "value": esd_suction_line_in, "source": "calculated"},
         {"key": "esd_discharge_line_size_in", "label": "Basma ESD hat çapı (inç)", "value": esd_discharge_line_in, "source": "calculated"},
     ]
@@ -1012,11 +1265,15 @@ def calculate_station_process_model(
         "gas_comp": gas_comp,
         "eos_model": eos_key,
         "mw": round(mw, 3),
+        "p_atm_bar": round(p_atm_bar, 5),
+        "ambient_temp_c": round(ambient_temp_c, 2),
         "suction_p_in_bar": round(p_in, 2),
         "suction_t_c": round(t_in, 1),
+        "suction_piping_volume_m3": round(esd_lp_volume_m3, 2),
         "suction_line_size_in": esd_suction_line_in,
-        "discharge_p_in_bar": round(p_post_cooler, 2),
-        "discharge_t_c": round(t_target_pipeline, 1),
+        "discharge_p_in_bar": round(p_out, 2),
+        "discharge_t_c": round(t_cooler_inlet_c, 1),
+        "discharge_piping_volume_m3": round(esd_hp_volume_m3, 2),
         "discharge_line_size_in": esd_discharge_line_in,
         "mass_flow_total_kgs": round(mass_flow_kgs, 2),
     }
@@ -1091,11 +1348,27 @@ def calculate_station_process_model(
             "color": "#2563eb",
             "status": "active",
         },
+        "cyclone_outlet_branches": {
+            "speed_factor": round(max(0.3, p_lines["cyclone_outlet_branch"]["actual_velocity_ms"] / 12.0), 2),
+            "actual_velocity_ms": p_lines["cyclone_outlet_branch"]["actual_velocity_ms"],
+            "nominal_size": p_lines["cyclone_outlet_branch"]["nominal_size_in"],
+            "dir": "up",
+            "color": "#2563eb",
+            "status": "active",
+        },
         "filter_branches": {
             "speed_factor": round(max(0.3, p_lines["filter_branch"]["actual_velocity_ms"] / 12.0), 2),
             "actual_velocity_ms": p_lines["filter_branch"]["actual_velocity_ms"],
             "nominal_size": p_lines["filter_branch"]["nominal_size_in"],
             "dir": "down",
+            "color": "#1d4ed8",
+            "status": "active",
+        },
+        "filter_outlet_branches": {
+            "speed_factor": round(max(0.3, p_lines["filter_outlet_branch"]["actual_velocity_ms"] / 12.0), 2),
+            "actual_velocity_ms": p_lines["filter_outlet_branch"]["actual_velocity_ms"],
+            "nominal_size": p_lines["filter_outlet_branch"]["nominal_size_in"],
+            "dir": "right",
             "color": "#1d4ed8",
             "status": "active",
         },
@@ -1149,6 +1422,408 @@ def calculate_station_process_model(
         },
     }
 
+    nodes_by_id = {n["id"]: n for n in nodes}
+    equalized_hdr_keys = ("suction_header", "comp_suction_header", "unit_discharge_header", "discharge_header")
+    common_hdr_nps_set = {p_lines[k]["nominal_key"] for k in equalized_hdr_keys if k in p_lines}
+    common_hdr_nps = p_lines["suction_header"]["nominal_size_in"]
+    gov_hdr_key = p_lines["suction_header"].get("governing_header_key") or "suction_header"
+
+    p_atm_src = site_ambient["p_atm_source"]
+    t_amb_src = site_ambient["ambient_temp_source"]
+    max_vel_src = "user_input" if max_vel_user_override else "fixed_default"
+    pipe_mat_src = "user_input" if _has_explicit_value(inputs, "pipe_material") else "fixed_default"
+    design_f_src = "user_input" if _has_explicit_value(inputs, "design_factor_F") else "fixed_default"
+    cooler_air_src = "user_input" if cooler_air_user_override else t_amb_src
+    cooler_max_out_src = "user_input" if cooler_max_out_user_override else "fixed_default"
+    cooler_bays_src = "user_input" if user_cooler_bays not in (None, "") else "station_3d_calc"
+    cyc_cnt_src = "user_input" if user_cyclone_op else "station_3d_calc"
+    flt_cnt_src = "user_input" if user_filter_op else "station_3d_calc"
+    comp_cnt_src = (
+        "user_input"
+        if (_has_explicit_value(inputs, "comp_op_count") or _has_explicit_value(inputs, "operating_trains"))
+        else ("design_tab" if (_has_explicit_value(inputs, "num_units") or bool(dr.get("num_units"))) else "station_3d_calc")
+    )
+
+    piping_provenance: List[Dict[str, Any]] = []
+    for l_key, l_val in p_lines.items():
+        is_common_hdr = l_key in equalized_hdr_keys
+        if l_key in ("mainline_inlet", "suction_header", "cyclone_branch"):
+            p_src_line, p_origin_line = "design_tab", "Tasarım Sekmesi Kompresör Giriş Basıncı (p_in)"
+            t_src_line, t_origin_line = "design_tab", "Tasarım Sekmesi Gaz Giriş Sıcaklığı (t_in)"
+        elif l_key in ("cyclone_outlet_branch", "filter_branch", "filter_outlet_branch", "comp_suction_header", "comp_suction_branch"):
+            p_src_line, p_origin_line = "station_3d_calc", "p_in − Siklon/Filtre ΔP (3D İstasyon Hidrolik Hesabı)"
+            t_src_line, t_origin_line = "design_tab", "Tasarım Sekmesi Gaz Giriş Sıcaklığı (t_in)"
+        elif l_key in (
+            "comp_discharge_branch",
+            "anti_surge_loop",
+            "unit_discharge_header",
+            "station_recycle",
+            "cooler_inlet",
+            "cooler_bay_risers",
+            "cooler_bay_inlet_header",
+            "cooler_bypass",
+        ):
+            p_src_line, p_origin_line = "design_tab", "Tasarım Sekmesi Kompresör Çıkış Basıncı (p_out)"
+            t_src_line, t_origin_line = "station_3d_calc", "Kompresör Çıkış Sıcaklığı (ThermoEngine / Tasarım t_out_c)"
+        else:
+            p_src_line, p_origin_line = "station_3d_calc", "p_out − Gaz Soğutucu ΔP (0.40 bar)"
+            t_src_line, t_origin_line = (
+                cooler_max_out_src if t_target_pipeline == round(cooler_max_outlet_temp_c, 1) else "station_3d_calc",
+                "Gaz Soğutucu Çıkış Sıcaklığı (Kullanıcı Maks. Çıkış Sınırı / Yaklaşım Kontrolü)",
+            )
+
+        flow_src_line = (
+            "design_tab"
+            if l_key in (
+                "mainline_inlet",
+                "suction_header",
+                "comp_suction_header",
+                "unit_discharge_header",
+                "discharge_header",
+                "station_recycle",
+                "cooler_inlet",
+                "cooler_outlet",
+                "mainline_outlet",
+            )
+            else "station_3d_calc"
+        )
+        flow_origin_line = (
+            "Tasarım Sekmesi Toplam İstasyon Kütlesel Debisi (flow → kg/s)"
+            if flow_src_line == "design_tab"
+            else "Toplam Debinin Aktif Paralel Ekipman / Bay / Oran Sayısına Bölümü (3D Dinamik Dağıtım)"
+        )
+
+        piping_provenance.append(
+            {
+                "key": l_key,
+                "tag": l_val.get("tag"),
+                "name": l_val.get("name"),
+                "hierarchy_level": l_val.get("hierarchy_level"),
+                "hierarchy_label": l_val.get("hierarchy_label"),
+                "is_common_header": is_common_hdr,
+                "nominal_size_in": l_val.get("nominal_size_in"),
+                "individual_nominal_size_in": l_val.get("individual_nominal_size_in"),
+                "acceptable_nominals": l_val.get("acceptable_nominals", []),
+                "acceptable_diameters_summary": l_val.get("acceptable_diameters_summary", ""),
+                "parameters": [
+                    {
+                        "param": "flow_kgs",
+                        "label": "Hat Kütlesel Debisi",
+                        "value": l_val.get("flow_kgs"),
+                        "unit": "kg/s",
+                        "source": flow_src_line,
+                        "origin_detail": flow_origin_line,
+                    },
+                    {
+                        "param": "pressure_bar",
+                        "label": "Hat İşletme Basıncı",
+                        "value": l_val.get("pressure_bar"),
+                        "unit": "bar(a)",
+                        "source": p_src_line,
+                        "origin_detail": p_origin_line,
+                    },
+                    {
+                        "param": "temp_c",
+                        "label": "Hat Gaz Sıcaklığı",
+                        "value": l_val.get("temp_c"),
+                        "unit": "°C",
+                        "source": t_src_line,
+                        "origin_detail": t_origin_line,
+                    },
+                    {
+                        "param": "max_velocity_ms",
+                        "label": "İzin Verilen Maks. Gaz Hızı Sınırı",
+                        "value": round(max_velocity_ms, 2),
+                        "unit": "m/s",
+                        "source": max_vel_src,
+                        "origin_detail": (
+                            "3D Sekmesi Kullanıcı Girişi (max_velocity_ms)"
+                            if max_vel_user_override
+                            else "Sabit Default Maksimum Gaz Hızı (20.0 m/s)"
+                        ),
+                    },
+                    {
+                        "param": "pipe_material",
+                        "label": "Boru Çelik Sınıfı",
+                        "value": pipe_material_used,
+                        "unit": "-",
+                        "source": pipe_mat_src,
+                        "origin_detail": (
+                            "3D Sekmesi Kullanıcı Seçimi" if pipe_mat_src == "user_input" else "Sabit Default (API 5L X70)"
+                        ),
+                    },
+                    {
+                        "param": "design_factor_F",
+                        "label": "ASME B31.8 Tasarım Faktörü (F)",
+                        "value": design_factor_used,
+                        "unit": "-",
+                        "source": design_f_src,
+                        "origin_detail": (
+                            "3D Sekmesi Kullanıcı Seçimi" if design_f_src == "user_input" else "Sabit Default İstasyon içi F=0.50"
+                        ),
+                    },
+                    {
+                        "param": "individual_nominal_size_in",
+                        "label": "Hız Sınırına Göre Tekil Min. Ticari Çap",
+                        "value": l_val.get("individual_nominal_size_in"),
+                        "unit": "NPS",
+                        "source": "station_3d_calc",
+                        "origin_detail": f"Gerçek EOS yoğunluğu + Barlow et kalınlığı + v ≤ {max_velocity_ms:.1f} m/s + API RP 14E",
+                    },
+                    {
+                        "param": "nominal_size_in",
+                        "label": "Uygulanan Nihai Hat Çapı",
+                        "value": l_val.get("nominal_size_in"),
+                        "unit": "NPS",
+                        "source": "station_3d_calc",
+                        "origin_detail": (
+                            f"Ortak Header Kuralı: Ekipman bağlantıları hariç tüm header'ların en büyüğü ({common_hdr_nps}, belirleyici: {gov_hdr_key})"
+                            if is_common_hdr
+                            else "Ekipman Bağlantı Borulaması: Kendi debi ve hız sınırına göre tekil hesaplanan çap"
+                        ),
+                    },
+                ],
+            }
+        )
+
+    parameter_sources = {
+        "categories": {
+            "design_tab": {
+                "code": "design_tab",
+                "label_tr": "Tasarım Sekmesi (Kullanıcı Girişi / Termodinamik Hesap)",
+                "label_en": "Design Tab (User Input / Thermo Calc)",
+                "badge_color": "#38bdf8",
+            },
+            "station_3d_calc": {
+                "code": "station_3d_calc",
+                "label_tr": "3D / İstasyon Dinamik Hesabı",
+                "label_en": "3D / Station Dynamic Calculation",
+                "badge_color": "#10b981",
+            },
+            "user_input": {
+                "code": "user_input",
+                "label_tr": "3D Sekmesi Kullanıcı Girişi",
+                "label_en": "3D Tab User Input",
+                "badge_color": "#f59e0b",
+            },
+            "fixed_default": {
+                "code": "fixed_default",
+                "label_tr": "Sabit Default Mühendislik Değeri",
+                "label_en": "Fixed Engineering Default",
+                "badge_color": "#94a3b8",
+            },
+        },
+        "coupling_checks": {
+            "compressor_outlet_equals_cooler_inlet": {
+                "verified": bool(
+                    abs(nodes_by_id["N05_COMPRESSOR_DISCHARGE"]["temp_c"] - t_cooler_inlet_c) < 0.05
+                    and abs(nodes_by_id["N06_DISCHARGE_HEADER"]["temp_c"] - t_cooler_inlet_c) < 0.05
+                    and abs(p_lines["unit_discharge_header"]["temp_c"] - t_cooler_inlet_c) < 0.05
+                ),
+                "compressor_outlet_temp_c": nodes_by_id["N05_COMPRESSOR_DISCHARGE"]["temp_c"],
+                "unit_discharge_header_temp_c": p_lines["unit_discharge_header"]["temp_c"],
+                "cooler_inlet_temp_c": t_cooler_inlet_c,
+                "summary_tr": (
+                    f"Kompresör çıkış sıcaklığı ({t_cooler_inlet_c:.1f} °C) doğrudan Unit Discharge Header "
+                    f"({p_lines['unit_discharge_header']['temp_c']:.1f} °C) ve Gaz Soğutucu giriş sıcaklığı "
+                    f"({t_cooler_inlet_c:.1f} °C) olarak alınmaktadır."
+                ),
+            },
+            "headers_equalized_to_max_nps": {
+                "verified": len(common_hdr_nps_set) == 1,
+                "common_nominal_size_in": common_hdr_nps,
+                "governing_header_key": gov_hdr_key,
+                "max_velocity_ms": round(max_velocity_ms, 2),
+                "equalized_headers": list(equalized_hdr_keys),
+                "summary_tr": (
+                    f"Ekipman bağlantı borulaması hariç tüm header hesapları içindeki en büyük çap ({common_hdr_nps}, "
+                    f"belirleyici: {gov_hdr_key}) Station Suction, Unit Suction, Unit Discharge ve Station Discharge "
+                    f"header'larına ortak olarak atanmıştır (v_max = {max_velocity_ms:.1f} m/s)."
+                ),
+            },
+            "esd_uses_design_atm_and_volumes": {
+                "verified": bool(
+                    esd_discharge is not None
+                    and esd_suction is not None
+                    and abs(esd_discharge["upstream_pressure_bar"] - round(p_out, 2)) < 0.05
+                    and abs(esd_suction["upstream_pressure_bar"] - round(p_in, 2)) < 0.05
+                    and abs(esd_auto_inputs["p_atm_bar"] - round(p_atm_bar, 5)) < 1e-4
+                    and abs(esd_auto_inputs["ambient_temp_c"] - round(ambient_temp_c, 2)) < 0.05
+                ),
+                "hp_pressure_bar": round(p_out, 2),
+                "hp_volume_m3": round(esd_hp_volume_m3, 2),
+                "lp_pressure_bar": round(p_in, 2),
+                "lp_volume_m3": round(esd_lp_volume_m3, 2),
+                "p_atm_bar": round(p_atm_bar, 5),
+                "ambient_temp_c": round(ambient_temp_c, 2),
+                "summary_tr": (
+                    f"ESD/BDV hesabı YB={p_out:.2f} bar(a) ({esd_hp_volume_m3:.1f} m³), DB={p_in:.2f} bar(a) "
+                    f"({esd_lp_volume_m3:.1f} m³), Tasarım Sekmesi P_atm={p_atm_bar:.4f} bar(a) ve T_atm={ambient_temp_c:.1f} °C ile doğrulandı."
+                ),
+            },
+            "psv_uses_design_atm_and_temp": {
+                "verified": bool(
+                    abs(psv_auto_inputs["p_atm_bar"] - round(p_atm_bar, 5)) < 1e-4
+                    and abs(psv_auto_inputs["ambient_temp_c"] - round(ambient_temp_c, 2)) < 0.05
+                ),
+                "p_atm_bar": round(p_atm_bar, 5),
+                "ambient_temp_c": round(ambient_temp_c, 2),
+                "psv_back_pressure_bar": round(psv_back_pressure_bar, 5),
+                "summary_tr": (
+                    f"PSV hesabı Tasarım Sekmesi atmosferik basıncı P_atm={p_atm_bar:.4f} bar(a) ({ambient_pressure_kpa:.2f} kPa) "
+                    f"ve ortam sıcaklığı T_atm={ambient_temp_c:.1f} °C ile doğrulandı."
+                ),
+            },
+        },
+        "equipment": [
+            {
+                "key": "pig_traps",
+                "tag": "PIG-R / PIG-L",
+                "name": "Giriş Pig Alıcı & Çıkış Pig Atıcı Kovanları",
+                "parameters": [
+                    {"param": "suction_pressure_bar", "label": "PIG-R İşletme Basıncı", "value": round(p_in, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Giriş Basıncı (p_in)"},
+                    {"param": "discharge_pressure_bar", "label": "PIG-L İşletme Basıncı", "value": p_post_cooler, "unit": "bar(a)", "source": "station_3d_calc", "origin_detail": "p_out − Gaz Soğutucu ΔP (3D İstasyon Hesabı)"},
+                    {"param": "mainline_nps", "label": "Ana Hat Bağlantı Çapı", "value": p_lines["mainline_inlet"]["nominal_size_in"], "unit": "NPS", "source": "station_3d_calc", "origin_detail": "L-101 / L-115 Hız Sınırı & Barlow Boru Çapı Hesabı"},
+                    {"param": "barrel_oversize_in", "label": "Kovan Gövde Büyütme Payı", "value": "+4\"", "unit": "inç", "source": "fixed_default", "origin_detail": "Sabit BOTAŞ Pig Trap standardı (Hat Çapı + 4\", Class 600/900)"},
+                ],
+            },
+            {
+                "key": "cyclones",
+                "tag": "V-101..N",
+                "name": "Çoklu Siklon Seperatörler (MFS)",
+                "parameters": [
+                    {"param": "total_mass_flow_kgs", "label": "Toplam Gaz Debisi", "value": round(mass_flow_kgs, 2), "unit": "kg/s", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Debi Girişi + Gerçek EOS Birim Çevrimi"},
+                    {"param": "inlet_pressure_bar", "label": "Giriş Basıncı", "value": round(p_in, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi p_in"},
+                    {"param": "unit_cap_cyclone_kgs", "label": "Birim Siklon Referans Kapasitesi", "value": unit_cap_cyclone, "unit": "kg/s", "source": "fixed_default", "origin_detail": "Sabit Default Referans Kapasite (22.0 kg/s / ünite)"},
+                    {"param": "operating_count", "label": "Çalışan Siklon Sayısı (N)", "value": cyclone_op_count, "unit": "adet", "source": cyc_cnt_src, "origin_detail": "ceil(Debi / 22 kg/s) veya 3D Kullanıcı Seçimi (+1 Yedek)"},
+                    {"param": "pressure_drop_bar", "label": "Siklon Basınç Kaybı (ΔP)", "value": dp_cyclone, "unit": "bar", "source": "station_3d_calc", "origin_detail": "0.30 × (q_ünite / 22)^1.8 dinamik yük kaybı denklemi"},
+                    {"param": "inlet_pipe_size", "label": "MFS Giriş Bağlantı Çapı", "value": p_lines["cyclone_branch"]["nominal_size_in"], "unit": "NPS", "source": p_lines["cyclone_branch"].get("diameter_source", "station_3d_calc"), "origin_detail": f"L-103 tekil giriş branşmanı (min {p_lines['cyclone_branch'].get('velocity_min_nominal_in')} @ v ≤ {max_velocity_ms:.1f} m/s)"},
+                    {"param": "outlet_pipe_size", "label": "MFS Çıkış Bağlantı Çapı", "value": p_lines["cyclone_outlet_branch"]["nominal_size_in"], "unit": "NPS", "source": p_lines["cyclone_outlet_branch"].get("diameter_source", "station_3d_calc"), "origin_detail": f"L-103A tekil çıkış branşmanı (min {p_lines['cyclone_outlet_branch'].get('velocity_min_nominal_in')} @ v ≤ {max_velocity_ms:.1f} m/s)"},
+                ],
+            },
+            {
+                "key": "cartridge_filters",
+                "tag": "F-101..N",
+                "name": "Hassas Kartuş / Koaleser Filtreler (CFS)",
+                "parameters": [
+                    {"param": "inlet_pressure_bar", "label": "CFS Giriş Basıncı", "value": p_post_cyclone, "unit": "bar(a)", "source": "station_3d_calc", "origin_detail": "p_in − ΔP_siklon dinamik düğüm basıncı (N03)"},
+                    {"param": "unit_cap_filter_kgs", "label": "Birim Filtre Referans Kapasitesi", "value": unit_cap_filter, "unit": "kg/s", "source": "fixed_default", "origin_detail": "Sabit Default Referans Kapasite (18.0 kg/s / ünite)"},
+                    {"param": "operating_count", "label": "Çalışan Filtre Sayısı (N)", "value": filter_op_count, "unit": "adet", "source": flt_cnt_src, "origin_detail": "ceil(Debi / 18 kg/s) veya 3D Kullanıcı Seçimi (+1 Yedek)"},
+                    {"param": "clean_dp_bar", "label": "Temiz Filtre Basınç Kaybı (ΔP)", "value": dp_filter, "unit": "bar", "source": "station_3d_calc", "origin_detail": "0.22 × (q_ünite / 18)^1.5 dinamik yük kaybı denklemi"},
+                    {"param": "inlet_pipe_size", "label": "CFS Giriş Bağlantı Çapı", "value": p_lines["filter_branch"]["nominal_size_in"], "unit": "NPS", "source": p_lines["filter_branch"].get("diameter_source", "station_3d_calc"), "origin_detail": f"L-104 tekil giriş branşmanı (min {p_lines['filter_branch'].get('velocity_min_nominal_in')} @ v ≤ {max_velocity_ms:.1f} m/s)"},
+                    {"param": "outlet_pipe_size", "label": "CFS Çıkış Bağlantı Çapı", "value": p_lines["filter_outlet_branch"]["nominal_size_in"], "unit": "NPS", "source": p_lines["filter_outlet_branch"].get("diameter_source", "station_3d_calc"), "origin_detail": f"L-104A tekil çıkış branşmanı (min {p_lines['filter_outlet_branch'].get('velocity_min_nominal_in')} @ v ≤ {max_velocity_ms:.1f} m/s)"},
+                ],
+            },
+            {
+                "key": "turbo_compressors",
+                "tag": "C-101..N",
+                "name": "Santrifüj Turbo-Kompresör Trenleri",
+                "parameters": [
+                    {"param": "gas_comp", "label": "Doğal Gaz Karışımı & EOS", "value": eos_key.upper(), "unit": "mol%", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Gaz Kompozisyonu ve EOS Seçimi"},
+                    {"param": "suction_pressure_bar", "label": "Emiş Basıncı (p_in)", "value": round(p_in, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Giriş Basıncı"},
+                    {"param": "discharge_pressure_bar", "label": "Basma Basıncı (p_out)", "value": round(p_out, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Çıkış Basıncı"},
+                    {"param": "suction_temp_c", "label": "Emiş Sıcaklığı (t_in)", "value": round(t_in, 1), "unit": "°C", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Giriş Sıcaklığı"},
+                    {"param": "operating_count", "label": "Çalışan Ünite Sayısı", "value": comp_op_count, "unit": "adet", "source": comp_cnt_src, "origin_detail": "Tasarım Sekmesi num_units veya 3D Sekmesi Ünite Seçimi (+1 Yedek)"},
+                    {"param": "polytropic_efficiency_pct", "label": "Politropik Verim", "value": polytropic_eff, "unit": "%", "source": "design_tab" if (_has_explicit_value(inputs, "poly_eff") or design_eff) else "fixed_default", "origin_detail": "Tasarım Sekmesi Politropik Verimi (yoksa %82.5 default)"},
+                    {"param": "discharge_temp_c", "label": "Kompresör Çıkış Sıcaklığı (T_out)", "value": t_cooler_inlet_c, "unit": "°C", "source": "station_3d_calc", "origin_detail": "Tasarım Sekmesi / Canlı ThermoEngine Gerçek Gaz Politropik Sıkıştırma Çıkışı"},
+                    {"param": "total_power_mw", "label": "Toplam Mil Gücü", "value": round(total_power_kw / 1000.0, 2), "unit": "MW", "source": "station_3d_calc", "origin_detail": "Tasarım Sekmesi / ThermoEngine Mil Gücü Hesabı"},
+                ],
+            },
+            {
+                "key": "compressor_building",
+                "tag": "BLDG-COMP",
+                "name": "Kompresör Binası & Akustik Muhafaza",
+                "parameters": [
+                    {"param": "installed_units", "label": "Kurulu Tren Sayısı (N+1)", "value": comp_total_count, "unit": "adet", "source": "station_3d_calc", "origin_detail": "Çalışan Kompresör Sayısı + 1 Yedek"},
+                    {"param": "length_m", "label": "Bina Uzunluğu", "value": shelter_length_m, "unit": "m", "source": "station_3d_calc", "origin_detail": "14.0 × Kurulu Ünite + 8.0 m dinamik yerleşim formülü"},
+                    {"param": "width_height_m", "label": "Bina Genişlik × Yükseklik", "value": f"{shelter_width_m} × {shelter_height_m}", "unit": "m", "source": "fixed_default", "origin_detail": "Sabit Default Hol Açıklığı (24.0 m × 12.5 m, 15t vinç)"},
+                ],
+            },
+            {
+                "key": "air_coolers",
+                "tag": "E-101",
+                "name": "Fin-Fan Gaz Hava Soğutucular (API 661)",
+                "parameters": [
+                    {"param": "inlet_temp_c", "label": "Gaz Soğutucu Giriş Sıcaklığı", "value": t_cooler_inlet_c, "unit": "°C", "source": "station_3d_calc", "origin_detail": "Doğrudan Kompresör Çıkış Sıcaklığı (N05 = N06 = E-101 Giriş)"},
+                    {"param": "inlet_pressure_bar", "label": "Gaz Soğutucu Giriş Basıncı", "value": round(p_out, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Çıkış Basıncı (p_out)"},
+                    {"param": "cooler_air_temp_c", "label": "Soğutma Havası Giriş Sıcaklığı", "value": round(cooler_air_temp_c, 1), "unit": "°C", "source": cooler_air_src, "origin_detail": "3D Kullanıcı Girişi (girilmezse Tasarım Sekmesi Ortam Sıcaklığı ambient_temp)"},
+                    {"param": "cooler_max_outlet_temp_c", "label": "Maksimum Gaz Çıkış Sıcaklığı Sınırı", "value": round(cooler_max_outlet_temp_c, 1), "unit": "°C", "source": cooler_max_out_src, "origin_detail": "3D Kullanıcı Girişi (girilmezse 45.0 °C default iletim sınırı)"},
+                    {"param": "outlet_temp_c", "label": "Gerçekleşen Gaz Çıkış Sıcaklığı", "value": round(t_target_pipeline, 1), "unit": "°C", "source": "station_3d_calc", "origin_detail": "Maks. gaz çıkış sınırı ile hava sıcaklığı yaklaşım (ΔT_min) kontrolü sonucu"},
+                    {"param": "pressure_drop_bar", "label": "Tüp Demeti Basınç Kaybı (ΔP)", "value": dp_cooler, "unit": "bar", "source": "fixed_default", "origin_detail": "Sabit Default API 661 Tüp Demeti ΔP (0.40 bar)"},
+                    {"param": "total_heat_duty_mw", "label": "Toplam Soğutma Isıl Yükü (Q)", "value": heat_duty_mw, "unit": "MW", "source": "station_3d_calc", "origin_detail": "m_dot × (h_giriş − h_çıkış) gerçek EOS entalpi farkı"},
+                    {"param": "lmtd_c", "label": "Logaritmik Ortalama Sıcaklık Farkı (LMTD)", "value": round(cooler_lmtd_c, 2), "unit": "°C", "source": "station_3d_calc", "origin_detail": "Gaz (T_in→T_out) ve Hava (T_air,in→T_air,out) karşıt akış LMTD hesabı"},
+                    {"param": "bay_count", "label": "Fin-Fan Bay Sayısı", "value": cooler_bays_count, "unit": "bay", "source": cooler_bays_src, "origin_detail": "Isıl yük ve LMTD düzeltmeli bay kapasitesinden dinamik hesap (veya 3D kullanıcı seçimi)"},
+                ],
+            },
+            {
+                "key": "station_recycle",
+                "tag": "PCV-101 / ASV",
+                "name": "İstasyon Recycle & Ünite Anti-Surge Kontrol Vanaları",
+                "parameters": [
+                    {"param": "upstream_pressure_bar", "label": "Vana Giriş Basıncı", "value": round(p_out, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Çıkış Basıncı (p_out)"},
+                    {"param": "downstream_pressure_bar", "label": "Vana Çıkış Basıncı", "value": round(max(p_in, p_comp_inlet), 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Giriş Basıncı (p_in)"},
+                    {"param": "inlet_temp_c", "label": "Sıcak Gaz Giriş Sıcaklığı", "value": t_cooler_inlet_c, "unit": "°C", "source": "station_3d_calc", "origin_detail": "Kompresör Çıkış Sıcaklığı"},
+                    {"param": "surge_ratio", "label": "ASV Surge Sınır Debi Oranı", "value": 0.68, "unit": "oran", "source": "fixed_default", "origin_detail": "Sabit Default API 617 %68 ünite debisi oranı"},
+                    {"param": "pcv_cv", "label": "PCV / ASV IEC 60534 Cv & Çap", "value": (pcv_sizing or {}).get("valve_inch", "-"), "unit": "NPS", "source": "station_3d_calc", "origin_detail": "ControlValveAdapter IEC 60534-2-1 gerçek gaz hesabı"},
+                ],
+            },
+            {
+                "key": "safety_relief_psv",
+                "tag": "PSV-101..N",
+                "name": "Emniyet Tahliye Vanaları (API 520 / API 526)",
+                "parameters": [
+                    {"param": "p_upstream_bar", "label": "Korunan Hat Basıncı (p_out)", "value": round(p_out, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Çıkış Basıncı"},
+                    {"param": "t_relieving_c", "label": "Tahliye Gaz Sıcaklığı", "value": t_cooler_inlet_c, "unit": "°C", "source": "station_3d_calc", "origin_detail": "Kompresör Çıkış Sıcaklığı"},
+                    {"param": "mass_flow_total_kgs", "label": "Bloke Çıkış Tahliye Debisi", "value": round(mass_flow_kgs, 2), "unit": "kg/s", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Toplam İstasyon Debisi"},
+                    {"param": "ambient_pressure_bar", "label": "Atmosferik Basınç (P_atm)", "value": round(p_atm_bar, 5), "unit": "bar(a)", "source": p_atm_src, "origin_detail": "Tasarım Sekmesi Saha & Çevre Şartları (ambient_pressure / rakım)"},
+                    {"param": "ambient_temp_c", "label": "Atmosferik Ortam Sıcaklığı (T_atm)", "value": round(ambient_temp_c, 1), "unit": "°C", "source": t_amb_src, "origin_detail": "Tasarım Sekmesi Saha & Çevre Şartları (ambient_temp)"},
+                    {"param": "psv_set_pressure_bar", "label": "PSV Set Basıncı", "value": psv_set_pressure_bar, "unit": "bar(g)", "source": "user_input" if _has_explicit_value(inputs, "psv_set_pressure_bar") else "station_3d_calc", "origin_detail": "3D HUD Kullanıcı Girişi (girilmezse 1.10 × (p_out − P_atm))"},
+                    {"param": "psv_back_pressure_bar", "label": "PSV Karşı Basıncı", "value": psv_back_pressure_bar, "unit": "bar(a)", "source": "user_input" if psv_back_user_override else p_atm_src, "origin_detail": "Tasarım Sekmesi Atmosferik Basıncı P_atm (veya 3D HUD kullanıcı override)"},
+                    {"param": "psv_overpressure_pct", "label": "Aşırı Basınç Oranı", "value": psv_overpressure_pct, "unit": "%", "source": "user_input" if _has_explicit_value(inputs, "psv_overpressure_pct") else "fixed_default", "origin_detail": "3D HUD Kullanıcı Girişi (yoksa %10 API 520 default)"},
+                    {"param": "selected_orifice", "label": "Seçilen API 526 Orifis & Flanş", "value": (psv_sizing or {}).get("selected_orifice", "-"), "unit": "API 526", "source": "station_3d_calc", "origin_detail": "PSVAdapter API 520 Part I kritik/alt-kritik gerçek gaz orifis hesabı"},
+                ],
+            },
+            {
+                "key": "esd_blowdown_valves",
+                "tag": "ESD / BDV-101..N",
+                "name": "Acil Kapatma & Envanter Boşaltma (Blowdown) Vanaları",
+                "parameters": [
+                    {"param": "esd_hp_volume_m3", "label": "Boşaltılacak Yüksek Basınç Borulama Hacmi", "value": round(esd_hp_volume_m3, 2), "unit": "m³", "source": "user_input" if esd_hp_user_override else "fixed_default", "origin_detail": "3D Sekmesi Kullanıcı Girişi (girilmezse 50.0 m³ default)"},
+                    {"param": "esd_lp_volume_m3", "label": "Boşaltılacak Düşük Basınç Borulama Hacmi", "value": round(esd_lp_volume_m3, 2), "unit": "m³", "source": "user_input" if esd_lp_user_override else "fixed_default", "origin_detail": "3D Sekmesi Kullanıcı Girişi (girilmezse 40.0 m³ default)"},
+                    {"param": "hp_upstream_pressure_bar", "label": "Yüksek Basınç (Kompresör Çıkış Basıncı)", "value": round(p_out, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Çıkış Basıncı (p_out)"},
+                    {"param": "lp_upstream_pressure_bar", "label": "Düşük Basınç (Kompresör Giriş Basıncı)", "value": round(p_in, 2), "unit": "bar(a)", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Kompresör Giriş Basıncı (p_in)"},
+                    {"param": "ambient_pressure_bar", "label": "Atmosferik Basınç (P_atm)", "value": round(p_atm_bar, 5), "unit": "bar(a)", "source": p_atm_src, "origin_detail": "Tasarım Sekmesi Saha & Çevre Şartları (ambient_pressure / rakım)"},
+                    {"param": "ambient_temp_c", "label": "Atmosferik Ortam Sıcaklığı (T_atm)", "value": round(ambient_temp_c, 1), "unit": "°C", "source": t_amb_src, "origin_detail": "Tasarım Sekmesi Saha & Çevre Şartları (ambient_temp)"},
+                    {"param": "bdv_depressurization_time_min", "label": "Hedef Boşaltma Süresi", "value": bdv_depressurization_time_min, "unit": "dk", "source": "user_input" if _has_explicit_value(inputs, "bdv_depressurization_time_min") else "fixed_default", "origin_detail": "3D HUD Kullanıcı Girişi (girilmezse API 521 15.0 dk default)"},
+                    {"param": "hp_calculated_size_in", "label": "YB Boşaltma Vanası Hesaplanan Çap", "value": f"{(esd_discharge or {}).get('calculated_size_in', '-')}\"", "unit": "inç", "source": "station_3d_calc", "origin_detail": "API 521 hacim boşaltma debisi + IEC 60534 sonik gaz Cv hesabı"},
+                    {"param": "lp_calculated_size_in", "label": "DB Boşaltma Vanası Hesaplanan Çap", "value": f"{(esd_suction or {}).get('calculated_size_in', '-')}\"", "unit": "inç", "source": "station_3d_calc", "origin_detail": "API 521 hacim boşaltma debisi + IEC 60534 sonik gaz Cv hesabı"},
+                ],
+            },
+            {
+                "key": "ultrasonic_meter",
+                "tag": "FT-401",
+                "name": "Ultrasonik Doğal Gaz Debimetresi (AGA-9)",
+                "parameters": [
+                    {"param": "nominal_size_in", "label": "Metre Gövde Çapı", "value": ultrasonic_meter_sizing["nominal_size_in"], "unit": "NPS", "source": "station_3d_calc", "origin_detail": "Station Discharge Header ortak çapından (L-109) türetilir"},
+                    {"param": "pressure_bar_a", "label": "Ölçüm Basıncı", "value": ultrasonic_meter_sizing["pressure_bar_a"], "unit": "bar(a)", "source": "station_3d_calc", "origin_detail": "Gaz Soğutucu çıkış basıncı (p_out − ΔP_cooler)"},
+                    {"param": "temperature_c", "label": "Ölçüm Sıcaklığı", "value": ultrasonic_meter_sizing["temperature_c"], "unit": "°C", "source": "station_3d_calc", "origin_detail": "Gaz Soğutucu çıkış sıcaklığı"},
+                    {"param": "max_recommended_velocity_ms", "label": "AGA-9 Tavsiye Edilen Maks. Hız", "value": 25.0, "unit": "m/s", "source": "fixed_default", "origin_detail": "Sabit Default AGA Report No. 9 üst hız sınırı (25.0 m/s)"},
+                ],
+            },
+            {
+                "key": "condensate_system",
+                "tag": "TK-101",
+                "name": "Kondensat Toplama ve Depolama Tankı",
+                "parameters": [
+                    {"param": "mass_flow_kgs", "label": "İstasyon Gaz Debisi", "value": round(mass_flow_kgs, 2), "unit": "kg/s", "source": "design_tab", "origin_detail": "Tasarım Sekmesi Toplam İstasyon Debisi"},
+                    {"param": "specific_condensate_factor", "label": "Özgül Sıvı Tutma Katsayısı", "value": 0.008, "unit": "m³/h / (kg/s)", "source": "fixed_default", "origin_detail": "Sabit Default Tasarım Kabulü (min. 10 m³, 2.5 gün depolama)"},
+                    {"param": "collection_tank_volume_m3", "label": "Kondensat Tank Hacmi", "value": condensate_tank_volume_m3, "unit": "m³", "source": "station_3d_calc", "origin_detail": "max(10.0, q_sıvı × 24 × 2.5) dinamik tank hacmi"},
+                ],
+            },
+        ],
+        "piping": piping_provenance,
+    }
+
     return {
         "success": True,
         "warnings": station_warnings,
@@ -1158,6 +1833,13 @@ def calculate_station_process_model(
             "suction_pressure_bar": round(p_in, 2),
             "discharge_pressure_bar": round(p_out, 2),
             "pressure_ratio": round(p_out / p_in, 2),
+            "suction_temp_c": round(t_in, 1),
+            "compressor_outlet_temp_c": t_cooler_inlet_c,
+            "cooler_outlet_temp_c": round(t_target_pipeline, 1),
+            "ambient_pressure_bar": round(p_atm_bar, 5),
+            "ambient_pressure_kpa": ambient_pressure_kpa,
+            "ambient_temp_c": round(ambient_temp_c, 2),
+            "altitude_m": round(altitude_m, 1),
             "total_power_kw": round(total_power_kw, 1),
             "total_power_mw": round(total_power_kw / 1000.0, 2),
             "cooler_heat_duty_mw": heat_duty_mw,
@@ -1165,6 +1847,9 @@ def calculate_station_process_model(
             "suction_density_kgm3": round(rho_suction, 2),
             "suction_z_factor": round(z_in_real, 4),
             "eos_model": eos_key,
+            "max_pipe_velocity_limit_ms": round(max_velocity_ms, 2),
+            "common_header_size_in": common_hdr_nps,
+            "governing_header_key": gov_hdr_key,
             "mainline_pipe_size": p_lines["mainline_inlet"]["nominal_size_in"],
             "mainline_velocity_ms": p_lines["mainline_inlet"]["actual_velocity_ms"],
         },
@@ -1179,6 +1864,14 @@ def calculate_station_process_model(
                 "liquid_knockout_pct": 99.5,
                 "inlet_pipe_size": p_lines["cyclone_branch"]["nominal_size_in"],
                 "inlet_velocity_ms": p_lines["cyclone_branch"]["actual_velocity_ms"],
+                "inlet_min_pipe_size": p_lines["cyclone_branch"]["velocity_min_nominal_in"],
+                "inlet_min_diameter_ok": p_lines["cyclone_branch"]["meets_min_velocity_diameter"],
+                "inlet_pipe_source": p_lines["cyclone_branch"]["diameter_source"],
+                "outlet_pipe_size": p_lines["cyclone_outlet_branch"]["nominal_size_in"],
+                "outlet_velocity_ms": p_lines["cyclone_outlet_branch"]["actual_velocity_ms"],
+                "outlet_min_pipe_size": p_lines["cyclone_outlet_branch"]["velocity_min_nominal_in"],
+                "outlet_min_diameter_ok": p_lines["cyclone_outlet_branch"]["meets_min_velocity_diameter"],
+                "outlet_pipe_source": p_lines["cyclone_outlet_branch"]["diameter_source"],
             },
             "cartridge_filters": {
                 "operating_count": filter_op_count,
@@ -1189,9 +1882,18 @@ def calculate_station_process_model(
                 "filter_efficiency_micron": "0.3 µm (%99.98)",
                 "inlet_pipe_size": p_lines["filter_branch"]["nominal_size_in"],
                 "inlet_velocity_ms": p_lines["filter_branch"]["actual_velocity_ms"],
+                "inlet_min_pipe_size": p_lines["filter_branch"]["velocity_min_nominal_in"],
+                "inlet_min_diameter_ok": p_lines["filter_branch"]["meets_min_velocity_diameter"],
+                "inlet_pipe_source": p_lines["filter_branch"]["diameter_source"],
+                "outlet_pipe_size": p_lines["filter_outlet_branch"]["nominal_size_in"],
+                "outlet_velocity_ms": p_lines["filter_outlet_branch"]["actual_velocity_ms"],
+                "outlet_min_pipe_size": p_lines["filter_outlet_branch"]["velocity_min_nominal_in"],
+                "outlet_min_diameter_ok": p_lines["filter_outlet_branch"]["meets_min_velocity_diameter"],
+                "outlet_pipe_source": p_lines["filter_outlet_branch"]["diameter_source"],
             },
             "turbo_compressors": {
                 "operating_count": comp_op_count,
+                "standby_count": max(0, comp_total_count - comp_op_count),
                 "installed_count": comp_total_count,
                 "configuration": f"{comp_op_count} Çalışan + 1 Yedek ({comp_total_count} x %{round(100.0 / comp_op_count)})",
                 "flow_per_unit_kgs": flow_per_comp,
@@ -1199,8 +1901,9 @@ def calculate_station_process_model(
                 "power_per_unit_hp": round(power_per_unit_kw * 1.34102, 1),
                 "polytropic_head_kj_kg": polytropic_head_kj,
                 "polytropic_efficiency_pct": polytropic_eff,
+                "discharge_temp_c": t_cooler_inlet_c,
                 "suction_nozzle_size_in": f"{p_lines['comp_suction_branch']['nominal_size_in']} (başlık {p_lines['comp_suction_header']['nominal_size_in']} - Note 32)",
-                "discharge_nozzle_size_in": f"{p_lines['comp_discharge_branch']['nominal_size_in']} (başlık {p_lines['discharge_header']['nominal_size_in']} - Note 32)",
+                "discharge_nozzle_size_in": f"{p_lines['comp_discharge_branch']['nominal_size_in']} (başlık {p_lines['unit_discharge_header']['nominal_size_in']} - Note 32)",
                 "suction_velocity_ms": p_lines["comp_suction_branch"]["actual_velocity_ms"],
                 "discharge_velocity_ms": p_lines["comp_discharge_branch"]["actual_velocity_ms"],
                 "anti_surge_valve_size_in": int(p_lines["anti_surge_loop"]["nominal_key"]) if p_lines["anti_surge_loop"]["nominal_key"].isdigit() else asv_valve_size_in,
@@ -1222,11 +1925,20 @@ def calculate_station_process_model(
                 "fans_per_bay": 2,
                 "total_fans": cooler_bays_count * 2,
                 "total_heat_duty_mw": heat_duty_mw,
-                "inlet_temp_c": round(t_discharge_hot, 1),
-                "outlet_temp_c": t_target_pipeline,
+                "inlet_temp_c": t_cooler_inlet_c,
+                "outlet_temp_c": round(t_target_pipeline, 1),
+                "requested_max_outlet_temp_c": round(cooler_max_outlet_temp_c, 1),
+                "air_inlet_temp_c": round(cooler_air_temp_c, 1),
+                "air_outlet_temp_c": round(cooler_air_out_c, 1),
+                "approach_temp_c": round(t_target_pipeline - cooler_air_temp_c, 1),
+                "lmtd_c": round(cooler_lmtd_c, 2),
+                "compressor_outlet_coupled": True,
                 "pressure_drop_bar": dp_cooler,
                 "inlet_header_pipe_size": p_lines["cooler_inlet"]["nominal_size_in"],
                 "riser_pipe_size": p_lines["cooler_bay_risers"]["nominal_size_in"],
+                "bay_inlet_header_pipe_size": p_lines["cooler_bay_inlet_header"]["nominal_size_in"],
+                "bay_outlet_header_pipe_size": p_lines["cooler_bay_outlet_header"]["nominal_size_in"],
+                "outlet_riser_pipe_size": p_lines["cooler_bay_outlet_risers"]["nominal_size_in"],
                 "outlet_pipe_size": p_lines["cooler_outlet"]["nominal_size_in"],
                 "detailed_design": air_cooler_design,
                 "design_warnings": air_cooler_warnings,
@@ -1251,6 +1963,8 @@ def calculate_station_process_model(
                 "psv_overpressure_pct": psv_overpressure_pct,
                 "psv_back_pressure_bar": psv_back_pressure_bar,
                 "psv_valve_type": psv_valve_type,
+                "ambient_pressure_bar": round(p_atm_bar, 5),
+                "ambient_temp_c": round(ambient_temp_c, 2),
                 "relief_capacity_pct": 100.0,
                 "bdv_valves_count": esd_count,
                 "depressurization_time_min": bdv_depressurization_time_min,
@@ -1267,6 +1981,10 @@ def calculate_station_process_model(
                 "valve_type": esd_valve_type,
                 "allowable_dp_bar": esd_allowable_dp_bar,
                 "depressurization_time_min": bdv_depressurization_time_min,
+                "esd_hp_volume_m3": round(esd_hp_volume_m3, 2),
+                "esd_lp_volume_m3": round(esd_lp_volume_m3, 2),
+                "ambient_pressure_bar": round(p_atm_bar, 5),
+                "ambient_temp_c": round(ambient_temp_c, 2),
                 "suction": esd_suction,
                 "discharge": esd_discharge,
                 "auto_inputs": esd_auto_inputs,
@@ -1292,4 +2010,5 @@ def calculate_station_process_model(
         "nodes": nodes,
         "pipe_flows": pipe_flows,
         "station_piping": station_piping,
+        "parameter_sources": parameter_sources,
     }

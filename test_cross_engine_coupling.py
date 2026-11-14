@@ -287,7 +287,13 @@ class TestPipeSizingRealEOSAndNodalPressures:
         piping = station["station_piping"]
         lines = piping["lines"]
 
-        assert len(lines) == 15
+        assert len(lines) == 21
+        assert "cyclone_outlet_branch" in lines
+        assert "filter_outlet_branch" in lines
+        assert "unit_discharge_header" in lines
+        assert "cooler_bay_inlet_header" in lines
+        assert "cooler_bay_outlet_header" in lines
+        assert "cooler_bay_outlet_risers" in lines
 
         # At 15 kg/s: dp_cyclone = 0.151 -> post_cyclone = 54.85 (NOT 54.75 from hardcoded -0.25!)
         # dp_filter = 0.167 -> comp_suction = 54.68 (NOT 54.55 from hardcoded -0.25 - 0.20!)

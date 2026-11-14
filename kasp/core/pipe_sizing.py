@@ -232,7 +232,7 @@ def size_single_pipe(
     p_bar: float,
     t_c: float,
     mw: float = 18.2,
-    max_velocity_ms: float = 16.0,
+    max_velocity_ms: float = 20.0,
     p_design_bar: Optional[float] = None,
     material: str = "API 5L X70",
     design_factor_F: float = 0.50,
@@ -244,18 +244,23 @@ def size_single_pipe(
     length_m: Optional[float] = None,
     fitting_k_total: float = 0.0,
     elevation_m: float = 0.0,
+    enforce_preferred_nominal: bool = False,
 ) -> Dict[str, Any]:
     """
     Finds the optimum commercial pipe (ASME B36.10M / API 5L) for a given natural gas flow condition.
     Checks:
     1. Barlow's formula: t >= t_req at design pressure
-    2. Gas velocity: v <= max_velocity_ms
+    2. Gas velocity: v <= max_velocity_ms (default 20.0 m/s)
     3. API RP 14E erosion velocity: v <= v_erosion
     4. Pressure gradient & weight minimization
     """
     flow_kgs = max(0.1, float(flow_kgs))
     p_bar = max(1.0, float(p_bar))
     p_pa = p_bar * 1e5
+    try:
+        max_velocity_ms = max(0.5, float(max_velocity_ms if max_velocity_ms is not None else 20.0))
+    except (TypeError, ValueError):
+        max_velocity_ms = 20.0
     try:
         t_val = float(t_c) if t_c is not None else 20.0
     except (TypeError, ValueError):
@@ -311,33 +316,72 @@ def size_single_pipe(
 
     sorted_nds = sorted(grouped.keys(), key=nd_sort_key)
 
-    # If preferred nominal is requested, check if it's feasible
+    # Evaluate every commercial nominal diameter against Barlow, max_velocity_ms, and API RP 14E
+    acceptable_nominals: List[str] = []
+    optimum_nominals: List[str] = []
+    acceptable_details: List[Dict[str, Any]] = []
+    velocity_min_pipe: Optional[Dict[str, Any]] = None
+
+    for nd in sorted_nds:
+        cand = grouped[nd][0]  # Thinnest schedule meeting Barlow's formula
+        d_m = cand["D_inner_mm"] / 1000.0
+        area = math.pi * (d_m ** 2) / 4.0
+        v_cand = flow_kgs / (rho * area)
+        if v_cand <= max_velocity_ms and v_cand <= v_erosion:
+            nps_str = f'{nd}"'
+            acceptable_nominals.append(nps_str)
+            in_opt = v_cand >= 3.0
+            if in_opt:
+                optimum_nominals.append(nps_str)
+            if velocity_min_pipe is None:
+                velocity_min_pipe = cand
+            if len(acceptable_details) < 8:
+                acceptable_details.append({
+                    "nominal_size_in": nps_str,
+                    "nominal_key": nd,
+                    "schedule": cand["schedule"],
+                    "od_mm": cand["OD_mm"],
+                    "wall_thickness_mm": cand["t_mm"],
+                    "actual_velocity_ms": round(v_cand, 2),
+                    "in_optimum_band": in_opt,
+                })
+
+    if velocity_min_pipe is None:
+        fallback_cand = grouped[sorted_nds[-1]][0]
+        velocity_min_pipe = fallback_cand
+        fb_nps = f'{fallback_cand["nominal"]}"'
+        acceptable_nominals.append(fb_nps)
+        d_fb = fallback_cand["D_inner_mm"] / 1000.0
+        v_fb = flow_kgs / (rho * (math.pi * (d_fb ** 2) / 4.0))
+        acceptable_details.append({
+            "nominal_size_in": fb_nps,
+            "nominal_key": fallback_cand["nominal"],
+            "schedule": fallback_cand["schedule"],
+            "od_mm": fallback_cand["OD_mm"],
+            "wall_thickness_mm": fallback_cand["t_mm"],
+            "actual_velocity_ms": round(v_fb, 2),
+            "in_optimum_band": False,
+        })
+
+    # If preferred nominal is requested, check if it's feasible (or force-evaluate when caller requests exact size check)
+    pref_key: Optional[str] = None
+    if preferred_nominal is not None:
+        cleaned_pref = str(preferred_nominal).replace('"', "").strip()
+        if cleaned_pref and cleaned_pref.lower() not in {"auto", "otomatik", "none", "null"}:
+            pref_key = cleaned_pref
+
     selected_pipe = None
-    if preferred_nominal and preferred_nominal in grouped:
-        pref_cand = grouped[preferred_nominal][0]  # Thinnest valid schedule
+    if pref_key and pref_key in grouped:
+        pref_cand = grouped[pref_key][0]  # Thinnest valid schedule
         d_m = pref_cand["D_inner_mm"] / 1000.0
         area = math.pi * (d_m ** 2) / 4.0
         v_pref = flow_kgs / (rho * area)
-        if v_pref <= max_velocity_ms * 1.25 and v_pref <= v_erosion:
+        if enforce_preferred_nominal or (v_pref <= max_velocity_ms * 1.25 and v_pref <= v_erosion):
             selected_pipe = pref_cand
 
-    # If no preferred or preferred doesn't meet criteria, find optimum size
+    # If no preferred or preferred doesn't meet criteria, pick minimum acceptable velocity size
     if not selected_pipe:
-        for nd in sorted_nds:
-            # Thinnest schedule that meets Barlow's formula
-            cand = grouped[nd][0]
-            d_m = cand["D_inner_mm"] / 1000.0
-            area = math.pi * (d_m ** 2) / 4.0
-            v_act = flow_kgs / (rho * area)
-
-            # Check velocity constraints
-            if v_act <= max_velocity_ms and v_act <= v_erosion:
-                selected_pipe = cand
-                break
-
-    # If none found within velocity limit (extreme high flow), pick the largest available
-    if not selected_pipe:
-        selected_pipe = grouped[sorted_nds[-1]][0]
+        selected_pipe = velocity_min_pipe
 
     # Calculate final hydrodynamics for selected pipe
     od_mm = selected_pipe["OD_mm"]
@@ -383,9 +427,36 @@ def size_single_pipe(
     else:
         vel_status = "Optimum (API RP 14E & ASME B31.8 Uygun)"
 
+    vel_min_key = velocity_min_pipe["nominal"]
+    vel_min_nps = f'{vel_min_key}"'
+    vel_min_d_m = velocity_min_pipe["D_inner_mm"] / 1000.0
+    vel_min_v = round(flow_kgs / (rho * (math.pi * (vel_min_d_m ** 2) / 4.0)), 2)
+    meets_min_vel_diam = bool(
+        v_actual <= max_velocity_ms
+        and v_actual <= v_erosion
+        and nd_sort_key(nominal) >= nd_sort_key(vel_min_key)
+    )
+    preview_list = optimum_nominals[:5] if optimum_nominals else acceptable_nominals[:5]
+    more_suffix = f" (+{len(acceptable_nominals) - len(preview_list)})" if len(acceptable_nominals) > len(preview_list) else ""
+    acceptable_summary = (
+        f"Min: {vel_min_nps} ({vel_min_v} m/s) • Uygun (≤{round(max_velocity_ms, 1)} m/s): "
+        f"{', '.join(preview_list)}{more_suffix}"
+    )
+
     return {
         "nominal_size_in": f"{nominal}\"",
         "nominal_key": nominal,
+        "velocity_min_nominal_in": vel_min_nps,
+        "velocity_min_key": vel_min_key,
+        "min_required_nominal_in": vel_min_nps,
+        "min_required_od_mm": velocity_min_pipe["OD_mm"],
+        "velocity_at_min_nominal_ms": vel_min_v,
+        "preferred_nominal_requested": pref_key,
+        "meets_min_velocity_diameter": meets_min_vel_diam,
+        "acceptable_nominals": acceptable_nominals,
+        "optimum_nominals": optimum_nominals,
+        "acceptable_diameters_detail": acceptable_details,
+        "acceptable_diameters_summary": acceptable_summary,
         "schedule": schedule,
         "od_mm": od_mm,
         "id_mm": id_mm,

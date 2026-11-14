@@ -86,6 +86,13 @@ class ApiClient {
       }
       return await response.text();
     } catch (err) {
+      if (err instanceof TypeError && typeof err.message === "string" && err.message.toLowerCase().includes("fetch")) {
+        const port = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
+        const netErr = new Error(`KASP sunucusuna bağlanılamadı (${port} portu kapalı veya yanıt vermiyor). Lütfen backend sunucusunu başlatın.`);
+        netErr.status = 0;
+        netErr.cause = err;
+        throw netErr;
+      }
       throw err;
     }
   }

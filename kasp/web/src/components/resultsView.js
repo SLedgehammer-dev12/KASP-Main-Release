@@ -23,6 +23,31 @@ function normalizeResultWarning(item) {
   return "";
 }
 
+function formatPhaseDisplay(rawPhase, lang = "tr") {
+  const key = String(rawPhase || "").trim().toLowerCase();
+  const isEn = lang === "en";
+  if (key === "gas" || key === "gaz") return isEn ? "Gas" : "Gaz";
+  if (key === "supercritical" || key === "süperkritik") return isEn ? "Supercritical" : "Süperkritik";
+  if (key === "liquid" || key === "sıvı") return isEn ? "Liquid" : "Sıvı";
+  if (key === "two-phase" || key === "twophase" || key === "iki fazlı") {
+    return isEn ? "Two-Phase" : "İki Fazlı";
+  }
+  if (key === "ideal_fallback" || key === "z_factor_fallback" || key === "ideal") {
+    return isEn ? "Gas (Fallback)" : "Gaz (Yedek Mod)";
+  }
+  return escapeHtml(String(rawPhase || (isEn ? "Gas" : "Gaz")));
+}
+
+function phaseBadgeClass(rawPhase) {
+  const key = String(rawPhase || "").trim().toLowerCase();
+  if (key === "gas" || key === "gaz") return "badge-success";
+  if (key === "supercritical" || key === "süperkritik") return "badge-warning";
+  if (key === "liquid" || key === "sıvı" || key === "two-phase" || key === "twophase" || key === "iki fazlı") {
+    return "badge-danger";
+  }
+  return "badge-warning";
+}
+
 function collectDesignWarnings(proj, res) {
   const seen = new Set();
   const items = [];
@@ -61,7 +86,7 @@ export function buildResultsSummaryText(proj) {
     `EOS / Metot: ${String(inp.eos_model || "coolprop").toUpperCase()} | ${inp.calc_method || "-"}`,
     `Basınç: ${inp.p_in ?? "-"} ${inp.p_in_unit || "bar(a)"} → ${inp.p_out ?? "-"} ${inp.p_out_unit || "bar(a)"} (PR = ${pr.toFixed(3)})`,
     `Sıcaklık: ${inp.t_in ?? "-"} ${inp.t_in_unit || "°C"} → ${tOutC.toFixed(1)} °C`,
-    `Debi: ${inp.flow ?? "-"} ${inp.flow_unit || "kg/s"} (${inp.num_units || 1} Ünite)`,
+    `Debi: ${inp.flow ?? "-"} ${inp.flow_unit || "kg/s"} (${Math.max(1, parseInt(res.operating_units || res.num_units || inp.num_units || 1, 10))}+1 Tren: ${Math.max(1, parseInt(res.operating_units || res.num_units || inp.num_units || 1, 10))} Çalışan + 1 Yedek)`,
     `Toplam Şaft Gücü: ${powerKw.toFixed(1)} kW | Politropik Yük: ${headKjKg.toFixed(1)} kJ/kg | Z_avg: ${zAvg.toFixed(3)}`,
   ];
   if (top) {
@@ -114,6 +139,30 @@ export function renderResultsView(container) {
     const units = proj.selectedUnits || [];
 
     if (!res) {
+      if (proj.error) {
+        container.innerHTML = `
+          <div class="card" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 400px; text-align: center; border: 1px solid var(--color-danger, #ef4444); background: rgba(239,68,68,0.03); padding: 32px 24px;">
+            <div style="font-size: 44px; margin-bottom: 12px; line-height: 1;">⚠️</div>
+            <div style="font-size: 16px; font-weight: 700; color: var(--color-danger, #ef4444); margin-bottom: 8px;">
+              Hesaplama Başarısız Oldu
+            </div>
+            <div style="max-width: 520px; font-size: 13px; line-height: 1.5; color: var(--color-text); margin-bottom: 20px; padding: 12px 16px; background: rgba(0,0,0,0.04); border-radius: 6px; border: 1px solid rgba(0,0,0,0.08); word-break: break-word;">
+              ${escapeHtml(proj.error)}
+            </div>
+            <button id="btn-retry-calculation" class="btn btn-primary" style="font-weight: 600; padding: 8px 20px; cursor: pointer;">
+              🔄 Yeniden Hesapla
+            </button>
+          </div>
+        `;
+        const retryBtn = container.querySelector("#btn-retry-calculation");
+        if (retryBtn) {
+          retryBtn.addEventListener("click", () => {
+            runDesignCalculation().catch(() => {});
+          });
+        }
+        return;
+      }
+
       container.innerHTML = `
         <div class="card" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 400px; text-align: center; color: var(--color-text-secondary);">
           <div style="font-size: 40px; margin-bottom: 12px; opacity: 0.5;">⚡</div>
@@ -140,7 +189,9 @@ export function renderResultsView(container) {
     const isFallbackUsed = !!res.fallback_used;
 
     // Extract KPIs with full unit, power, and fuel parity
-    const numUnits = Math.max(1, parseInt(res.num_units || proj.inputs?.num_units || 1, 10));
+    const numUnits = Math.max(1, parseInt(res.operating_units || res.num_units || proj.inputs?.num_units || 1, 10));
+    const standbyUnits = Math.max(0, parseInt(res.standby_units ?? 1, 10));
+    const installedUnits = Math.max(numUnits, parseInt(res.installed_units ?? (numUnits + standbyUnits), 10));
     
     // Shaft Power (Ünite / Toplam)
     const powerShaftPerUnitKw = Number(res.power_shaft_per_unit_kw || (res.power_shaft_total_kw ? res.power_shaft_total_kw / numUnits : (res.power_shaft_kw || 0)));
@@ -236,8 +287,12 @@ export function renderResultsView(container) {
     const muIn = Number(res.mu_in !== undefined ? res.mu_in : (inProps.mu !== undefined ? inProps.mu : 1.1e-5));
     const muOut = Number(res.mu_out !== undefined ? res.mu_out : (outProps.mu !== undefined ? outProps.mu : 1.2e-5));
 
-    const phaseIn = String(res.phase_in || inProps.phase || "Süperkritik / Gaz");
-    const phaseOut = String(res.phase_out || outProps.phase || "Süperkritik / Gaz");
+    const rawPhaseIn = String(res.phase_in || inProps.phase || "gas");
+    const rawPhaseOut = String(res.phase_out || outProps.phase || "gas");
+    const phaseIn = formatPhaseDisplay(rawPhaseIn, ui.lang);
+    const phaseOut = formatPhaseDisplay(rawPhaseOut, ui.lang);
+    const phaseInClass = phaseBadgeClass(rawPhaseIn);
+    const phaseOutClass = phaseBadgeClass(rawPhaseOut);
 
     // Helper for table percentage diffs
     function formatDiff(v1, v2, isUnitPct = true) {
@@ -363,8 +418,8 @@ export function renderResultsView(container) {
               </tr>
               <tr>
                 <td><b>Termodinamik Faz Durumu</b></td>
-                <td style="text-align: right;"><span class="badge badge-success">${phaseIn}</span></td>
-                <td style="text-align: right;"><span class="badge badge-success">${phaseOut}</span></td>
+                <td style="text-align: right;"><span class="badge ${phaseInClass}">${phaseIn}</span></td>
+                <td style="text-align: right;"><span class="badge ${phaseOutClass}">${phaseOut}</span></td>
                 <td style="text-align: center;">-</td>
                 <td style="text-align: right; color: var(--color-text-secondary);">-</td>
               </tr>
@@ -376,14 +431,14 @@ export function renderResultsView(container) {
       case "power_vle":
         subTabContentHtml = `
           <div style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); margin-bottom: 6px; text-transform: uppercase;">
-            ⚡ Güç Dağılımı Özeti (${numUnits} Paralel Tren Mimarisi)
+            ⚡ Güç Dağılımı Özeti (${numUnits} Çalışan + ${standbyUnits} Yedek • ${installedUnits} Kurulu Tren Mimarisi)
           </div>
           <table class="kasp-table" style="margin-bottom: 16px;">
             <thead>
               <tr>
                 <th>Parametre</th>
-                <th style="text-align: right;">Tek Ünite Başına (${numUnits > 1 ? (numUnits - 1) + '+1 Tren' : '1+0 Tekil'})</th>
-                <th style="text-align: right;">İstasyon Toplamı (${numUnits} Ünite)</th>
+                <th style="text-align: right;">Tek Ünite Başına (${numUnits}+${standbyUnits} Tren)</th>
+                <th style="text-align: right;">İstasyon Toplamı (${numUnits} Çalışan)</th>
               </tr>
             </thead>
             <tbody>
@@ -1015,11 +1070,11 @@ export function renderResultsView(container) {
         <!-- Clarification Banner: Single Unit vs Station Total Sizing -->
         <div style="background: rgba(2, 132, 199, 0.08); border: 1px solid rgba(2, 132, 199, 0.25); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
           <div style="font-size: 12px; color: var(--color-text);">
-            🎯 <b>Boyutlandırma Esası:</b> Belirlenen <b>${numUnits} Paralel Tren</b> mimarisinde, aşağıdaki türbinler <b>HER BİR TEKİL KOMPRESÖR TRENİNİ</b> sürmek üzere tekil olarak eşleştirilmiştir:
+            🎯 <b>Boyutlandırma Esası:</b> Belirlenen <b>${numUnits}+${standbyUnits} Tren (${numUnits} Çalışan + ${standbyUnits} Yedek = ${installedUnits} Kurulu)</b> mimarisinde, aşağıdaki türbinler <b>HER BİR ÇALIŞAN TEKİL KOMPRESÖR TRENİNİ</b> sürmek üzere tekil olarak eşleştirilmiştir:
           </div>
           <div style="font-size: 12px; font-weight: 700; color: var(--color-primary); display: flex; gap: 14px;">
             <span>Tek Ünite İhtiyacı: <b style="color: #0284c7;">${powerUnitKw.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} kW</b></span>
-            <span>İstasyon Toplamı (${numUnits} Tren): <b style="color: #f59e0b;">${(powerUnitTotalKw / 1000).toFixed(2)} MW</b></span>
+            <span>İstasyon Toplamı (${numUnits} Çalışan Tren): <b style="color: #f59e0b;">${(powerUnitTotalKw / 1000).toFixed(2)} MW</b></span>
           </div>
         </div>
 

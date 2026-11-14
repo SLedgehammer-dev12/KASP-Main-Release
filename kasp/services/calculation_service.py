@@ -275,9 +275,12 @@ def execute_design_calculation(
                 unit_dict = serialize_turbine_recommendation(r, required_power_per_unit_kw)
                 unit_dict["required_power_per_unit_kw"] = round(required_power_per_unit_kw, 1)
                 unit_dict["num_units"] = num_units
+                unit_dict["operating_units"] = num_units
+                unit_dict["standby_units"] = 1
+                unit_dict["installed_units"] = num_units + 1
                 avail_kw = float(unit_dict.get("available_power_kw") or unit_dict.get("iso_power_kw", 0.0))
                 unit_dict["station_total_power_kw"] = round(avail_kw * num_units, 1)
-                unit_dict["recommendation_basis"] = f"Tek Ünite Başına Sürücü ({num_units} Tren Toplam)"
+                unit_dict["recommendation_basis"] = f"Tek Ünite Başına Sürücü ({num_units} Çalışan + 1 Yedek = {num_units + 1} Tren)"
                 selected_units.append(unit_dict)
         except Exception as exc:
             logger.warning("Turbine selection failed: %s", exc)
@@ -379,6 +382,9 @@ def execute_design_calculation(
         stg["t_out_c"] = round(t_out_raw - 273.15, 2) if t_out_raw > 200.0 else round(t_out_raw, 2)
 
     # 6. Attach calculation metadata
+    results.setdefault("operating_units", num_units)
+    results.setdefault("standby_units", 1)
+    results.setdefault("installed_units", num_units + 1)
     elapsed_sec = (datetime.datetime.now() - start_time).total_seconds()
     results["calculation_time_sec"] = round(elapsed_sec, 3)
     results["validation_warnings"] = val_report.get("warnings", [])

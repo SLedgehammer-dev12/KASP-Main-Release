@@ -22,6 +22,7 @@ import {
   convertPressureToBarA,
   convertPressureUnit,
   convertTempToC,
+  resolveAmbientBarA,
   escapeHtml,
 } from "../store/projectStore.js";
 import { showToast, uiStore } from "../store/uiStore.js";
@@ -325,6 +326,9 @@ function stationProcessSignature(inputs) {
     t_in_unit: inputs?.t_in_unit,
     num_units: inputs?.num_units,
     gas_comp: inputs?.gas_comp,
+    ambient_temp: inputs?.ambient_temp,
+    ambient_pressure: inputs?.ambient_pressure,
+    altitude: inputs?.altitude,
   });
 }
 
@@ -379,19 +383,22 @@ function collectStationWarnings(stationData) {
   pushAll(eq.air_coolers?.detailed_design_warnings, "[Hava Soğutucu]");
   pushAll(eq.safety_relief_and_blowdown?.psv_sizing_warnings, "[PSV]");
   pushAll(eq.safety_relief_and_blowdown?.psv_sizing?.warnings, "[PSV]");
+  pushAll(eq.esd_sizing?.warnings, "[ESD/BDV]");
   pushAll(stationData.station_piping?.warnings, "[Borulama]");
 
   const linesMap = stationData.station_piping?.lines || {};
+  const netMaxVel = Number(stationData.station_piping?.max_velocity_ms || 20.0);
   for (const line of Object.values(linesMap)) {
     if (!line || typeof line !== "object") continue;
     const tag = line.tag || line.line_id || "Hat";
     const evr = Number(line.erosion_ratio_pct || 0);
     const vel = Number(line.actual_velocity_ms || 0);
+    const lineMaxVel = Number(line.max_velocity_ms || netMaxVel || 20.0);
     if (!warnedErosionTags.has(tag)) {
       if (evr >= 100.0) {
         pushAll([`${tag} (${line.name || ""}): API RP 14E erozyon hızı aşıldı (EVR=%${evr.toFixed(1)}, v=${vel.toFixed(2)} m/s).`], "[Erozyon]");
-      } else if (evr >= 80.0 || vel > 18.0) {
-        pushAll([`${tag} (${line.name || ""}): Yüksek gaz hızı / erozyon sınırı yakın (EVR=%${evr.toFixed(1)}, v=${vel.toFixed(2)} m/s).`], "[Erozyon]");
+      } else if (evr >= 80.0 || vel > lineMaxVel) {
+        pushAll([`${tag} (${line.name || ""}): İzin verilen hız / erozyon sınırı yakın veya aşıldı (EVR=%${evr.toFixed(1)}, v=${vel.toFixed(2)} / ${lineMaxVel.toFixed(1)} m/s).`], "[Erozyon]");
       }
     }
     if (line.standard_recommendation && line.standard_recommendation.is_sufficient === false) {
@@ -413,6 +420,8 @@ export function renderStationTab(container) {
   let viewMode = "3d"; // "3d" (default WebGL model), "2d", "split"
   let active3dInstance = null;
   let isParamsPanelOpen = true;
+  let provenanceSourceFilter = "all";
+  let provenanceSearchQuery = "";
   let debounceTimer = null;
 
   const projState = projectStore.getState();
@@ -456,10 +465,17 @@ export function renderStationTab(container) {
     design_factor_F: 0.50,
     pipe_standard: "BOTAŞ",
     psl_level: "PSL2",
-    // Safety valve sizing overrides; empty strings let the engine derive values.
+    max_velocity_ms: 20.0,
+    cyclone_inlet_pipe_size: "",
+    cyclone_outlet_pipe_size: "",
+    filter_inlet_pipe_size: "",
+    filter_outlet_pipe_size: "",
+    cooler_air_temp_c: "",
+    cooler_max_outlet_temp_c: 45.0,
+    // Safety valve sizing overrides; empty strings let the engine derive values from Design Tab.
     psv_set_pressure_bar: "",
     psv_overpressure_pct: 10,
-    psv_back_pressure_bar: 1.01325,
+    psv_back_pressure_bar: "",
     psv_valve_type: "conventional",
     psv_count: 2,
     psv_duty_count: 1,
@@ -468,6 +484,8 @@ export function renderStationTab(container) {
     esd_allowable_dp_bar: 0.5,
     esd_valve_type: "full_bore_ball",
     bdv_depressurization_time_min: 15,
+    esd_hp_volume_m3: 50.0,
+    esd_lp_volume_m3: 40.0,
   };
 
   let last3dState = null;
@@ -522,8 +540,12 @@ export function renderStationTab(container) {
         design_factor_F: stationInputs.design_factor_F,
         pipe_standard: stationInputs.pipe_standard,
         psl_level: stationInputs.psl_level,
+        max_velocity_ms: Number(stationInputs.max_velocity_ms) > 0 ? Number(stationInputs.max_velocity_ms) : 20.0,
+        cooler_max_outlet_temp_c:
+          stationInputs.cooler_max_outlet_temp_c !== "" && Number.isFinite(Number(stationInputs.cooler_max_outlet_temp_c))
+            ? Number(stationInputs.cooler_max_outlet_temp_c)
+            : 45.0,
         psv_overpressure_pct: stationInputs.psv_overpressure_pct,
-        psv_back_pressure_bar: stationInputs.psv_back_pressure_bar,
         psv_valve_type: stationInputs.psv_valve_type,
         psv_count: stationInputs.psv_count,
         psv_duty_count: stationInputs.psv_duty_count,
@@ -532,7 +554,22 @@ export function renderStationTab(container) {
         esd_allowable_dp_bar: stationInputs.esd_allowable_dp_bar,
         esd_valve_type: stationInputs.esd_valve_type,
         bdv_depressurization_time_min: stationInputs.bdv_depressurization_time_min,
+        esd_hp_volume_m3: Number(stationInputs.esd_hp_volume_m3) > 0 ? Number(stationInputs.esd_hp_volume_m3) : 50.0,
+        esd_lp_volume_m3: Number(stationInputs.esd_lp_volume_m3) > 0 ? Number(stationInputs.esd_lp_volume_m3) : 40.0,
+        ambient_temp: proj.inputs?.ambient_temp ?? 15.0,
+        ambient_pressure: proj.inputs?.ambient_pressure ?? 101.325,
+        altitude: proj.inputs?.altitude ?? 0,
       };
+      if (stationInputs.cooler_air_temp_c !== "" && stationInputs.cooler_air_temp_c != null && Number.isFinite(Number(stationInputs.cooler_air_temp_c))) {
+        mergedInputs.cooler_air_temp_c = Number(stationInputs.cooler_air_temp_c);
+      } else {
+        delete mergedInputs.cooler_air_temp_c;
+      }
+      if (stationInputs.psv_back_pressure_bar !== "" && stationInputs.psv_back_pressure_bar != null && Number.isFinite(Number(stationInputs.psv_back_pressure_bar))) {
+        mergedInputs.psv_back_pressure_bar = Number(stationInputs.psv_back_pressure_bar);
+      } else {
+        delete mergedInputs.psv_back_pressure_bar;
+      }
       if (stationInputs.psv_set_pressure_bar !== "" && stationInputs.psv_set_pressure_bar != null) {
         mergedInputs.psv_set_pressure_bar = Number(stationInputs.psv_set_pressure_bar);
       }
@@ -547,6 +584,18 @@ export function renderStationTab(container) {
 
       if (stationInputs.cooler_bays_count > 0) mergedInputs.cooler_bays_count = stationInputs.cooler_bays_count;
       else delete mergedInputs.cooler_bays_count;
+
+      if (stationInputs.cyclone_inlet_pipe_size) mergedInputs.cyclone_inlet_pipe_size = stationInputs.cyclone_inlet_pipe_size;
+      else delete mergedInputs.cyclone_inlet_pipe_size;
+
+      if (stationInputs.cyclone_outlet_pipe_size) mergedInputs.cyclone_outlet_pipe_size = stationInputs.cyclone_outlet_pipe_size;
+      else delete mergedInputs.cyclone_outlet_pipe_size;
+
+      if (stationInputs.filter_inlet_pipe_size) mergedInputs.filter_inlet_pipe_size = stationInputs.filter_inlet_pipe_size;
+      else delete mergedInputs.filter_inlet_pipe_size;
+
+      if (stationInputs.filter_outlet_pipe_size) mergedInputs.filter_outlet_pipe_size = stationInputs.filter_outlet_pipe_size;
+      else delete mergedInputs.filter_outlet_pipe_size;
 
       stationData = await api.post("/api/v1/calculations/station", {
         inputs: mergedInputs,
@@ -698,16 +747,23 @@ export function renderStationTab(container) {
         const dischargeNode = (stationData.nodes || []).find(n => n.id === "N05_COMPRESSOR_DISCHARGE") || stationData.nodes?.[4] || {};
         const eosLower = String(inputs.eos_model || "pr").toLowerCase();
         const acEos = eosLower === "srk" ? "SRK" : (eosLower === "coolprop" || eosLower === "gerg2008" ? "HEOS" : "PR");
+        const acObj = stationData.equipment_sizing?.air_coolers || {};
+        const airInC = Number.isFinite(Number(acObj.air_inlet_temp_c))
+          ? Number(acObj.air_inlet_temp_c)
+          : Number(inputs.ambient_temp ?? 15.0);
+        const airOutC = Number.isFinite(Number(acObj.air_outlet_temp_c))
+          ? Number(acObj.air_outlet_temp_c)
+          : airInC + 15.0;
         const payload = {
           composition: inputs.gas_comp,
           eos: acEos,
           mass_flow_kgs: stationInputs.mass_flow,
           p_in_bar: stationInputs.p_out,
-          p_out_bar: Math.max(1.0, stationInputs.p_out - 0.4),
-          t_in_c: dischargeNode.temp_c || stationData.equipment_sizing?.air_coolers?.inlet_temp_c || 80.0,
-          t_out_c: stationData.equipment_sizing?.air_coolers?.outlet_temp_c || 45.0,
-          air_in_c: 15.0,
-          air_out_c: 35.0,
+          p_out_bar: Math.max(1.0, stationInputs.p_out - (acObj.pressure_drop_bar || 0.4)),
+          t_in_c: acObj.inlet_temp_c ?? dischargeNode.temp_c ?? 80.0,
+          t_out_c: acObj.outlet_temp_c ?? 45.0,
+          air_in_c: airInC,
+          air_out_c: airOutC,
           auto_size: true,
         };
         const res = await api.post("/api/v1/modules/air_cooler/calculate", { payload });
@@ -926,6 +982,52 @@ export function renderStationTab(container) {
       fetchStationData();
     });
 
+    container.querySelector("#input-param-max-vel")?.addEventListener("change", (e) => {
+      const parsed = parseFloat(e.target.value);
+      stationInputs.max_velocity_ms = Number.isFinite(parsed) && parsed > 0 ? Math.max(2.0, Math.min(60.0, parsed)) : 20.0;
+      triggerLiveUpdateDebounced();
+    });
+
+    container.querySelector("#select-param-cyc-in")?.addEventListener("change", (e) => {
+      stationInputs.cyclone_inlet_pipe_size = e.target.value;
+      fetchStationData();
+    });
+
+    container.querySelector("#select-param-cyc-out")?.addEventListener("change", (e) => {
+      stationInputs.cyclone_outlet_pipe_size = e.target.value;
+      fetchStationData();
+    });
+
+    container.querySelector("#select-param-flt-in")?.addEventListener("change", (e) => {
+      stationInputs.filter_inlet_pipe_size = e.target.value;
+      fetchStationData();
+    });
+
+    container.querySelector("#select-param-flt-out")?.addEventListener("change", (e) => {
+      stationInputs.filter_outlet_pipe_size = e.target.value;
+      fetchStationData();
+    });
+
+    container.querySelector("#input-param-design-f")?.addEventListener("change", (e) => {
+      const parsed = parseFloat(e.target.value);
+      if (Number.isFinite(parsed) && parsed >= 0.2 && parsed <= 0.8) {
+        stationInputs.design_factor_F = parsed;
+        triggerLiveUpdateDebounced();
+      }
+    });
+
+    container.querySelector("#input-param-cooler-air")?.addEventListener("change", (e) => {
+      const raw = e.target.value.trim();
+      stationInputs.cooler_air_temp_c = raw === "" ? "" : Number(raw);
+      triggerLiveUpdateDebounced();
+    });
+
+    container.querySelector("#input-param-cooler-max-out")?.addEventListener("change", (e) => {
+      const parsed = parseFloat(e.target.value);
+      stationInputs.cooler_max_outlet_temp_c = Number.isFinite(parsed) ? parsed : 45.0;
+      triggerLiveUpdateDebounced();
+    });
+
     container.querySelector("#input-param-psv-set")?.addEventListener("change", (e) => {
       const raw = e.target.value.trim();
       stationInputs.psv_set_pressure_bar = raw === "" ? "" : Number(raw);
@@ -936,7 +1038,8 @@ export function renderStationTab(container) {
       triggerLiveUpdateDebounced();
     });
     container.querySelector("#input-param-psv-backpressure")?.addEventListener("change", (e) => {
-      stationInputs.psv_back_pressure_bar = Number(e.target.value);
+      const raw = e.target.value.trim();
+      stationInputs.psv_back_pressure_bar = raw === "" ? "" : Number(raw);
       triggerLiveUpdateDebounced();
     });
     container.querySelector("#select-param-psv-type")?.addEventListener("change", (e) => {
@@ -971,6 +1074,16 @@ export function renderStationTab(container) {
       stationInputs.bdv_depressurization_time_min = Number(e.target.value);
       triggerLiveUpdateDebounced();
     });
+    container.querySelector("#input-param-esd-hp-vol")?.addEventListener("change", (e) => {
+      const parsed = parseFloat(e.target.value);
+      stationInputs.esd_hp_volume_m3 = Number.isFinite(parsed) && parsed > 0 ? parsed : 50.0;
+      triggerLiveUpdateDebounced();
+    });
+    container.querySelector("#input-param-esd-lp-vol")?.addEventListener("change", (e) => {
+      const parsed = parseFloat(e.target.value);
+      stationInputs.esd_lp_volume_m3 = Number.isFinite(parsed) && parsed > 0 ? parsed : 40.0;
+      triggerLiveUpdateDebounced();
+    });
 
     container.querySelector("#btn-apply-station-params")?.addEventListener("click", () => {
       fetchStationData();
@@ -994,9 +1107,16 @@ export function renderStationTab(container) {
         design_factor_F: 0.50,
         pipe_standard: "BOTAŞ",
         psl_level: "PSL2",
+        max_velocity_ms: 20.0,
+        cyclone_inlet_pipe_size: "",
+        cyclone_outlet_pipe_size: "",
+        filter_inlet_pipe_size: "",
+        filter_outlet_pipe_size: "",
+        cooler_air_temp_c: "",
+        cooler_max_outlet_temp_c: 45.0,
         psv_set_pressure_bar: "",
         psv_overpressure_pct: 10,
-        psv_back_pressure_bar: 1.01325,
+        psv_back_pressure_bar: "",
         psv_valve_type: "conventional",
         psv_count: 2,
         psv_duty_count: 1,
@@ -1005,6 +1125,8 @@ export function renderStationTab(container) {
         esd_allowable_dp_bar: 0.5,
         esd_valve_type: "full_bore_ball",
         bdv_depressurization_time_min: 15,
+        esd_hp_volume_m3: 50.0,
+        esd_lp_volume_m3: 40.0,
       };
       fetchStationData();
     });
@@ -1013,10 +1135,48 @@ export function renderStationTab(container) {
   function updateLiveParamsMount() {
     const paramsMount = container.querySelector("#station-params-mount");
     if (!paramsMount) return;
-    const activeGasComp = projectStore.getState().inputs?.gas_comp;
+    const projInputs = projectStore.getState().inputs || {};
     const lang = uiStore.getState().lang || "tr";
-    paramsMount.innerHTML = renderLiveParamsBar(stationInputs, isParamsPanelOpen, activeGasComp, lang);
+    paramsMount.innerHTML = renderLiveParamsBar(stationInputs, isParamsPanelOpen, projInputs.gas_comp, lang, stationData, projInputs);
     bindLiveParamsControls();
+    bindProvenanceControls();
+  }
+
+  function bindProvenanceControls() {
+    const provMount = container.querySelector("#station-provenance-mount");
+    if (!provMount) return;
+    provMount.querySelectorAll("[data-prov-filter]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        provenanceSourceFilter = btn.getAttribute("data-prov-filter") || "all";
+        updateProvenanceMount();
+      });
+    });
+    const searchInput = provMount.querySelector("#input-prov-search");
+    searchInput?.addEventListener("input", (e) => {
+      provenanceSearchQuery = e.target.value || "";
+      updateProvenanceMount(true);
+    });
+  }
+
+  function updateProvenanceMount(preserveFocus = false) {
+    const provMount = container.querySelector("#station-provenance-mount");
+    if (!provMount || !stationData) return;
+    const lang = uiStore.getState().lang || "tr";
+    const selStart = preserveFocus ? provMount.querySelector("#input-prov-search")?.selectionStart : null;
+    provMount.innerHTML = renderParameterProvenancePanel(
+      stationData.parameter_sources,
+      provenanceSourceFilter,
+      provenanceSearchQuery,
+      lang
+    );
+    bindProvenanceControls();
+    if (preserveFocus) {
+      const nextInput = provMount.querySelector("#input-prov-search");
+      if (nextInput) {
+        nextInput.focus();
+        if (selStart != null) nextInput.setSelectionRange(selStart, selStart);
+      }
+    }
   }
 
   function mount3dView() {
@@ -1208,7 +1368,7 @@ export function renderStationTab(container) {
 
         <!-- Live Station Operating Parameters & Dynamic Pipe Sizing Bar (Natural Gas Flow Calc) -->
         <div id="station-params-mount">
-          ${renderLiveParamsBar(stationInputs, isParamsPanelOpen, activeGasComp, lang)}
+          ${renderLiveParamsBar(stationInputs, isParamsPanelOpen, activeGasComp, lang, stationData, projectStore.getState().inputs || {})}
         </div>
 
         <!-- View Mode Selector Bar & Quick Legend -->
@@ -1295,6 +1455,11 @@ export function renderStationTab(container) {
         <!-- ASME B36.10M / API 5L Natural Gas Flow Calc Pipe Sizing Matrix Table -->
         ${renderPipeSizingTable(stationData.station_piping)}
 
+        <!-- Equipment & Piping Parameter Provenance & Dynamic Coupling Audit Matrix -->
+        <div id="station-provenance-mount">
+          ${renderParameterProvenancePanel(stationData.parameter_sources, provenanceSourceFilter, provenanceSearchQuery, lang)}
+        </div>
+
         <!-- BOTAŞ Adapazarı PFD Lightbox Modal -->
         <div id="station-pfd-modal-mount">
           ${isPfdModalOpen ? renderBotasPfdModal(lang) : ""}
@@ -1349,6 +1514,7 @@ export function renderStationTab(container) {
     });
 
     bindLiveParamsControls();
+    bindProvenanceControls();
 
     container.querySelector("#btn-view-botas-pfd")?.addEventListener("click", () => {
       isPfdModalOpen = true;
@@ -1918,6 +2084,7 @@ function renderInspectorDrawer(key, eq, sm, gasComp, viewMode = "2d", lang = "tr
           <tr><td>Çalışma Modeli</td><td>${eq.cyclones.operating_count} Aktif + 1 Otomatik Yedek</td></tr>
           <tr><td>Ünite Başına Debi</td><td>${eq.cyclones.flow_per_unit_kgs} kg/s</td></tr>
           <tr><td>Basınç Düşüşü (ΔP)</td><td>${eq.cyclones.pressure_drop_bar} bar</td></tr>
+          <tr><td>Giriş / Çıkış Çapı (L-103 / L-103A)</td><td>${escapeHtml(eq.cyclones.inlet_pipe_size || "-")} (${escapeHtml(eq.cyclones.inlet_velocity_ms ?? "-")} m/s) / ${escapeHtml(eq.cyclones.outlet_pipe_size || "-")} (${escapeHtml(eq.cyclones.outlet_velocity_ms ?? "-")} m/s)</td></tr>
           <tr><td>Drenaj Sistemi</td><td>LCV Seviye Kontrol Vanası ➔ Kondensat Tankı (Note 10)</td></tr>
         </table>
       </div>
@@ -1931,6 +2098,7 @@ function renderInspectorDrawer(key, eq, sm, gasComp, viewMode = "2d", lang = "tr
           <tr><td>Filtreleme Hassasiyeti</td><td>${escapeHtml(eq.cartridge_filters.filter_efficiency_micron)}</td></tr>
           <tr><td>Ünite Başına Debi</td><td>${eq.cartridge_filters.flow_per_unit_kgs} kg/s</td></tr>
           <tr><td>Temiz Filtre ΔP</td><td>${eq.cartridge_filters.clean_dp_bar} bar</td></tr>
+          <tr><td>Giriş / Çıkış Çapı (L-104 / L-104A)</td><td>${escapeHtml(eq.cartridge_filters.inlet_pipe_size || "-")} (${escapeHtml(eq.cartridge_filters.inlet_velocity_ms ?? "-")} m/s) / ${escapeHtml(eq.cartridge_filters.outlet_pipe_size || "-")} (${escapeHtml(eq.cartridge_filters.outlet_velocity_ms ?? "-")} m/s)</td></tr>
           <tr><td>Fark Basınç İletimi</td><td>PDT Diferansiyel Basınç Transmiteri</td></tr>
         </table>
       </div>
@@ -2045,16 +2213,18 @@ function renderInspectorDrawer(key, eq, sm, gasComp, viewMode = "2d", lang = "tr
     `;
   } else if (key === "air_coolers") {
     const acWarn = [
-      ...(eq.air_coolers.detailed_design_warnings || []),
-      ...(eq.air_coolers.cooler_bypass_valve_sizing_warnings || []),
+      ...(eq.air_coolers.design_warnings || eq.air_coolers.detailed_design_warnings || []),
+      ...(eq.air_coolers.cooler_bypass_warnings || eq.air_coolers.cooler_bypass_valve_sizing_warnings || []),
     ];
     title = `Hava Soğutucuları (${eq.air_coolers.bay_count} Fin-Fan Bay)`;
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
-        <p><b>İşlev:</b> Sıkıştırma sonrası ısınan gazı boru hattı kaplama limitlerine (${eq.air_coolers.outlet_temp_c}°C) soğutur.</p>
+        <p><b>İşlev:</b> Kompresörden çıkan sıcak doğal gazı (${eq.air_coolers.inlet_temp_c}°C) kullanıcı maks. çıkış sınırına (${eq.air_coolers.outlet_temp_c}°C) soğutur.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
-          <tr><td>Toplam Isıl Yük</td><td>${eq.air_coolers.total_heat_duty_mw} MWth</td></tr>
-          <tr><td>Giriş / Çıkış Sıcaklığı</td><td>${eq.air_coolers.inlet_temp_c}°C → ${eq.air_coolers.outlet_temp_c}°C</td></tr>
+          <tr><td>Toplam Isıl Yük &amp; LMTD</td><td>${eq.air_coolers.total_heat_duty_mw} MWth • LMTD: ${eq.air_coolers.lmtd_c ?? "-"} °C</td></tr>
+          <tr><td>Gaz Giriş (= Kompresör Çıkış)</td><td><b>${eq.air_coolers.inlet_temp_c}°C</b> (${eq.air_coolers.compressor_outlet_coupled ? "✓ Doğrulandı" : "-"})</td></tr>
+          <tr><td>Maks. Gaz Çıkış Sınırı / Gerçek Çıkış</td><td>${eq.air_coolers.requested_max_outlet_temp_c ?? eq.air_coolers.outlet_temp_c}°C → <b>${eq.air_coolers.outlet_temp_c}°C</b></td></tr>
+          <tr><td>Soğutma Havası Giriş / Çıkış</td><td>${eq.air_coolers.air_inlet_temp_c ?? 15}°C → ${eq.air_coolers.air_outlet_temp_c ?? 30}°C</td></tr>
           <tr><td>Fan Modülü Sayısı</td><td>${eq.air_coolers.total_fans} Adet Induced-Draft VFD Fan</td></tr>
           <tr><td>Basınç Kaybı (ΔP)</td><td>${eq.air_coolers.pressure_drop_bar} bar</td></tr>
           ${eq.air_coolers.cooler_bypass_valve_sizing ? `<tr><td>TCV Boyut</td><td>${escapeHtml(eq.air_coolers.cooler_bypass_valve_sizing.valve_inch)} • Cv ${Number(eq.air_coolers.cooler_bypass_valve_sizing.required_cv).toFixed(1)}</td></tr>` : ''}
@@ -2077,10 +2247,12 @@ function renderInspectorDrawer(key, eq, sm, gasComp, viewMode = "2d", lang = "tr
         <p><b>İşlev:</b> Gaz soğutucu çıkışı basma kollektörü üzerinde dikey yükselen (riser) API 520/526 emniyet tahliye vanaları.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
           <tr><td>PSV Ayar Basıncı</td><td>${psv.psv_set_pressure_bar} bar(g) (%${psv.psv_overpressure_pct || 10} aşırı basınç)</td></tr>
+          <tr><td>Tasarım Sekmesi P_atm &amp; T_atm</td><td>${Number(psv.ambient_pressure_bar || 1.01325).toFixed(4)} bar(a) • ${psv.ambient_temp_c ?? 15}°C (Karşı P: ${Number(psv.psv_back_pressure_bar || 1.01325).toFixed(4)} bar a)</td></tr>
           <tr><td>Kurulu / Eşzamanlı PSV Sayısı</td><td>${psv.psv_count || 2} Adet (${psv.psv_duty_count || 1} Duty + ${Math.max(0, (psv.psv_count || 2) - (psv.psv_duty_count || 1))} Standby)</td></tr>
           ${psvSizing ? `
           <tr><td>Gerekli Alan (Toplam / Vana Başına)</td><td>${Number(psvSizing.required_area_total_sqin || psvSizing.required_area_sqin).toFixed(3)} in² / ${Number(psvSizing.required_area_sqin).toFixed(3)} in² (Ø${Number(psvSizing.required_diameter_in || 0).toFixed(2)}")</td></tr>
           <tr><td>Seçilen API 526 Orifis &amp; Flanş</td><td>${escapeHtml(psvSizing.selected_orifice || '-')} (${Number(psvSizing.selected_orifice_area_sqin || 0).toFixed(3)} in² • ${escapeHtml(psvSizing.inlet_flange_in || '8"')} × ${escapeHtml(psvSizing.outlet_flange_in || '10"')})</td></tr>
+          <tr><td>Atmosferik Vent Çıkış Hızı</td><td>${Number(psvSizing.vent_exit_velocity_ms || 0).toFixed(1)} m/s @ ρ_atm=${Number(psvSizing.atm_gas_density_kgm3 || 0).toFixed(3)} kg/m³</td></tr>
           <tr><td>Önerilen Min. PSV Sayısı</td><td>${psvSizing.recommended_duty_count || 1} Duty (Toplam ${psvSizing.recommended_total_count || 2})</td></tr>
           ` : ''}
         </table>
@@ -2092,15 +2264,17 @@ function renderInspectorDrawer(key, eq, sm, gasComp, viewMode = "2d", lang = "tr
     const suct = esd.suction || {};
     const disch = esd.discharge || {};
     const esdWarn = esd.warnings || [];
-    title = `ESD / BDV Acil Kapatma ve Boşaltma Vanaları (ESD-101..10${esd.esd_count || 2} • IEC 60534)`;
+    title = `ESD / BDV Acil Kapatma ve Boşaltma Vanaları (ESD-101..10${esd.esd_count || 2} • IEC 60534 / API 521)`;
     content = `
       <div style="font-size: 11px; line-height: 1.5; color: var(--color-text);">
-        <p><b>İşlev:</b> Basma kollektörü üzerinde dikey yükselen acil boşaltma (BDV) ve ana hat acil kapatma (ESDV) vanaları.</p>
+        <p><b>İşlev:</b> Yüksek basınç (P_out) ve düşük basınç (P_in) borulama hacimlerini tasarım atmosfer şartlarına boşaltan BDV ve ana hat ESD vanaları.</p>
         <table class="kasp-table" style="font-size: 10px; margin: 8px 0;">
-          <tr><td>Kurulu / Aktif ESD Sayısı</td><td>${esd.esd_count || 2} Adet (${esd.esd_duty_count || 1} Aktif) • İzin Verilen ΔP: ${esd.allowable_dp_bar || 0.5} bar</td></tr>
-          <tr><td>Basma ESD Aerodinamik / Hat Çapı</td><td>${escapeHtml(disch.calculated_size_in || '-')}" (DN${escapeHtml(disch.calculated_dn_mm || '-')}) / Hat: ${escapeHtml(disch.selected_size_in || '-')}" • Cv ${Number(disch.required_cv || 0).toFixed(0)}</td></tr>
-          <tr><td>Emiş ESD Aerodinamik / Hat Çapı</td><td>${escapeHtml(suct.calculated_size_in || '-')}" (DN${escapeHtml(suct.calculated_dn_mm || '-')}) / Hat: ${escapeHtml(suct.selected_size_in || '-')}" • Cv ${Number(suct.required_cv || 0).toFixed(0)}</td></tr>
-          <tr><td>Önerilen Paralel ESD Sayısı</td><td>${disch.recommended_duty_count || 1} Aktif Vana</td></tr>
+          <tr><td>Tasarım Sekmesi P_atm &amp; T_atm</td><td>${Number(esd.ambient_pressure_bar || 1.01325).toFixed(4)} bar(a) • ${esd.ambient_temp_c ?? 15}°C • Süre: ${esd.depressurization_time_min || 15} dk</td></tr>
+          <tr><td>YB Hacim (@ P_out = ${disch.upstream_pressure_bar ?? sm.discharge_pressure_bar} bar a)</td><td><b>${esd.esd_hp_volume_m3 ?? 50} m³</b> • Envanter: ${disch.gas_inventory_kg ?? "-"} kg • Boşaltma: ${disch.blowdown_mass_flow_total_kgs ?? disch.flow_per_valve_kgs} kg/s</td></tr>
+          <tr><td>DB Hacim (@ P_in = ${suct.upstream_pressure_bar ?? sm.suction_pressure_bar} bar a)</td><td><b>${esd.esd_lp_volume_m3 ?? 40} m³</b> • Envanter: ${suct.gas_inventory_kg ?? "-"} kg • Boşaltma: ${suct.blowdown_mass_flow_total_kgs ?? suct.flow_per_valve_kgs} kg/s</td></tr>
+          <tr><td>YB ESD/BDV Hesaplanan / Hat Çapı</td><td><b>${escapeHtml(disch.calculated_size_in || '-')}"</b> (DN${escapeHtml(disch.calculated_dn_mm || '-')}) / Hat: ${escapeHtml(disch.selected_size_in || '-')}" • Cv ${Number(disch.required_cv || 0).toFixed(1)}</td></tr>
+          <tr><td>DB ESD/BDV Hesaplanan / Hat Çapı</td><td><b>${escapeHtml(suct.calculated_size_in || '-')}"</b> (DN${escapeHtml(suct.calculated_dn_mm || '-')}) / Hat: ${escapeHtml(suct.selected_size_in || '-')}" • Cv ${Number(suct.required_cv || 0).toFixed(1)}</td></tr>
+          <tr><td>Kurulu / Önerilen Aktif Sayı</td><td>${esd.esd_count || 2} Kurulu (${esd.esd_duty_count || 1} Aktif • Önerilen: ${disch.recommended_duty_count || 1})</td></tr>
         </table>
         ${renderDrawerWarnings(esdWarn, lang)}
       </div>
@@ -2272,7 +2446,7 @@ function renderBotasPfdModal(lang = "tr") {
 /**
  * Renders the live interactive parameter control bar for real-time natural gas pipe sizing.
  */
-function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr") {
+function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr", stationData = null, designInputs = {}) {
   const mmscmdEst = convertFlowWithMW(inputs.mass_flow, "kg/s", "MMSCMD", gasComp).toFixed(2);
   const mmscmdMin = convertFlowWithMW(20, "kg/s", "MMSCMD", gasComp).toFixed(1);
   const mmscmdMax = convertFlowWithMW(300, "kg/s", "MMSCMD", gasComp).toFixed(1);
@@ -2282,6 +2456,47 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr") {
   const flowDisplay = roundDisplay(stationFlowDisplay(inputs.mass_flow, flowUnit, gasComp));
   const pinDisplay = stationPressureDisplay(inputs.p_in, pinUnit);
   const poutDisplay = stationPressureDisplay(inputs.p_out, poutUnit);
+  const designPatmBar = resolveAmbientBarA(designInputs?.ambient_pressure ?? 101.325);
+  const designTatmC = Number(designInputs?.ambient_temp ?? 15.0);
+  const eq = stationData?.equipment_sizing || {};
+  const piping = stationData?.station_piping || {};
+  const pLines = piping?.lines || {};
+  const commonHeaderNps = piping?.header_sizing_rule?.common_nominal_size_in || pLines?.suction_header?.nominal_size_in || "-";
+  const compDischTempC = eq?.air_coolers?.inlet_temp_c ?? stationData?.nodes?.[4]?.temp_c ?? "-";
+  const maxVelDisplay = Number(inputs.max_velocity_ms ?? 20.0).toFixed(1);
+  const COMMERCIAL_NPS_KEYS = ["2", "3", "4", "6", "8", "10", "12", "14", "16", "18", "20", "24", "26", "28", "30", "32", "36", "40", "42", "48"];
+  const renderBranchPipeSelect = (selectId, labelText, selectedRaw, lineObj) => {
+    const cleanSelected = String(selectedRaw || "").replace(/"/g, "").trim();
+    const minKey = String(lineObj?.velocity_min_key || "");
+    const minNps = lineObj?.velocity_min_nominal_in || "-";
+    const actualNps = lineObj?.nominal_size_in || "-";
+    const actualVel = lineObj?.actual_velocity_ms != null ? Number(lineObj.actual_velocity_ms).toFixed(1) : "-";
+    const meetsMin = lineObj ? lineObj.meets_min_velocity_diameter !== false : true;
+    const minNum = parseFloat(minKey);
+    const keysList = Array.from(new Set([...COMMERCIAL_NPS_KEYS, ...(minKey ? [minKey] : []), ...(cleanSelected ? [cleanSelected] : [])]))
+      .sort((a, b) => (parseFloat(a) || 0) - (parseFloat(b) || 0));
+    const optionsHtml = keysList.map((k) => {
+      const kNum = parseFloat(k);
+      const underMin = Number.isFinite(minNum) && Number.isFinite(kNum) && kNum < minNum;
+      const suffix = underMin ? ` (⚠ < Min ${minNps})` : (minKey === k ? " (Min)" : "");
+      return `<option value="${escapeHtml(k)}" ${cleanSelected === k ? "selected" : ""}>${escapeHtml(k)}" NPS${escapeHtml(suffix)}</option>`;
+    }).join("");
+    const statusHtml = !lineObj
+      ? ""
+      : meetsMin
+        ? `<span style="color: #34d399;">✓ ${escapeHtml(actualNps)} • ${escapeHtml(actualVel)} m/s (Min: ${escapeHtml(minNps)})</span>`
+        : `<span style="color: #f87171; font-weight: 700;">⚠ ${escapeHtml(actualNps)} • ${escapeHtml(actualVel)} m/s &gt; ${escapeHtml(maxVelDisplay)} m/s (Min: ${escapeHtml(minNps)})</span>`;
+    return `
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <label for="${escapeHtml(selectId)}" style="font-size: 10px; color: var(--color-text-secondary);">${escapeHtml(labelText)}</label>
+        <select id="${escapeHtml(selectId)}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid ${meetsMin ? "var(--color-border)" : "#ef4444"}; border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);">
+          <option value="" ${!cleanSelected ? "selected" : ""}>${escapeHtml(t("station_param_pipe_auto", lang))}${minNps !== "-" ? ` (Min ${escapeHtml(minNps)})` : ""}</option>
+          ${optionsHtml}
+        </select>
+        <div style="font-size: 9px; line-height: 1.25;">${statusHtml}</div>
+      </div>
+    `;
+  };
   return `
     <div class="card" style="padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md);">
       
@@ -2306,7 +2521,10 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr") {
             ${escapeHtml(t("station_params_discharge", lang))}: <strong style="color: #f59e0b; font-family: var(--font-mono);">${poutDisplay} ${escapeHtml(poutUnit)}</strong>
           </div>
           <div style="color: var(--color-text-secondary);">
-            ${escapeHtml(t("station_params_steel", lang))}: <strong style="color: #a78bfa;">${escapeHtml(inputs.pipe_material)}</strong>
+            v_maks: <strong style="color: #facc15; font-family: var(--font-mono);">${Number(inputs.max_velocity_ms || 20).toFixed(1)} m/s</strong>
+          </div>
+          <div style="color: var(--color-text-secondary);">
+            Ortak Header: <strong style="color: #38bdf8; font-family: var(--font-mono);">${escapeHtml(commonHeaderNps)}</strong>
           </div>
           <button id="btn-toggle-params-panel" class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px;">
             ${escapeHtml(t(isExpanded ? "station_params_collapse" : "station_params_expand", lang))}
@@ -2444,17 +2662,76 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr") {
             </div>
           </div>
 
-          <!-- Separate PSV & ESD Safety Valve Sizing Cards -->
-          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px;">
+          <!-- Pipe Max Velocity + Gas Cooler User Inputs + PSV + ESD/BDV Cards -->
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px;">
+
+            <!-- 1. Pipe Max Velocity & Common Header Sizing Card -->
+            <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <span style="font-size: 11px; font-weight: 700; color: var(--color-text);">📏 Boru Hız Sınırı &amp; Ortak Header Çapı</span>
+                <span class="badge badge-primary" style="font-size: 9px;">Default: 20 m/s</span>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  ${escapeHtml(t("station_param_max_vel", lang))}
+                  <input type="number" id="input-param-max-vel" step="0.5" min="3" max="50" value="${inputs.max_velocity_ms ?? 20.0}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Tasarım Faktörü (F)
+                  <input type="number" id="input-param-design-f" step="0.05" min="0.3" max="0.72" value="${inputs.design_factor_F ?? 0.50}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+              </div>
+              <div style="margin-top: 6px; font-size: 9.5px; color: var(--color-text-secondary); line-height: 1.4;">
+                Ekipman bağlantı boruları hariç tüm headerlarda hesaplanan en büyük çap esas alınır:
+                <strong style="color: #facc15; font-family: var(--font-mono);">Station/Unit Suction &amp; Discharge = ${escapeHtml(commonHeaderNps)}</strong>
+              </div>
+            </div>
+
+            <!-- 1b. MFS Cyclone & CFS Filter Inlet/Outlet Pipe Size Selection + Velocity Min Diameter Check -->
+            <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 6px;">
+                <span style="font-size: 11px; font-weight: 700; color: var(--color-text);">🛢️ ${escapeHtml(t("station_param_pipe_diam_card", lang))}</span>
+                <span class="badge badge-primary" style="font-size: 9px;">Min Çap Kontrolü: v ≤ ${escapeHtml(maxVelDisplay)} m/s</span>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                ${renderBranchPipeSelect("select-param-cyc-in", t("station_param_cyc_in", lang), inputs.cyclone_inlet_pipe_size, pLines.cyclone_branch)}
+                ${renderBranchPipeSelect("select-param-cyc-out", t("station_param_cyc_out", lang), inputs.cyclone_outlet_pipe_size, pLines.cyclone_outlet_branch)}
+                ${renderBranchPipeSelect("select-param-flt-in", t("station_param_flt_in", lang), inputs.filter_inlet_pipe_size, pLines.filter_branch)}
+                ${renderBranchPipeSelect("select-param-flt-out", t("station_param_flt_out", lang), inputs.filter_outlet_pipe_size, pLines.filter_outlet_branch)}
+              </div>
+            </div>
+
+            <!-- 2. Gas Cooler Air Temp & Max Gas Outlet Temp Card -->
+            <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <span style="font-size: 11px; font-weight: 700; color: var(--color-text);">❄️ Gaz Soğutucu (E-101) Kullanıcı Girdileri</span>
+                <span class="badge badge-success" style="font-size: 9px;">T_in = Kompresör T_çıkış (${escapeHtml(compDischTempC)}°C)</span>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  ${escapeHtml(t("station_param_cooler_air", lang))}
+                  <input type="number" id="input-param-cooler-air" step="0.5" min="-40" max="55" value="${inputs.cooler_air_temp_c ?? ""}" placeholder="Tasarım: ${designTatmC}°C" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  ${escapeHtml(t("station_param_cooler_max_out", lang))}
+                  <input type="number" id="input-param-cooler-max-out" step="0.5" min="15" max="90" value="${inputs.cooler_max_outlet_temp_c ?? 45.0}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+              </div>
+              <div style="margin-top: 6px; font-size: 9.5px; color: var(--color-text-secondary); line-height: 1.4;">
+                Kompresör basma sıcaklığı (<b>${escapeHtml(compDischTempC)}°C</b>) doğrudan soğutucu girişi alınır • Çıkış: <strong style="color:#34d399;">${escapeHtml(eq?.air_coolers?.outlet_temp_c ?? "-")}°C</strong>
+              </div>
+            </div>
+
+            <!-- 3. PSV Safety Valve Sizing Card -->
             <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
                 <span style="font-size: 11px; font-weight: 700; color: var(--color-text);">🛡️ PSV Sayı &amp; Çap Hesabı</span>
-                <span class="badge badge-info" style="font-size: 9px;">API 520 / 526</span>
+                <span class="badge badge-info" style="font-size: 9px;" title="Tasarım Sekmesi Saha Şartlarından Alınır">P_atm=${designPatmBar.toFixed(3)} bar • T_atm=${designTatmC}°C</span>
               </div>
               <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
                 <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
                   PSV Set (bar g)
-                  <input type="number" id="input-param-psv-set" step="0.1" value="${inputs.psv_set_pressure_bar ?? ""}" placeholder="Oto: ${roundDisplay(inputs.p_out * 1.1)}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                  <input type="number" id="input-param-psv-set" step="0.1" value="${inputs.psv_set_pressure_bar ?? ""}" placeholder="Oto: ${roundDisplay(Math.max(1, inputs.p_out - designPatmBar) * 1.1)}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
                 </label>
                 <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
                   Aşırı Basınç (%)
@@ -2462,7 +2739,7 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr") {
                 </label>
                 <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
                   Karşı Basınç (bar a)
-                  <input type="number" id="input-param-psv-backpressure" step="0.01" value="${inputs.psv_back_pressure_bar}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                  <input type="number" id="input-param-psv-backpressure" step="0.01" value="${inputs.psv_back_pressure_bar ?? ""}" placeholder="P_atm: ${designPatmBar.toFixed(4)}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
                 </label>
                 <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
                   Toplam PSV Adedi
@@ -2487,23 +2764,35 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr") {
               </div>
             </div>
 
+            <!-- 4. ESD / BDV Volume & Valve Sizing Card -->
             <div style="background: var(--color-surface-hover); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);">
               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                <span style="font-size: 11px; font-weight: 700; color: var(--color-text);">🚨 ESD / BDV Sayı &amp; Çap Hesabı</span>
-                <span class="badge badge-warning" style="font-size: 9px;">IEC 60534 / API 521</span>
+                <span style="font-size: 11px; font-weight: 700; color: var(--color-text);">🚨 ESD / BDV Hacim &amp; Çap Hesabı</span>
+                <span class="badge badge-warning" style="font-size: 9px;" title="Tasarım Sekmesi Atmosfer Şartlarına Bağlı">P_atm=${designPatmBar.toFixed(3)} bar • T_atm=${designTatmC}°C</span>
               </div>
               <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
-                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
-                  Toplam ESD Adedi
-                  <select id="select-param-esd-count" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);">
-                    ${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${Number(inputs.esd_count || 2) === n ? "selected" : ""}>${n} Adet</option>`).join("")}
-                  </select>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;" title="Yüksek Basınç = Kompresör Çıkış Basıncı (P_out)">
+                  YB Hacim m³ (@P_out)
+                  <input type="number" id="input-param-esd-hp-vol" step="5" min="1" max="5000" value="${inputs.esd_hp_volume_m3 ?? 50.0}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;" title="Düşük Basınç = Kompresör Giriş Basıncı (P_in)">
+                  DB Hacim m³ (@P_in)
+                  <input type="number" id="input-param-esd-lp-vol" step="5" min="1" max="5000" value="${inputs.esd_lp_volume_m3 ?? 40.0}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
                 </label>
                 <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
-                  Aktif Duty ESD
-                  <select id="select-param-esd-duty" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);">
-                    ${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${Number(inputs.esd_duty_count || 1) === n ? "selected" : ""}>${n} Aktif</option>`).join("")}
-                  </select>
+                  Boşaltma Süresi (dk)
+                  <input type="number" id="input-param-esd-bdv-time" step="1" min="1" max="60" value="${inputs.bdv_depressurization_time_min ?? 15}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
+                </label>
+                <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
+                  Toplam / Duty ESD
+                  <div style="display: flex; gap: 3px;">
+                    <select id="select-param-esd-count" style="width: 50%; font-size: 10.5px; padding: 2px 2px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);" aria-label="Toplam ESD">
+                      ${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${Number(inputs.esd_count || 2) === n ? "selected" : ""}>${n}Top</option>`).join("")}
+                    </select>
+                    <select id="select-param-esd-duty" style="width: 50%; font-size: 10.5px; padding: 2px 2px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text);" aria-label="Aktif ESD">
+                      ${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${Number(inputs.esd_duty_count || 1) === n ? "selected" : ""}>${n}Akt</option>`).join("")}
+                    </select>
+                  </div>
                 </label>
                 <label style="font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
                   İzin Verilen ΔP (bar)
@@ -2517,10 +2806,6 @@ function renderLiveParamsBar(inputs, isExpanded, gasComp, lang = "tr") {
                     <option value="butterfly" ${inputs.esd_valve_type === "butterfly" ? "selected" : ""}>Butterfly</option>
                     <option value="gate" ${inputs.esd_valve_type === "gate" ? "selected" : ""}>Gate</option>
                   </select>
-                </label>
-                <label style="grid-column: span 2; font-size: 10px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 2px;">
-                  Acil Boşaltma Süresi (dk)
-                  <input type="number" id="input-param-esd-bdv-time" step="1" min="1" max="60" value="${inputs.bdv_depressurization_time_min ?? 15}" style="font-size: 11px; padding: 2px 4px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text); font-family: var(--font-mono);" />
                 </label>
               </div>
             </div>
@@ -2560,9 +2845,13 @@ function renderPipeSizingTable(piping) {
 
   const linesMap = piping.lines || piping;
   const lines = Object.values(linesMap);
+  const netMaxVel = Number(piping.max_velocity_ms || 20.0);
+  const headerRule = piping.header_sizing_rule || {};
   const arch = piping.piping_architecture || {};
   const mainHeaders = arch.main_headers || {};
   const suctArch = mainHeaders.station_suction_header || null;
+  const unitSuctArch = mainHeaders.unit_suction_header || null;
+  const unitDischArch = mainHeaders.unit_discharge_header || null;
   const dischArch = mainHeaders.station_discharge_header || null;
   const limitations = Array.isArray(arch.naming_limitations) ? arch.naming_limitations : [];
 
@@ -2570,24 +2859,45 @@ function renderPipeSizingTable(piping) {
     <div style="margin-bottom: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(15, 23, 42, 0.45); border: 1px solid var(--color-border);">
       <div style="font-size: 11.5px; font-weight: 700; color: var(--color-text-primary); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
         <span>🧭 ${escapeHtml(t("pipe_arch_title", lang))}</span>
-        <span class="badge badge-neutral" style="font-size: 10px;">Ana Omurga Ortak Çap: ${escapeHtml(suctArch?.nominal_size_in || linesMap.suction_header?.nominal_size_in || "-")}</span>
+        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <span class="badge badge-primary" style="font-size: 10px;">v_maks ≤ ${netMaxVel.toFixed(1)} m/s</span>
+          <span class="badge badge-neutral" style="font-size: 10px;">4 Ana/Ünite Header Ortak Çap: ${escapeHtml(headerRule.common_nominal_size_in || suctArch?.nominal_size_in || linesMap.suction_header?.nominal_size_in || "-")} (Belirleyici: ${escapeHtml(headerRule.governing_line_key || "-")})</span>
+        </div>
       </div>
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px;">
         ${suctArch ? `
-          <div style="padding: 8px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.08); border-left: 3px solid #38bdf8; font-size: 11px;">
-            <div style="font-weight: 700; color: #38bdf8; margin-bottom: 3px;">${escapeHtml(suctArch.name || suctArch.display_name || "Station Suction Header")} (${escapeHtml((suctArch.tags || suctArch.line_tags || []).join(" + "))} • ${escapeHtml(suctArch.nominal_size_in || "-")})</div>
-            <div style="color: var(--color-text-secondary); line-height: 1.45;">
-              <div><b>Başlangıç:</b> ${escapeHtml(suctArch.from_boundary || suctArch.start_boundary || "-")}</div>
-              <div><b>Bitiş:</b> ${escapeHtml(suctArch.to_boundary || suctArch.end_boundary || "-")}</div>
+          <div style="padding: 8px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.08); border-left: 3px solid #38bdf8; font-size: 10.5px;">
+            <div style="font-weight: 700; color: #38bdf8; margin-bottom: 3px;">${escapeHtml(suctArch.name || "Station Suction Header")} (${escapeHtml((suctArch.tags || []).join(" + "))} • ${escapeHtml(suctArch.nominal_size_in || "-")})</div>
+            <div style="color: var(--color-text-secondary); line-height: 1.4;">
+              <div><b>Tekil Min:</b> ${escapeHtml(linesMap.suction_header?.individual_nominal_size_in || suctArch.nominal_size_in || "-")} → <b>Ortak:</b> ${escapeHtml(suctArch.nominal_size_in || "-")}</div>
+              <div><b>Sınır:</b> ${escapeHtml(suctArch.from_boundary || "-")} ➔ ${escapeHtml(suctArch.to_boundary || "-")}</div>
+            </div>
+          </div>
+        ` : ""}
+        ${unitSuctArch ? `
+          <div style="padding: 8px 10px; border-radius: 6px; background: rgba(14, 165, 233, 0.08); border-left: 3px solid #0ea5e9; font-size: 10.5px;">
+            <div style="font-weight: 700; color: #0ea5e9; margin-bottom: 3px;">${escapeHtml(unitSuctArch.name || "Unit Suction Header")} (${escapeHtml((unitSuctArch.tags || []).join(" + "))} • ${escapeHtml(unitSuctArch.nominal_size_in || "-")})</div>
+            <div style="color: var(--color-text-secondary); line-height: 1.4;">
+              <div><b>Tekil Min:</b> ${escapeHtml(linesMap.comp_suction_header?.individual_nominal_size_in || unitSuctArch.nominal_size_in || "-")} → <b>Ortak:</b> ${escapeHtml(unitSuctArch.nominal_size_in || "-")}</div>
+              <div><b>Sınır:</b> ${escapeHtml(unitSuctArch.from_boundary || "-")} ➔ ${escapeHtml(unitSuctArch.to_boundary || "-")}</div>
+            </div>
+          </div>
+        ` : ""}
+        ${unitDischArch ? `
+          <div style="padding: 8px 10px; border-radius: 6px; background: rgba(239, 68, 68, 0.08); border-left: 3px solid #ef4444; font-size: 10.5px;">
+            <div style="font-weight: 700; color: #f87171; margin-bottom: 3px;">${escapeHtml(unitDischArch.name || "Unit Discharge Header")} (${escapeHtml((unitDischArch.tags || []).join(" + "))} • ${escapeHtml(unitDischArch.nominal_size_in || "-")})</div>
+            <div style="color: var(--color-text-secondary); line-height: 1.4;">
+              <div><b>Tekil Min:</b> ${escapeHtml(linesMap.unit_discharge_header?.individual_nominal_size_in || unitDischArch.nominal_size_in || "-")} → <b>Ortak:</b> ${escapeHtml(unitDischArch.nominal_size_in || "-")}</div>
+              <div><b>Sınır:</b> ${escapeHtml(unitDischArch.from_boundary || "-")} ➔ ${escapeHtml(unitDischArch.to_boundary || "-")}</div>
             </div>
           </div>
         ` : ""}
         ${dischArch ? `
-          <div style="padding: 8px 10px; border-radius: 6px; background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; font-size: 11px;">
-            <div style="font-weight: 700; color: #f59e0b; margin-bottom: 3px;">${escapeHtml(dischArch.name || dischArch.display_name || "Station Discharge Header")} (${escapeHtml((dischArch.tags || dischArch.line_tags || []).join(" + "))} • ${escapeHtml(dischArch.nominal_size_in || "-")})</div>
-            <div style="color: var(--color-text-secondary); line-height: 1.45;">
-              <div><b>Başlangıç:</b> ${escapeHtml(dischArch.from_boundary || dischArch.start_boundary || "-")}</div>
-              <div><b>Bitiş:</b> ${escapeHtml(dischArch.to_boundary || dischArch.end_boundary || "-")}</div>
+          <div style="padding: 8px 10px; border-radius: 6px; background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; font-size: 10.5px;">
+            <div style="font-weight: 700; color: #f59e0b; margin-bottom: 3px;">${escapeHtml(dischArch.name || "Station Discharge Header")} (${escapeHtml((dischArch.tags || []).join(" + "))} • ${escapeHtml(dischArch.nominal_size_in || "-")})</div>
+            <div style="color: var(--color-text-secondary); line-height: 1.4;">
+              <div><b>Tekil Min:</b> ${escapeHtml(linesMap.discharge_header?.individual_nominal_size_in || dischArch.nominal_size_in || "-")} → <b>Ortak:</b> ${escapeHtml(dischArch.nominal_size_in || "-")}</div>
+              <div><b>Sınır:</b> ${escapeHtml(dischArch.from_boundary || "-")} ➔ ${escapeHtml(dischArch.to_boundary || "-")}</div>
             </div>
           </div>
         ` : ""}
@@ -2611,8 +2921,10 @@ function renderPipeSizingTable(piping) {
           <span style="font-size: 13px; font-weight: 700;">${escapeHtml(t("station_pipe_matrix_title", lang))}</span>
           <span class="badge badge-primary" style="font-size: 10px;">${lines.length} ${escapeHtml(t("station_pipe_lines_badge", lang))}</span>
         </div>
-        <div style="font-size: 11px; color: var(--color-text-secondary); display: flex; gap: 10px; align-items: center;">
+        <div style="font-size: 11px; color: var(--color-text-secondary); display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
           <span>Barlow: <b>t = P·D / (2·SMYS·F)</b></span>
+          <span>•</span>
+          <span>Hız Sınırı: <b>v ≤ ${netMaxVel.toFixed(1)} m/s</b></span>
           <span>•</span>
           <span>Erozyon: <b>API RP 14E (v &lt; 122/√ρ)</b></span>
           <span>•</span>
@@ -2625,7 +2937,7 @@ function renderPipeSizingTable(piping) {
       <div tabindex="0" role="region" aria-labelledby="pipe-sizing-table-caption" style="overflow-x: auto;">
         <table class="kasp-table" style="font-size: 11px; width: 100%; white-space: nowrap;">
           <caption id="pipe-sizing-table-caption" style="text-align: left; font-size: 10.5px; color: var(--color-text-secondary); padding-bottom: 6px;">
-            İstasyon Ana Header Omurgası (Station Suction Header &amp; Station Discharge Header), Ekipman Branşmanları ve Battery-Limit Sınır Matrisi
+            İstasyon Ana &amp; Ünite Header Omurgası (Station Suction, Unit Suction, Unit Discharge, Station Discharge), Hız Sınırına Göre Kabul Edilebilir Çaplar ve Ekipman Branşman Matrisi
           </caption>
           <thead>
             <tr>
@@ -2635,7 +2947,8 @@ function renderPipeSizingTable(piping) {
               <th scope="col">${escapeHtml(t("pipe_col_boundaries", lang))}</th>
               <th scope="col" style="text-align: right;">Debi (kg/s)</th>
               <th scope="col" style="text-align: right;">Basınç (bar a)</th>
-              <th scope="col" style="text-align: center;">Anma Çapı (NPS)</th>
+              <th scope="col" style="text-align: center;">Seçilen Çap (NPS)</th>
+              <th scope="col">${escapeHtml(t("pipe_col_acceptable_nps", lang))}</th>
               <th scope="col" style="text-align: center;">Dış Çap (OD mm)</th>
               <th scope="col" style="text-align: center;">Çizelge &amp; Kalınlık (mm)</th>
               <th scope="col" style="text-align: right;">Min. Barlow (t_req)</th>
@@ -2668,11 +2981,20 @@ function renderPipeSizingTable(piping) {
               const flow = line.flow_kgs !== undefined ? line.flow_kgs : (line.flow_kg_s || 0);
               const pressure = line.pressure_bar !== undefined ? line.pressure_bar : (line.p_bar || 0);
               const nps = line.nominal_size_in || (line.selected_pipe ? line.selected_pipe.nps : "-");
+              const indivNps = line.individual_nominal_size_in || null;
+              const acceptableSummary = line.acceptable_diameters_summary ||
+                (Array.isArray(line.acceptable_nominals) && line.acceptable_nominals.length
+                  ? line.acceptable_nominals.slice(0, 5).join(", ")
+                  : nps);
+              const allAcceptableTitle = Array.isArray(line.acceptable_nominals) && line.acceptable_nominals.length
+                ? `Hız sınırı (≤ ${Number(line.max_velocity_ms || netMaxVel).toFixed(1)} m/s) için uygun tüm ticari çaplar: ${line.acceptable_nominals.join(", ")}`
+                : acceptableSummary;
               const od = line.od_mm || (line.selected_pipe ? line.selected_pipe.od_mm : 0);
               const sch = line.schedule || (line.selected_pipe ? line.selected_pipe.schedule : "-");
               const thick = line.wall_thickness_mm !== undefined ? line.wall_thickness_mm : (line.selected_pipe ? line.selected_pipe.thickness_mm : 0);
               const treq = line.min_required_thickness_mm !== undefined ? line.min_required_thickness_mm : (line.selected_pipe ? line.selected_pipe.t_req_mm : 0);
               const v = line.actual_velocity_ms !== undefined ? line.actual_velocity_ms : (line.selected_pipe ? line.selected_pipe.velocity_m_s : 0);
+              const lineMaxV = Number(line.max_velocity_ms || netMaxVel || 20.0);
               const evr = line.erosion_ratio_pct !== undefined ? line.erosion_ratio_pct : (line.selected_pipe ? line.selected_pipe.evr_percent : 0);
               const dp = line.pressure_drop_bar_per_100m !== undefined ? line.pressure_drop_bar_per_100m : (line.selected_pipe ? line.selected_pipe.dp_bar_per_100m : 0);
               const weight = line.pipe_weight_kg_m !== undefined ? line.pipe_weight_kg_m : (line.selected_pipe ? line.selected_pipe.weight_kg_m : 0);
@@ -2681,9 +3003,9 @@ function renderPipeSizingTable(piping) {
               const stdMin = std.minimum_standard_thickness_mm;
               const stdOk = std.is_sufficient !== false && !std.error;
 
-              const vColor = v > 18 ? "#ef4444" : v > 15 ? "#f59e0b" : "#10b981";
+              const vColor = v > lineMaxV ? "#ef4444" : v > lineMaxV * 0.8 ? "#f59e0b" : "#10b981";
               const evrColor = evr > 80 ? "#ef4444" : evr > 60 ? "#f59e0b" : "#10b981";
-              const isStatusOk = status.includes("Optimum") || status === "OK";
+              const isStatusOk = status.includes("Optimum") || status.includes("İzin Verilen") || status === "OK";
 
               return `
                 <tr>
@@ -2700,6 +3022,10 @@ function renderPipeSizingTable(piping) {
                   <td style="text-align: right; font-family: var(--font-mono);">${pressure.toFixed(1)}</td>
                   <td style="text-align: center; font-family: var(--font-mono); font-weight: 700; color: #facc15;">
                     ${escapeHtml(nps)}
+                    ${indivNps && indivNps !== nps ? `<div style="font-size: 9px; font-weight: 500; color: var(--color-text-secondary);" title="Ortak header kuralı öncesi tekil minimum çap">Tekil: ${escapeHtml(indivNps)}</div>` : ""}
+                  </td>
+                  <td style="font-size: 10px; font-family: var(--font-mono); color: #6ee7b7; max-width: 240px; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(allAcceptableTitle)}">
+                    ${escapeHtml(acceptableSummary)}
                   </td>
                   <td style="text-align: center; font-family: var(--font-mono);">${od ? od.toFixed(1) : "-"}</td>
                   <td style="text-align: center; font-family: var(--font-mono);">
@@ -2755,7 +3081,164 @@ function renderPipeSizingTable(piping) {
           <span>Boru Standardı: <b>${escapeHtml(piping.pipe_standard || "BOTAŞ")} ${escapeHtml(piping.psl_level || "PSL2")}</b></span>
         </div>
         <div>
-          <span>Hız Kriteri: &lt; 15 m/s (Optimum), &lt; 18 m/s (Tavan), v_erozyon = 122 / √ρ</span>
+          <span>Hız Kriteri: v ≤ ${netMaxVel.toFixed(1)} m/s (Kullanıcı Sınırı), v_erozyon = 122 / √ρ</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+const PROVENANCE_BADGE_STYLE = {
+  design_tab: { labelKey: "station_src_design", bg: "rgba(56, 189, 248, 0.14)", fg: "#38bdf8", border: "rgba(56, 189, 248, 0.45)" },
+  station_3d_calc: { labelKey: "station_src_calc", bg: "rgba(16, 185, 129, 0.14)", fg: "#34d399", border: "rgba(16, 185, 129, 0.45)" },
+  user_input: { labelKey: "station_src_user", bg: "rgba(245, 158, 11, 0.15)", fg: "#fbbf24", border: "rgba(245, 158, 11, 0.45)" },
+  fixed_default: { labelKey: "station_src_default", bg: "rgba(148, 163, 184, 0.14)", fg: "#cbd5e1", border: "rgba(148, 163, 184, 0.4)" },
+};
+
+function renderParameterProvenancePanel(paramSources, filterSource = "all", searchQuery = "", lang = "tr") {
+  if (!paramSources || typeof paramSources !== "object") return "";
+  const equipmentList = Array.isArray(paramSources.equipment) ? paramSources.equipment : [];
+  const pipingList = Array.isArray(paramSources.piping) ? paramSources.piping : [];
+  const couplingChecks = paramSources.coupling_checks || {};
+  const q = String(searchQuery || "").trim().toLowerCase();
+
+  const counts = { all: 0, design_tab: 0, station_3d_calc: 0, user_input: 0, fixed_default: 0 };
+  for (const grp of [...equipmentList, ...pipingList]) {
+    for (const p of grp.parameters || []) {
+      counts.all += 1;
+      if (counts[p.source] !== undefined) counts[p.source] += 1;
+    }
+  }
+
+  function filterParams(groupName, groupTag, params) {
+    return (params || []).filter((p) => {
+      if (filterSource !== "all" && p.source !== filterSource) return false;
+      if (!q) return true;
+      const hay = `${groupName} ${groupTag} ${p.label || ""} ${p.param || ""} ${p.value ?? ""} ${p.origin || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  function renderSourceBadge(src) {
+    const meta = PROVENANCE_BADGE_STYLE[src] || PROVENANCE_BADGE_STYLE.fixed_default;
+    return `<span style="display:inline-block; padding: 1px 7px; border-radius: 10px; font-size: 9.5px; font-weight: 700; background:${meta.bg}; color:${meta.fg}; border:1px solid ${meta.border}; white-space:nowrap;">${escapeHtml(t(meta.labelKey, lang))}</span>`;
+  }
+
+  function renderSectionCards(items, sectionIcon) {
+    const rendered = items.map((item) => {
+      const matched = filterParams(item.name || "", item.tag || item.key || "", item.parameters);
+      if (!matched.length) return "";
+      return `
+        <details open style="border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-hover); overflow: hidden;">
+          <summary style="cursor: pointer; padding: 7px 10px; font-size: 11.5px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; gap: 8px; background: rgba(15, 23, 42, 0.3);">
+            <span>${sectionIcon} <span style="font-family: var(--font-mono); color: #38bdf8;">${escapeHtml(item.tag || item.key || "-")}</span> — ${escapeHtml(item.name || "-")}</span>
+            <span class="badge badge-neutral" style="font-size: 9.5px;">${matched.length} Parametre</span>
+          </summary>
+          <div style="overflow-x: auto;">
+            <table class="kasp-table" style="font-size: 10.5px; width: 100%; margin: 0;">
+              <thead>
+                <tr>
+                  <th scope="col" style="width: 24%;">Parametre</th>
+                  <th scope="col" style="width: 18%; text-align: right;">Aktif Değer</th>
+                  <th scope="col" style="width: 16%; text-align: center;">Veri Kaynağı</th>
+                  <th scope="col">Nereden Alındı / Dinamik Etkileşim Açıklaması</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${matched.map((p) => `
+                  <tr>
+                    <td style="font-weight: 600;">
+                      ${escapeHtml(p.label || p.param)}
+                      <span style="display: block; font-size: 9px; font-family: var(--font-mono); color: var(--color-text-secondary);">${escapeHtml(p.param || "")}</span>
+                    </td>
+                    <td style="text-align: right; font-family: var(--font-mono); font-weight: 700; color: #f8fafc;">
+                      ${escapeHtml(p.value ?? "-")} ${p.unit ? `<span style="font-weight: 400; color: var(--color-text-secondary);">${escapeHtml(p.unit)}</span>` : ""}
+                    </td>
+                    <td style="text-align: center;">${renderSourceBadge(p.source)}</td>
+                    <td style="font-size: 10px; color: var(--color-text-secondary);">${escapeHtml(p.origin || "-")}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      `;
+    }).filter(Boolean);
+
+    if (!rendered.length) {
+      return `<div style="padding: 10px; font-size: 11px; color: var(--color-text-secondary); text-align: center;">Seçilen filtreye uygun parametre bulunamadı.</div>`;
+    }
+    return `<div style="display: flex; flex-direction: column; gap: 8px;">${rendered.join("")}</div>`;
+  }
+
+  const filterButtons = [
+    ["all", `${t("station_src_all", lang)} (${counts.all})`],
+    ["design_tab", `${t("station_src_design", lang)} (${counts.design_tab})`],
+    ["station_3d_calc", `${t("station_src_calc", lang)} (${counts.station_3d_calc})`],
+    ["user_input", `${t("station_src_user", lang)} (${counts.user_input})`],
+    ["fixed_default", `${t("station_src_default", lang)} (${counts.fixed_default})`],
+  ];
+
+  return `
+    <div class="card" style="padding: 12px;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+        <div>
+          <div style="font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+            ${icon("layers", 15, "text-primary")}
+            <span>${escapeHtml(t("station_provenance_title", lang))}</span>
+          </div>
+          <div style="font-size: 10.5px; color: var(--color-text-secondary); margin-top: 2px;">
+            ${escapeHtml(t("station_provenance_subtitle", lang))}
+          </div>
+        </div>
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+          <input
+            type="search"
+            id="input-prov-search"
+            value="${escapeHtml(searchQuery)}"
+            placeholder="Ekipman, hat veya parametre ara..."
+            aria-label="Değer kaynağı matrisinde ara"
+            style="font-size: 11px; padding: 4px 8px; width: 210px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-text);"
+          />
+          ${filterButtons.map(([key, lbl]) => `
+            <button
+              type="button"
+              data-prov-filter="${key}"
+              class="btn btn-sm ${filterSource === key ? "btn-primary" : "btn-secondary"}"
+              style="font-size: 10.5px; padding: 3px 8px;"
+            >${escapeHtml(lbl)}</button>
+          `).join("")}
+        </div>
+      </div>
+
+      <!-- Dynamic Coupling Verification Banner -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-bottom: 12px;">
+        <div style="padding: 7px 10px; border-radius: 6px; background: rgba(16, 185, 129, 0.10); border: 1px solid rgba(16, 185, 129, 0.35); font-size: 10.5px;">
+          <div style="font-weight: 700; color: #34d399;">✓ Kompresör Çıkış = Gas Cooler Giriş</div>
+          <div style="color: var(--color-text-secondary); margin-top: 2px;">N05 Basma &amp; E-101 Giriş Sıcaklığı birebir kenetli (${couplingChecks.compressor_outlet_equals_cooler_inlet ? "Doğrulandı" : "Kontrol Et"})</div>
+        </div>
+        <div style="padding: 7px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.10); border: 1px solid rgba(56, 189, 248, 0.35); font-size: 10.5px;">
+          <div style="font-weight: 700; color: #38bdf8;">✓ 4 Ana/Ünite Header Ortak Çap Kuralı</div>
+          <div style="color: var(--color-text-secondary); margin-top: 2px;">Station/Unit Suction &amp; Discharge en büyük header çapına eşit (${couplingChecks.headers_equalized_to_max_non_equipment_header ? "Doğrulandı" : "Kontrol Et"})</div>
+        </div>
+        <div style="padding: 7px 10px; border-radius: 6px; background: rgba(245, 158, 11, 0.10); border: 1px solid rgba(245, 158, 11, 0.35); font-size: 10.5px;">
+          <div style="font-weight: 700; color: #fbbf24;">✓ ESD &amp; PSV Atmosfer Şartları</div>
+          <div style="color: var(--color-text-secondary); margin-top: 2px;">P_atm &amp; T_atm Tasarım Sekmesinden dinamik alınır (${couplingChecks.esd_and_psv_coupled_to_design_ambient ? "Doğrulandı" : "Kontrol Et"})</div>
+        </div>
+        <div style="padding: 7px 10px; border-radius: 6px; background: rgba(168, 85, 247, 0.10); border: 1px solid rgba(168, 85, 247, 0.35); font-size: 10.5px;">
+          <div style="font-weight: 700; color: #c084fc;">✓ ESD Basınç &amp; Hacim Eşleşmesi</div>
+          <div style="color: var(--color-text-secondary); margin-top: 2px;">YB = P_out, DB = P_in + kullanıcı boşaltma hacimleri (${couplingChecks.esd_hp_uses_compressor_p_out_and_lp_uses_p_in ? "Doğrulandı" : "Kontrol Et"})</div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
+        <div>
+          <div style="font-size: 12px; font-weight: 700; color: var(--color-primary); margin-bottom: 6px;">⚙️ A. Proses Ekipmanları Değer Kaynakları (${equipmentList.length} Ekipman Grubu)</div>
+          ${renderSectionCards(equipmentList, "⚙️")}
+        </div>
+        <div>
+          <div style="font-size: 12px; font-weight: 700; color: #facc15; margin-bottom: 6px;">🔩 B. İstasyon Header &amp; Ekipman Borulaması Değer Kaynakları (${pipingList.length} Boru Hattı)</div>
+          ${renderSectionCards(pipingList, "🔩")}
         </div>
       </div>
     </div>

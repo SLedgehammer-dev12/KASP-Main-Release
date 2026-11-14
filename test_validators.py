@@ -54,13 +54,13 @@ class TestValidators:
         """Bos girdi icin hata."""
         is_valid, msg = validate_pressure("", {"unit": "bar(a)"})
         assert is_valid is False
-        assert "zorunlu" in msg
+        assert "zorunlu" in msg.lower() or "required" in msg.lower()
 
     def test_validate_pressure_nonnumeric(self):
         """Sayisal olmayan girdi icin hata."""
         is_valid, msg = validate_pressure("abc", {"unit": "bar(a)"})
         assert is_valid is False
-        assert "format" in msg
+        assert "format" in msg.lower() or "invalid" in msg.lower()
 
     # --- validate_temperature ---
     def test_validate_temperature_valid_celsius(self):
@@ -84,7 +84,7 @@ class TestValidators:
         is_valid, msg = validate_temperature("0", {"unit": "K"})
         # Implementation: k_val < 100 icin uyarı, < 0 icin hata
         assert is_valid is True  # 0 K < 100 ama >= 0, uyarı ile gecerli
-        assert "düşük" in msg
+        assert "düşük" in msg.lower() or "low" in msg.lower()
 
     # --- validate_flow ---
     def test_validate_flow_valid(self):

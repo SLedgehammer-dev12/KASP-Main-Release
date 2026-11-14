@@ -193,7 +193,7 @@ class PipeSizingRequest(BaseModel):
     pressure_bar: float
     temp_c: float = 20.0
     gas_mw: float = 18.2
-    max_velocity_ms: float = 16.0
+    max_velocity_ms: float = 20.0
     design_pressure_bar: Optional[float] = None
     pipe_material: str = "API 5L X70"
     design_factor_F: float = 0.50

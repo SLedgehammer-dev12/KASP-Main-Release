@@ -106,7 +106,13 @@ def test_equipment_piping_connects_to_main_headers_with_explicit_boundaries():
         cooler_bays_count=6,
     )
     lines = res["lines"]
-    assert len(lines) == 15
+    assert len(lines) == 21
+    assert "cyclone_outlet_branch" in lines
+    assert "filter_outlet_branch" in lines
+    assert "unit_discharge_header" in lines
+    assert "cooler_bay_inlet_header" in lines
+    assert "cooler_bay_outlet_header" in lines
+    assert "cooler_bay_outlet_risers" in lines
 
     for key, line in lines.items():
         assert line.get("hierarchy_level"), f"{key} missing hierarchy_level"
@@ -123,12 +129,21 @@ def test_equipment_piping_connects_to_main_headers_with_explicit_boundaries():
     assert "PIG-L" in lines["mainline_outlet"]["from_boundary"]
 
     # Suction-side equipment connects to Station Suction Header
-    for eq_key in ("cyclone_branch", "filter_branch", "comp_suction_branch"):
+    for eq_key in ("cyclone_branch", "cyclone_outlet_branch", "filter_branch", "filter_outlet_branch", "comp_suction_branch"):
         assert lines[eq_key]["parent_header"] == "station_suction_header"
         assert lines[eq_key]["hierarchy_level"] == "equipment_branch"
 
     # Discharge-side equipment connects to Station Discharge Header
-    for eq_key in ("comp_discharge_branch", "cooler_inlet", "cooler_bay_risers", "cooler_bypass", "cooler_outlet"):
+    for eq_key in (
+        "comp_discharge_branch",
+        "cooler_inlet",
+        "cooler_bay_risers",
+        "cooler_bay_inlet_header",
+        "cooler_bay_outlet_header",
+        "cooler_bay_outlet_risers",
+        "cooler_bypass",
+        "cooler_outlet",
+    ):
         assert lines[eq_key]["parent_header"] == "station_discharge_header"
         assert lines[eq_key]["hierarchy_level"] in ("equipment_header", "equipment_branch")
 

@@ -116,14 +116,26 @@ def validate_flow(value: Any, unit: str = "kg/s") -> Tuple[bool, str, str]:
         return False, tr("Geçersiz sayı formatı"), "error"
 
 
-def validate_pressure_ratio(p_in: float, p_in_unit: str, p_out: float, p_out_unit: str, num_stages: int = 1) -> Tuple[bool, float, str, str]:
+def validate_pressure_ratio(
+    p_in: float,
+    p_in_unit: str,
+    p_out: float,
+    p_out_unit: str,
+    num_stages: int = 1,
+    ambient_pressure_pa: Optional[float] = None,
+    altitude_m: Optional[float] = None,
+) -> Tuple[bool, float, str, str]:
     """
     Calculate and validate pressure ratio (PR = P_out / P_in in absolute pressure).
     Returns: (is_valid, pr_value, message, severity)
     """
     try:
-        p_in_bar = UnitSystem.convert_pressure(float(p_in), p_in_unit, "bar(a)")
-        p_out_bar = UnitSystem.convert_pressure(float(p_out), p_out_unit, "bar(a)")
+        p_in_bar = UnitSystem.convert_pressure(
+            float(p_in), p_in_unit, "bar(a)", ambient_pressure_pa=ambient_pressure_pa, altitude_m=altitude_m
+        )
+        p_out_bar = UnitSystem.convert_pressure(
+            float(p_out), p_out_unit, "bar(a)", ambient_pressure_pa=ambient_pressure_pa, altitude_m=altitude_m
+        )
 
         if p_in_bar <= 0 or p_out_bar <= 0:
             return False, 0.0, tr("Basınç değerleri pozitif olmalıdır"), "error"
@@ -197,7 +209,20 @@ def validate_design_inputs(inputs: Dict[str, Any]) -> Dict[str, Any]:
     # PR check if p1 and p2 are valid
     pr = 0.0
     if ok_p1 and ok_p2:
-        ok_pr, pr_val, msg_pr, sev_pr = validate_pressure_ratio(p_in, p_in_u, p_out, p_out_u, num_stages)
+        p_atm_kpa = inputs.get("ambient_pressure")
+        try:
+            p_atm_pa = float(p_atm_kpa) * 1000.0 if p_atm_kpa is not None else None
+        except (ValueError, TypeError):
+            p_atm_pa = None
+        alt_m = inputs.get("altitude")
+        try:
+            alt_m_val = float(alt_m) if alt_m is not None else None
+        except (ValueError, TypeError):
+            alt_m_val = None
+
+        ok_pr, pr_val, msg_pr, sev_pr = validate_pressure_ratio(
+            p_in, p_in_u, p_out, p_out_u, num_stages, ambient_pressure_pa=p_atm_pa, altitude_m=alt_m_val
+        )
         pr = pr_val
         if not ok_pr:
             errors.append({"field": "p_out", "message": msg_pr})

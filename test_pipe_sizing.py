@@ -75,7 +75,13 @@ def test_station_network_15_lines_sizing():
     )
     assert res["success"] is True
     lines = res["lines"]
-    assert len(lines) == 15
+    assert len(lines) == 21
+    assert "cyclone_outlet_branch" in lines
+    assert "filter_outlet_branch" in lines
+    assert "unit_discharge_header" in lines
+    assert "cooler_bay_inlet_header" in lines
+    assert "cooler_bay_outlet_header" in lines
+    assert "cooler_bay_outlet_risers" in lines
     for key, line in lines.items():
         assert "tag" in line
         assert line["od_mm"] > 0
@@ -137,6 +143,9 @@ def test_compressor_and_cooler_lines_are_sized_by_flow():
     assert lines["comp_discharge_branch"]["flow_kgs"] == pytest.approx(30.0)
     assert lines["anti_surge_loop"]["flow_kgs"] == pytest.approx(30.0 * 0.68)
     assert lines["cooler_bay_risers"]["flow_kgs"] == pytest.approx(120.0 / 6)
+    assert lines["cooler_bay_inlet_header"]["flow_kgs"] == pytest.approx(120.0 / 6)
+    assert lines["cooler_bay_outlet_header"]["flow_kgs"] == pytest.approx(120.0 / 6)
+    assert lines["cooler_bay_outlet_risers"]["flow_kgs"] == pytest.approx(120.0 / 6)
     assert lines["cooler_bypass"]["flow_kgs"] == pytest.approx(120.0 * 0.35)
     assert lines["cooler_inlet"]["flow_kgs"] == pytest.approx(120.0)
     assert lines["cooler_outlet"]["flow_kgs"] == pytest.approx(120.0)

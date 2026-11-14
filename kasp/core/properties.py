@@ -378,22 +378,24 @@ class ThermodynamicSolver:
         """Z-faktör ve yoğunluğa dayalı ortak faz sınıflandırması.
 
         Tüm EOS motorları için tutarlı faz çıktısı üretir.
-        - Z > 0.7 veya ρ < 100 kg/m³ → 'gas'
-        - 0.3 < Z ≤ 0.7 → 'supercritical'
-        - Z ≤ 0.3 → 'liquid'
-        - raw_phase 'twophase' (CoolProp) → 'two-phase'
+        - Fallback işaretçileri ('ideal_fallback', 'z_factor_fallback', 'ideal') korunur.
+        - İki faz ('twophase' / 'two-phase') korunur.
+        - Gaz rejimi (ρ < 100 kg/m³ veya Z > 0.7) -> 'gas'
+          (CoolProp HEOS çok-bileşenli karışımlarda faz dışı varsayılan 0='liquid' dönebildiğinden
+          gaz fiziği EOS ham faz etiketini ezer.)
+        - Yüksek yoğunluklu bölgede raw_phase == 'supercritical' veya 0.3 < Z ≤ 0.7 -> 'supercritical'
+        - Aksi halde (yoğun ve düşük Z) -> 'liquid'
         """
-        if raw_phase in ("ideal_fallback", "z_factor_fallback", "ideal", "gas", "liquid", "supercritical", "two-phase"):
+        if raw_phase in ("ideal_fallback", "z_factor_fallback", "ideal"):
             return raw_phase
-        if raw_phase == "twophase":
+        if raw_phase in ("twophase", "two-phase"):
             return "two-phase"
 
         if density < 100.0 or Z > 0.7:
             return "gas"
-        elif Z > 0.3:
+        if raw_phase == "supercritical" or Z > 0.3:
             return "supercritical"
-        else:
-            return "liquid"
+        return "liquid"
 
     @staticmethod
     def _build_state(

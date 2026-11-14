@@ -87,11 +87,20 @@ class PipeSizingService:
         gas_comp: Optional[Dict[str, Any]] = None,
         eos_model: str = "pr",
         thermo_solver: Optional[ThermodynamicSolver] = None,
+        max_velocity_ms: float = 20.0,
+        cyclone_inlet_nominal: Optional[str] = None,
+        cyclone_outlet_nominal: Optional[str] = None,
+        filter_inlet_nominal: Optional[str] = None,
+        filter_outlet_nominal: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Calculates exact ASME B36.10M commercial pipe sizes, schedules, wall thicknesses,
-        actual flow velocities, and API RP 14E erosion limits for all 15 key process lines in the station.
+        actual flow velocities, and API RP 14E erosion limits for all station process lines.
         """
+        try:
+            v_limit_ms = max(0.5, float(max_velocity_ms if max_velocity_ms is not None else 20.0))
+        except (TypeError, ValueError):
+            v_limit_ms = 20.0
         try:
             mass_flow_kgs = max(0.5, float(mass_flow_kgs))
         except (TypeError, ValueError):
@@ -158,12 +167,26 @@ class PipeSizingService:
             rho_c, mu_c, z_c = state_cache[key]
             return {"density_kgm3": rho_c, "viscosity_pa_s": mu_c, "z_factor": z_c}
 
+        def _norm_nominal(val: Optional[str]) -> Optional[str]:
+            if val is None:
+                return None
+            cleaned = str(val).replace('"', "").strip()
+            if not cleaned or cleaned.lower() in {"auto", "otomatik", "none", "null"}:
+                return None
+            return cleaned
+
+        cyc_in_nom = _norm_nominal(cyclone_inlet_nominal)
+        cyc_out_nom = _norm_nominal(cyclone_outlet_nominal)
+        flt_in_nom = _norm_nominal(filter_inlet_nominal)
+        flt_out_nom = _norm_nominal(filter_outlet_nominal)
+
         def _size_line(
             flow_kgs: float,
             p_bar: float,
             t_c: float,
             max_velocity_ms: float,
             preferred_nominal: Optional[str] = None,
+            enforce_preferred_nominal: bool = False,
         ) -> Dict[str, Any]:
             props = _eos_props_at(p_bar, t_c)
             return size_single_pipe(
@@ -175,6 +198,7 @@ class PipeSizingService:
                 material=pipe_material,
                 design_factor_F=design_factor_F,
                 preferred_nominal=preferred_nominal,
+                enforce_preferred_nominal=enforce_preferred_nominal,
                 density_kgm3=props["density_kgm3"],
                 viscosity_pa_s=props["viscosity_pa_s"],
                 z_factor=props["z_factor"],
@@ -188,8 +212,9 @@ class PipeSizingService:
         surge_flow = flow_per_comp * 0.68  # API 617 surge limit flow
         bypass_flow = mass_flow_kgs * 0.35  # TCV bypass line
 
-        # Sizing 15 key process lines with explicit hierarchy & battery-limit boundaries
+        # Sizing 16 key process lines with explicit hierarchy & battery-limit boundaries
         lines: Dict[str, Dict[str, Any]] = {}
+        p_cooled = max(1.0, round(p_out_bar - dp_clr, 2))
 
         # 1. Mainline Transmission Inlet (Before station inlet pig trap)
         lines["mainline_inlet"] = {
@@ -205,18 +230,18 @@ class PipeSizingService:
             "flow_kgs": mass_flow_kgs,
             "pressure_bar": p_in_bar,
             "temp_c": t_in_c,
-            "max_vel_target": 16.0,
+            "max_vel_target": v_limit_ms,
             "note": "PIG-R aksında 22.5° çift hot bend (S-offset) ile 90° dirsek olmadan toprak altı kottan istasyon girişine bağlanır.",
-            **_size_line(mass_flow_kgs, p_in_bar, t_in_c, 16.0),
+            **_size_line(mass_flow_kgs, p_in_bar, t_in_c, v_limit_ms),
         }
 
-        # 2. Station Suction Header — Section 1 (PIG-R Outlet -> Filtration Yard Main Suction Header)
+        # 2. Station Suction Header (PIG-R Outlet -> Filtration Yard Main Suction Header)
         lines["suction_header"] = {
             "tag": "L-102",
-            "name": "Station Suction Header — Bölüm 1 (PIG-R ➔ Filtreleme Sahası)",
+            "name": "Station Suction Header (PIG-R ➔ Filtreleme Sahası)",
             "service": "Ana İstasyon Emiş Omurgası (Ham Gaz & Filtreleme Dağıtımı)",
             "hierarchy_level": "main_header",
-            "hierarchy_label": "Ana İstasyon Emiş Header'ı",
+            "hierarchy_label": "Station Suction Header",
             "parent_header": "station_suction_header",
             "from_boundary": "Giriş Pig Alıcı Kovanı (PIG-R) Çıkış İzolasyon Vanası (MOV/ESDV)",
             "to_boundary": "MFS & CFS Filtreleme Sahası Ana Emiş Bağlantı Kollektörü",
@@ -224,55 +249,123 @@ class PipeSizingService:
             "flow_kgs": mass_flow_kgs,
             "pressure_bar": p_in_bar,
             "temp_c": t_in_c,
-            "max_vel_target": 15.0,
-            **_size_line(mass_flow_kgs, p_in_bar, t_in_c, 15.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(mass_flow_kgs, p_in_bar, t_in_c, v_limit_ms),
         }
 
-        # 3. Cyclone Separator Branches (MFS own equipment piping connected to Station Suction Header)
+        # 3a. Cyclone Separator Inlet Branches (MFS inlet manifold & unit nozzles at p_in)
         lines["cyclone_branch"] = {
             "tag": "L-103",
-            "name": "Siklon Seperatör Borulaması (MFS Branşmanı)",
-            "service": "Sıvı/Katı Ayrıştırma Ekipman Bağlantısı",
+            "name": "Siklon Seperatör Giriş Borulaması (MFS Giriş Branşmanı)",
+            "service": "Sıvı/Katı Ayrıştırma Giriş Bağlantısı",
             "hierarchy_level": "equipment_branch",
-            "hierarchy_label": "Ekipman Bağlantı Borulaması (MFS)",
+            "hierarchy_label": "Ekipman Giriş Borulaması (MFS)",
             "parent_header": "station_suction_header",
             "from_boundary": "Station Suction Header MFS Giriş Branşman Bağlantısı",
-            "to_boundary": "MFS Siklon Seperatörleri (V-101..N) Giriş/Çıkış Nozulları ➔ Suction Header Dönüşü",
-            "boundary_summary": "Station Suction Header ➔ MFS V-101..N ➔ Suction Header",
+            "to_boundary": "MFS Siklon Seperatörleri (V-101..N) Giriş Nozulları",
+            "boundary_summary": "Station Suction Header ➔ MFS V-101..N Giriş",
             "flow_kgs": round(flow_per_cyclone, 2),
             "pressure_bar": p_in_bar,
             "temp_c": t_in_c,
-            "max_vel_target": 12.0,
-            **_size_line(flow_per_cyclone, p_in_bar, t_in_c, 12.0),
+            "max_vel_target": v_limit_ms,
+            "diameter_source": "user_input" if cyc_in_nom else "station_3d_calc",
+            **_size_line(
+                flow_per_cyclone,
+                p_in_bar,
+                t_in_c,
+                v_limit_ms,
+                preferred_nominal=cyc_in_nom,
+                enforce_preferred_nominal=bool(cyc_in_nom),
+            ),
         }
 
-        # 4. Cartridge Filter Branches (CFS own equipment piping connected to Station Suction Header)
+        # 3b. Cyclone Separator Outlet Branches (MFS top outlets -> MFS collector / CFS inlet tie at p_cfs)
         p_cfs = max(1.0, round(p_in_bar - dp_cyc, 2))
+        lines["cyclone_outlet_branch"] = {
+            "tag": "L-103A",
+            "name": "Siklon Seperatör Çıkış Borulaması (MFS Çıkış / CFS Ara Bağlantı)",
+            "service": "Sıvı/Katı Ayrıştırma Çıkış & CFS Ara Bağlantısı",
+            "hierarchy_level": "equipment_branch",
+            "hierarchy_label": "Ekipman Çıkış Borulaması (MFS)",
+            "parent_header": "station_suction_header",
+            "from_boundary": "MFS Siklon Seperatörleri (V-101..N) Üst Çıkış Nozulları",
+            "to_boundary": "MFS Ortak Çıkış Kollektörü / CFS Giriş Manifoldu",
+            "boundary_summary": "MFS V-101..N Çıkış ➔ CFS Giriş Manifoldu",
+            "flow_kgs": round(flow_per_cyclone, 2),
+            "pressure_bar": p_cfs,
+            "temp_c": t_in_c,
+            "max_vel_target": v_limit_ms,
+            "diameter_source": "user_input" if cyc_out_nom else "station_3d_calc",
+            **_size_line(
+                flow_per_cyclone,
+                p_cfs,
+                t_in_c,
+                v_limit_ms,
+                preferred_nominal=cyc_out_nom,
+                enforce_preferred_nominal=bool(cyc_out_nom),
+            ),
+        }
+
+        # 4a. Cartridge Filter Inlet Branches (CFS inlet distributor & U-bends at p_cfs)
         lines["filter_branch"] = {
             "tag": "L-104",
-            "name": "Kartuş Filtre Seperatör Borulaması (CFS Branşmanı)",
-            "service": "Hassas Filtrasyon (0.3 µm) Ekipman Bağlantısı",
+            "name": "Kartuş Filtre Giriş Borulaması (CFS Giriş Branşmanı)",
+            "service": "Hassas Filtrasyon (0.3 µm) Giriş Bağlantısı",
             "hierarchy_level": "equipment_branch",
-            "hierarchy_label": "Ekipman Bağlantı Borulaması (CFS)",
+            "hierarchy_label": "Ekipman Giriş Borulaması (CFS)",
             "parent_header": "station_suction_header",
-            "from_boundary": "Station Suction Header CFS Giriş Branşman Bağlantısı",
-            "to_boundary": "CFS Kartuş Filtreleri (F-101..N) Giriş/Çıkış Nozulları ➔ Suction Header Dönüşü",
-            "boundary_summary": "Station Suction Header ➔ CFS F-101..N ➔ Suction Header",
+            "from_boundary": "MFS Çıkış Kollektörü / CFS Giriş Dağıtım Manifoldu",
+            "to_boundary": "CFS Kartuş Filtreleri (F-101..N) Giriş Nozulları",
+            "boundary_summary": "MFS Çıkış Kollektörü ➔ CFS F-101..N Giriş",
             "flow_kgs": round(flow_per_filter, 2),
             "pressure_bar": p_cfs,
             "temp_c": t_in_c,
-            "max_vel_target": 12.0,
-            **_size_line(flow_per_filter, p_cfs, t_in_c, 12.0),
+            "max_vel_target": v_limit_ms,
+            "diameter_source": "user_input" if flt_in_nom else "station_3d_calc",
+            **_size_line(
+                flow_per_filter,
+                p_cfs,
+                t_in_c,
+                v_limit_ms,
+                preferred_nominal=flt_in_nom,
+                enforce_preferred_nominal=bool(flt_in_nom),
+            ),
         }
 
-        # 5. Station Suction Header — Section 2 (Filtered Gas -> TC Units Suction Connection Header End)
+        # 4b. Cartridge Filter Outlet Branches (CFS outlet nozzles & collector -> Station Suction Header at p_comp_in)
         p_comp_in = max(1.0, round(p_cfs - dp_flt, 2))
+        lines["filter_outlet_branch"] = {
+            "tag": "L-104A",
+            "name": "Kartuş Filtre Çıkış Borulaması (CFS Çıkış Branşmanı)",
+            "service": "Hassas Filtrasyon Çıkış & Ana Emiş Header Dönüşü",
+            "hierarchy_level": "equipment_branch",
+            "hierarchy_label": "Ekipman Çıkış Borulaması (CFS)",
+            "parent_header": "station_suction_header",
+            "from_boundary": "CFS Kartuş Filtreleri (F-101..N) Çıkış Nozulları",
+            "to_boundary": "Station Suction Header (Filtrelenmiş Ana Omurga Tie-In)",
+            "boundary_summary": "CFS F-101..N Çıkış ➔ Station Suction Header",
+            "flow_kgs": round(flow_per_filter, 2),
+            "pressure_bar": p_comp_in,
+            "temp_c": t_in_c,
+            "max_vel_target": v_limit_ms,
+            "diameter_source": "user_input" if flt_out_nom else "station_3d_calc",
+            **_size_line(
+                flow_per_filter,
+                p_comp_in,
+                t_in_c,
+                v_limit_ms,
+                preferred_nominal=flt_out_nom,
+                enforce_preferred_nominal=bool(flt_out_nom),
+            ),
+        }
+
+        # 5. Unit Suction Header (Filtered Gas -> TC Units Suction Connection Header End)
         lines["comp_suction_header"] = {
             "tag": "L-105",
-            "name": "Station Suction Header — Bölüm 2 (TC Üniteleri Emiş Bağlantı Header'ı)",
-            "service": "Ana İstasyon Emiş Omurgası (Kompresör Besleme Başlığı)",
+            "name": "Unit Suction Header (TC Üniteleri Emiş Bağlantı Header'ı)",
+            "service": "Ünite Emiş Ana Kollektörü (Filtrelenmiş Gaz Besleme Başlığı)",
             "hierarchy_level": "main_header",
-            "hierarchy_label": "Ana İstasyon Emiş Header'ı",
+            "hierarchy_label": "Unit Suction Header",
             "parent_header": "station_suction_header",
             "from_boundary": "CFS Kartuş Filtre Dönüş Birleşimi (Ana Emiş Omurgası)",
             "to_boundary": "Turbo-Kompresör (TC) Üniteleri Emiş Bağlantı Header'ı Sonu (Kör Flanş)",
@@ -280,8 +373,8 @@ class PipeSizingService:
             "flow_kgs": mass_flow_kgs,
             "pressure_bar": p_comp_in,
             "temp_c": t_in_c,
-            "max_vel_target": 15.0,
-            **_size_line(mass_flow_kgs, p_comp_in, t_in_c, 15.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(mass_flow_kgs, p_comp_in, t_in_c, v_limit_ms),
         }
 
         # 6. Individual Turbo-Compressor Suction Feed (Note 32: Branch -> 16" nozzle)
@@ -290,16 +383,16 @@ class PipeSizingService:
             "name": "TC Ünite Emiş Branşmanı (Kompresör Emiş Girişi)",
             "service": "Ünite Emiş Bağlantı Borulaması",
             "hierarchy_level": "equipment_branch",
-            "hierarchy_label": "Ünite Bağlantı Borulaması (TC Emiş)",
+            "hierarchy_label": "Ekipman Bağlantı Borulaması (TC Emiş)",
             "parent_header": "station_suction_header",
-            "from_boundary": "Station Suction Header TC Ünite Emiş Tee Bağlantısı",
+            "from_boundary": "Unit Suction Header TC Ünite Emiş Tee Bağlantısı",
             "to_boundary": "Ünite Emiş MOV Vanası + Redüksiyon + TC Kompresör Emiş Nozulu (C-101..N)",
-            "boundary_summary": "Station Suction Header Tee ➔ TC Emiş Nozulu (C-101..N)",
+            "boundary_summary": "Unit Suction Header Tee ➔ TC Emiş Nozulu (C-101..N)",
             "flow_kgs": round(flow_per_comp, 2),
             "pressure_bar": p_comp_in,
             "temp_c": t_in_c,
-            "max_vel_target": 16.0,
-            **_size_line(flow_per_comp, p_comp_in, t_in_c, 16.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(flow_per_comp, p_comp_in, t_in_c, v_limit_ms),
         }
 
         # 7. Individual Turbo-Compressor Discharge Branch (Note 32: 16" nozzle -> Branch)
@@ -308,16 +401,16 @@ class PipeSizingService:
             "name": "TC Ünite Basma Branşmanı (Kompresör Basma Çıkışı)",
             "service": "Ünite Basma Bağlantı Borulaması",
             "hierarchy_level": "equipment_branch",
-            "hierarchy_label": "Ünite Bağlantı Borulaması (TC Basma)",
+            "hierarchy_label": "Ekipman Bağlantı Borulaması (TC Basma)",
             "parent_header": "station_discharge_header",
             "from_boundary": "TC Kompresör Basma Nozulu (C-101..N) + Ekspansiyon + Çekvalf/MOV",
-            "to_boundary": "Station Discharge Header TC Ünite Basma Tee Bağlantısı",
-            "boundary_summary": "TC Basma Nozulu (C-101..N) ➔ Station Discharge Header Tee",
+            "to_boundary": "Unit Discharge Header TC Ünite Basma Tee Bağlantısı",
+            "boundary_summary": "TC Basma Nozulu (C-101..N) ➔ Unit Discharge Header Tee",
             "flow_kgs": round(flow_per_comp, 2),
             "pressure_bar": p_out_bar,
             "temp_c": t_discharge_c,
-            "max_vel_target": 18.0,
-            **_size_line(flow_per_comp, p_out_bar, t_discharge_c, 18.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(flow_per_comp, p_out_bar, t_discharge_c, v_limit_ms),
         }
 
         # 8. Dedicated Hot Gas Anti-Surge Recycle Loop (ASV)
@@ -334,26 +427,44 @@ class PipeSizingService:
             "flow_kgs": round(surge_flow, 2),
             "pressure_bar": p_out_bar,
             "temp_c": t_discharge_c,
-            "max_vel_target": 22.0,
-            **_size_line(surge_flow, p_out_bar, t_discharge_c, 22.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(surge_flow, p_out_bar, t_discharge_c, v_limit_ms),
         }
 
-        # 9. Station Discharge Header (TC Units Discharge Connection Header -> Outlet Pig Launcher PIG-L)
-        lines["discharge_header"] = {
-            "tag": "L-109",
-            "name": "Station Discharge Header (TC Basma Header'ı ➔ Çıkış Pig Kovanı PIG-L)",
-            "service": "Ana İstasyon Basma Omurgası (Sıcak Toplama & Soğuk Sevk)",
+        # 9A. Unit Discharge Header (TC Units Hot Gas Discharge Collector -> Gas Cooler Inlet Tie-In)
+        lines["unit_discharge_header"] = {
+            "tag": "L-109A",
+            "name": "Unit Discharge Header (TC Üniteleri Sıcak Basma Header'ı)",
+            "service": "Ünite Basma Ana Kollektörü (Sıcak Gaz Toplama ➔ Gaz Soğutucu Beslemesi)",
             "hierarchy_level": "main_header",
-            "hierarchy_label": "Ana İstasyon Basma Header'ı",
+            "hierarchy_label": "Unit Discharge Header",
             "parent_header": "station_discharge_header",
-            "from_boundary": "Turbo-Kompresör (TC) Ünite Çıkış Hatlarının Bağlandığı Basma Header'ı Başlangıcı",
-            "to_boundary": "Çıkış Pig Atıcı Kovanı (PIG-L) Giriş İzolasyon Vanası (MOV/ESDV)",
-            "boundary_summary": "TC Basma Bağlantı Header'ı ➔ PIG-L Giriş Flanşı",
+            "from_boundary": "Turbo-Kompresör (TC) Ünite Basma Branşmanlarının Bağlandığı Sıcak Header Başlangıcı",
+            "to_boundary": "Gaz Hava Soğutucu (E-101) Sıcak Giriş Manifoldu Tie-In Bağlantısı",
+            "boundary_summary": "TC Basma Branşmanları ➔ Gaz Soğutucu Sıcak Giriş Tie-In",
             "flow_kgs": mass_flow_kgs,
             "pressure_bar": p_out_bar,
             "temp_c": t_discharge_c,
-            "max_vel_target": 18.0,
-            **_size_line(mass_flow_kgs, p_out_bar, t_discharge_c, 18.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(mass_flow_kgs, p_out_bar, t_discharge_c, v_limit_ms),
+        }
+
+        # 9B. Station Discharge Header (Cooled Gas Return -> PSV/ESD/USM -> Outlet Pig Launcher PIG-L)
+        lines["discharge_header"] = {
+            "tag": "L-109",
+            "name": "Station Discharge Header (Soğutucu Dönüşü ➔ Çıkış Pig Kovanı PIG-L)",
+            "service": "Ana İstasyon Basma Omurgası (Soğutulmuş Gaz Sevk & Emniyet Manifoldu)",
+            "hierarchy_level": "main_header",
+            "hierarchy_label": "Station Discharge Header",
+            "parent_header": "station_discharge_header",
+            "from_boundary": "TC Basma Header'ı / Gaz Soğutucu (E-101) Soğuk Dönüş Tie-In Noktası",
+            "to_boundary": "Çıkış Pig Atıcı Kovanı (PIG-L) Giriş İzolasyon Vanası (MOV/ESDV)",
+            "boundary_summary": "Gaz Soğutucu Soğuk Dönüşü ➔ PSV/ESD/USM ➔ PIG-L Giriş Flanşı",
+            "flow_kgs": mass_flow_kgs,
+            "pressure_bar": p_cooled,
+            "temp_c": t_cooled_c,
+            "max_vel_target": v_limit_ms,
+            **_size_line(mass_flow_kgs, p_cooled, t_cooled_c, v_limit_ms),
         }
 
         # 10. Station-Wide Recycle / Anti-Surge Collector Header (Note 13)
@@ -370,44 +481,95 @@ class PipeSizingService:
             "flow_kgs": mass_flow_kgs,
             "pressure_bar": p_out_bar,
             "temp_c": t_discharge_c,
-            "max_vel_target": 20.0,
-            **_size_line(mass_flow_kgs, p_out_bar, t_discharge_c, 20.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(mass_flow_kgs, p_out_bar, t_discharge_c, v_limit_ms),
         }
 
-        # 11. Gas Cooler Hot Inlet Distribution Manifold (Equipment manifold off Station Discharge Header)
+        # 11. Gas Cooler Hot Inlet Distribution Manifold (Equipment manifold off Unit Discharge Header)
         lines["cooler_inlet"] = {
             "tag": "L-111",
             "name": "Gaz Soğutucu Sıcak Giriş Dağıtım Manifoldu (E-101 Giriş)",
             "service": "Fin-Fan Hava Soğutucu Ekipman Giriş Borulaması",
             "hierarchy_level": "equipment_header",
-            "hierarchy_label": "Ekipman Dağıtım Manifoldu (Soğutucu Giriş)",
+            "hierarchy_label": "Ekipman Bağlantı Borulaması (Soğutucu Giriş)",
             "parent_header": "station_discharge_header",
-            "from_boundary": "Station Discharge Header Sıcak Gaz Soğutucu Bağlantı Noktası",
+            "from_boundary": "Unit Discharge Header Sıcak Gaz Soğutucu Bağlantı Noktası",
             "to_boundary": "Gaz Hava Soğutucu (E-101) Bay Giriş Dağıtım Manifoldu",
-            "boundary_summary": "Station Discharge Header ➔ E-101 Sıcak Giriş Manifoldu",
+            "boundary_summary": "Unit Discharge Header ➔ E-101 Sıcak Giriş Manifoldu",
             "flow_kgs": mass_flow_kgs,
             "pressure_bar": p_out_bar,
             "temp_c": t_discharge_c,
-            "max_vel_target": 18.0,
-            **_size_line(mass_flow_kgs, p_out_bar, t_discharge_c, 18.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(mass_flow_kgs, p_out_bar, t_discharge_c, v_limit_ms),
         }
 
-        # 12. Gas Cooler Vertical Risers (Equipment bay branches)
+        # 12. Gas Cooler Hot Inlet Risers & Dedicated Per-Bay Inlet/Outlet Headers + Outlet Risers (divided by bay count)
         lines["cooler_bay_risers"] = {
             "tag": "L-112",
-            "name": "Gaz Soğutucu Bay Yükseltici Branşmanları (E-101 Risers)",
-            "service": "Fin-Fan Bay Tüp Demeti Besleme/Dönüş Yükselticisi",
+            "name": "Gaz Soğutucu Bay Giriş Yükseltici Branşmanları (E-101 Giriş Riser)",
+            "service": "Fin-Fan Bay Giriş Headerı Besleme Borusu (Debi / Bay Sayısı)",
             "hierarchy_level": "equipment_branch",
-            "hierarchy_label": "Ekipman Bay Branşmanı (Soğutucu Riser)",
+            "hierarchy_label": "Ekipman Bay Branşmanı (Soğutucu Giriş Riser)",
             "parent_header": "station_discharge_header",
             "from_boundary": "Gaz Soğutucu Giriş Dağıtım Manifoldu (L-111)",
-            "to_boundary": "Fin-Fan Tüp Demeti Üst Plenum Nozulları & Çıkış Manifoldu (L-114)",
-            "boundary_summary": "E-101 Giriş Manifoldu ➔ Fin-Fan Tüp Demeti ➔ Çıkış Manifoldu",
+            "to_boundary": "Bay Giriş Headerı (L-112A • E-101)",
+            "boundary_summary": "E-101 Giriş Manifoldu ➔ Bay Giriş Headerı",
             "flow_kgs": round(flow_per_bay, 2),
             "pressure_bar": p_out_bar,
             "temp_c": t_discharge_c,
-            "max_vel_target": 14.0,
-            **_size_line(flow_per_bay, p_out_bar, t_discharge_c, 14.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(flow_per_bay, p_out_bar, t_discharge_c, v_limit_ms),
+        }
+
+        lines["cooler_bay_inlet_header"] = {
+            "tag": "L-112A",
+            "name": "Gaz Soğutucu Bay Giriş Headerı (Her Bay İçin Ayrı Sıcak Header)",
+            "service": "Fin-Fan Bay Tüp Demeti Giriş Kollektörü (Debi / Bay Sayısı)",
+            "hierarchy_level": "equipment_branch",
+            "hierarchy_label": "Ekipman Bay Headerı (Soğutucu Giriş)",
+            "parent_header": "station_discharge_header",
+            "from_boundary": "Bay Giriş Riser Branşmanı (L-112)",
+            "to_boundary": "Bay Fin-Tüp Demeti Giriş Nozulları (E-101)",
+            "boundary_summary": "Bay Giriş Riser ➔ Bay Giriş Headerı ➔ Tüp Demeti",
+            "flow_kgs": round(flow_per_bay, 2),
+            "pressure_bar": p_out_bar,
+            "temp_c": t_discharge_c,
+            "max_vel_target": v_limit_ms,
+            **_size_line(flow_per_bay, p_out_bar, t_discharge_c, v_limit_ms),
+        }
+
+        lines["cooler_bay_outlet_header"] = {
+            "tag": "L-112B",
+            "name": "Gaz Soğutucu Bay Çıkış Headerı (Her Bay İçin Ayrı Soğuk Header)",
+            "service": "Fin-Fan Bay Tüp Demeti Çıkış Kollektörü (Debi / Bay Sayısı)",
+            "hierarchy_level": "equipment_branch",
+            "hierarchy_label": "Ekipman Bay Headerı (Soğutucu Çıkış)",
+            "parent_header": "station_discharge_header",
+            "from_boundary": "Bay Fin-Tüp Demeti Çıkış Nozulları (E-101)",
+            "to_boundary": "Bay Çıkış Riser Branşmanı (L-112C)",
+            "boundary_summary": "Tüp Demeti ➔ Bay Çıkış Headerı ➔ Bay Çıkış Riser",
+            "flow_kgs": round(flow_per_bay, 2),
+            "pressure_bar": p_cooled,
+            "temp_c": t_cooled_c,
+            "max_vel_target": v_limit_ms,
+            **_size_line(flow_per_bay, p_cooled, t_cooled_c, v_limit_ms),
+        }
+
+        lines["cooler_bay_outlet_risers"] = {
+            "tag": "L-112C",
+            "name": "Gaz Soğutucu Bay Çıkış Bağlantı Boruları (E-101 Çıkış Riser)",
+            "service": "Fin-Fan Bay Çıkış Headerı ➔ Soğuk Toplama Manifoldu (Debi / Bay Sayısı)",
+            "hierarchy_level": "equipment_branch",
+            "hierarchy_label": "Ekipman Bay Branşmanı (Soğutucu Çıkış Riser)",
+            "parent_header": "station_discharge_header",
+            "from_boundary": "Bay Çıkış Headerı (L-112B • E-101)",
+            "to_boundary": "Gaz Soğutucu Soğuk Çıkış Toplama Manifoldu (L-114)",
+            "boundary_summary": "Bay Çıkış Headerı ➔ E-101 Soğuk Çıkış Manifoldu",
+            "flow_kgs": round(flow_per_bay, 2),
+            "pressure_bar": p_cooled,
+            "temp_c": t_cooled_c,
+            "max_vel_target": v_limit_ms,
+            **_size_line(flow_per_bay, p_cooled, t_cooled_c, v_limit_ms),
         }
 
         # 13. Gas Cooler By-Pass Line (TCV Note 17)
@@ -424,18 +586,17 @@ class PipeSizingService:
             "flow_kgs": round(bypass_flow, 2),
             "pressure_bar": p_out_bar,
             "temp_c": t_discharge_c,
-            "max_vel_target": 18.0,
-            **_size_line(bypass_flow, p_out_bar, t_discharge_c, 18.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(bypass_flow, p_out_bar, t_discharge_c, v_limit_ms),
         }
 
         # 14. Gas Cooler Cold Outlet Collection Manifold (Returns cooled gas to Station Discharge Header)
-        p_cooled = max(1.0, round(p_out_bar - dp_clr, 2))
         lines["cooler_outlet"] = {
             "tag": "L-114",
             "name": "Gaz Soğutucu Soğuk Çıkış Toplama Manifoldu (E-101 Çıkış)",
             "service": "Fin-Fan Hava Soğutucu Ekipman Çıkış Borulaması",
             "hierarchy_level": "equipment_header",
-            "hierarchy_label": "Ekipman Toplama Manifoldu (Soğutucu Çıkış)",
+            "hierarchy_label": "Ekipman Bağlantı Borulaması (Soğutucu Çıkış)",
             "parent_header": "station_discharge_header",
             "from_boundary": "Gaz Hava Soğutucu (E-101) Çıkış Riser Toplama Manifoldu",
             "to_boundary": "Station Discharge Header Soğutulmuş Gaz Dönüş Bağlantısı (PIG-L Yönü)",
@@ -443,8 +604,8 @@ class PipeSizingService:
             "flow_kgs": mass_flow_kgs,
             "pressure_bar": p_cooled,
             "temp_c": t_cooled_c,
-            "max_vel_target": 16.0,
-            **_size_line(mass_flow_kgs, p_cooled, t_cooled_c, 16.0),
+            "max_vel_target": v_limit_ms,
+            **_size_line(mass_flow_kgs, p_cooled, t_cooled_c, v_limit_ms),
         }
 
         # 15. Mainline Transmission Outlet (After Outlet Pig Launcher PIG-L)
@@ -461,32 +622,59 @@ class PipeSizingService:
             "flow_kgs": mass_flow_kgs,
             "pressure_bar": p_cooled,
             "temp_c": t_cooled_c,
-            "max_vel_target": 16.0,
+            "max_vel_target": v_limit_ms,
             "note": "PIG-L aksında 22.5° çift hot bend (S-offset) ile 90° dirsek olmadan toprak altı kottan ana iletim hattına devam eder.",
-            **_size_line(mass_flow_kgs, p_cooled, t_cooled_c, 16.0),
+            **_size_line(mass_flow_kgs, p_cooled, t_cooled_c, v_limit_ms),
         }
 
-        # Station Suction Header (L-102 + L-105, from PIG-R to TC Suction Header end)
-        # and Station Discharge Header (L-109, from TC Discharge Header start to PIG-L)
-        # form the two main large-bore station spines and must share one commercial
-        # nominal pipe size (NPS). Each section is re-evaluated at that common NPS
-        # under its own operating pressure & temperature so velocity, erosion ratio,
-        # pressure drop, and Barlow wall thickness remain physically exact.
-        header_keys = ("suction_header", "comp_suction_header", "discharge_header")
+        # Preserve each line's standalone velocity-limit sizing BEFORE header equalization
+        for l_data in lines.values():
+            l_data["individual_nominal_size_in"] = l_data.get("nominal_size_in")
+            l_data["individual_nominal_key"] = l_data.get("nominal_key")
+            l_data["individual_velocity_ms"] = l_data.get("actual_velocity_ms")
+
+        # Governing Header Rule:
+        # Excluding equipment connection piping (MFS, CFS, TC unit branches, ASV loop, Gas Cooler manifolds/risers/bypass),
+        # take the largest calculated commercial NPS across all main station & unit headers and apply it to:
+        #   - Station Suction Header (`suction_header`, L-102)
+        #   - Unit Suction Header (`comp_suction_header`, L-105)
+        #   - Unit Discharge Header (`unit_discharge_header`, L-109A)
+        #   - Station Discharge Header (`discharge_header`, L-109)
+        header_keys = (
+            "suction_header",
+            "comp_suction_header",
+            "unit_discharge_header",
+            "discharge_header",
+        )
+        all_non_equip_header_keys = (
+            "suction_header",
+            "comp_suction_header",
+            "unit_discharge_header",
+            "discharge_header",
+            "station_recycle",
+        )
         header_nominals = [
             (key, lines[key].get("nominal_key"))
-            for key in header_keys
+            for key in all_non_equip_header_keys
             if lines.get(key, {}).get("nominal_key")
         ]
+        governing_header_key = None
+        governing_header_nps = None
         if len(header_nominals) >= 2:
             larger_key, larger_nominal = max(
                 header_nominals, key=lambda item: nd_sort_key(item[1])
             )
+            governing_header_key = larger_key
+            governing_header_nps = f'{larger_nominal}"'
             for key in header_keys:
                 current = lines[key]
+                indiv_nps = current.get("individual_nominal_size_in")
+                indiv_key = current.get("individual_nominal_key")
+                indiv_vel = current.get("individual_velocity_ms")
                 if current.get("nominal_key") == larger_nominal:
                     current["diameter_equalized_to"] = f'{larger_nominal}"'
                     current["header_pair"] = "suction_discharge_common_nps"
+                    current["governing_header_key"] = larger_key
                     continue
                 meta = {
                     field: current[field]
@@ -517,9 +705,6 @@ class PipeSizingService:
                         preferred_nominal=larger_nominal,
                     ),
                 }
-                # Guard against a fallback to a smaller pipe: the equality
-                # requirement takes precedence over the preferred-size
-                # velocity guard (using a larger pipe always lowers velocity).
                 if resized.get("nominal_key") != larger_nominal:
                     resized = {
                         **meta,
@@ -531,11 +716,17 @@ class PipeSizingService:
                             preferred_nominal=larger_nominal,
                         ),
                     }
+                resized["max_design_velocity_ms"] = v_limit_ms
+                resized["individual_nominal_size_in"] = indiv_nps
+                resized["individual_nominal_key"] = indiv_key
+                resized["individual_velocity_ms"] = indiv_vel
                 resized["diameter_equalized_to"] = f'{larger_nominal}"'
                 resized["header_pair"] = "suction_discharge_common_nps"
-                resized["equalized_from_nominal_size_in"] = current.get("nominal_size_in")
+                resized["governing_header_key"] = larger_key
+                resized["equalized_from_nominal_size_in"] = indiv_nps
                 lines[key] = resized
-            lines[larger_key]["diameter_equalized_to"] = f'{larger_nominal}"'
+            if larger_key in lines:
+                lines[larger_key]["diameter_equalized_to"] = f'{larger_nominal}"'
 
         # Standard-specific wall thickness recommendation (BOTAŞ / API 5L PSL2)
         standard_map = {
@@ -603,6 +794,12 @@ class PipeSizingService:
                 piping_warnings.append(
                     f"{tag} ({name}): Erozyon hız sınırına yakın çalışma (%{evr} API RP 14E)."
                 )
+            if line.get("preferred_nominal_requested") and line.get("meets_min_velocity_diameter") is False:
+                min_req_nps = line.get("velocity_min_nominal_in") or "-"
+                piping_warnings.append(
+                    f"{tag} ({name}): Kullanıcı seçimi {line.get('nominal_size_in')}, maks. izin verilen hız "
+                    f"({v_max} m/s) için gereken minimum çapın ({min_req_nps}) altındadır (v = {v_act} m/s)."
+                )
             std_rec = line.get("standard_recommendation") or {}
             if std_rec.get("is_sufficient") is False:
                 piping_warnings.append(
@@ -614,8 +811,17 @@ class PipeSizingService:
         avg_velocity = sum(l["actual_velocity_ms"] for l in lines.values()) / len(lines)
 
         suct_hdr = lines["suction_header"]
+        unit_suct_hdr = lines["comp_suction_header"]
+        unit_disch_hdr = lines["unit_discharge_header"]
         disch_hdr = lines["discharge_header"]
         piping_architecture: Dict[str, Any] = {
+            "governing_header_rule": {
+                "rule": "max_of_non_equipment_headers",
+                "governing_line_key": governing_header_key,
+                "governing_nominal_size_in": governing_header_nps,
+                "max_velocity_ms": v_limit_ms,
+                "equalized_headers": list(header_keys),
+            },
             "main_headers": {
                 "station_suction_header": {
                     "key": "station_suction_header",
@@ -623,12 +829,16 @@ class PipeSizingService:
                     "line_keys": ["suction_header", "comp_suction_header"],
                     "tags": ["L-102", "L-105"],
                     "nominal_size_in": suct_hdr.get("nominal_size_in"),
+                    "individual_nominal_size_in": suct_hdr.get("individual_nominal_size_in"),
+                    "acceptable_nominals": suct_hdr.get("acceptable_nominals"),
                     "od_mm": suct_hdr.get("od_mm"),
                     "from_boundary": "Giriş Pig Alıcı Kovanı (PIG-R) Çıkış İzolasyon Vanası (MOV/ESDV)",
                     "to_boundary": "Turbo-Kompresör (TC) Üniteleri Emiş Bağlantı Header'ı Sonu (Kör Flanş / Gelecek Ünite Tie-In)",
                     "connected_equipment_lines": [
                         "cyclone_branch",
+                        "cyclone_outlet_branch",
                         "filter_branch",
+                        "filter_outlet_branch",
                         "comp_suction_branch",
                         "station_recycle",
                     ],
@@ -638,12 +848,42 @@ class PipeSizingService:
                         "bağlantı header'ı sonunda sona eren ana büyük çaplı emiş borulaması."
                     ),
                 },
+                "unit_suction_header": {
+                    "key": "unit_suction_header",
+                    "name": "Unit Suction Header (TC Üniteleri Emiş Header'ı)",
+                    "line_keys": ["comp_suction_header"],
+                    "tags": ["L-105"],
+                    "nominal_size_in": unit_suct_hdr.get("nominal_size_in"),
+                    "individual_nominal_size_in": unit_suct_hdr.get("individual_nominal_size_in"),
+                    "acceptable_nominals": unit_suct_hdr.get("acceptable_nominals"),
+                    "od_mm": unit_suct_hdr.get("od_mm"),
+                    "from_boundary": unit_suct_hdr.get("from_boundary"),
+                    "to_boundary": unit_suct_hdr.get("to_boundary"),
+                    "connected_equipment_lines": ["comp_suction_branch"],
+                    "description": "CFS çıkışından itibaren TC ünite emiş branşmanlarını besleyen ünite emiş header'ı.",
+                },
+                "unit_discharge_header": {
+                    "key": "unit_discharge_header",
+                    "name": "Unit Discharge Header (TC Üniteleri Basma Header'ı)",
+                    "line_keys": ["unit_discharge_header"],
+                    "tags": ["L-109A"],
+                    "nominal_size_in": unit_disch_hdr.get("nominal_size_in"),
+                    "individual_nominal_size_in": unit_disch_hdr.get("individual_nominal_size_in"),
+                    "acceptable_nominals": unit_disch_hdr.get("acceptable_nominals"),
+                    "od_mm": unit_disch_hdr.get("od_mm"),
+                    "from_boundary": unit_disch_hdr.get("from_boundary"),
+                    "to_boundary": unit_disch_hdr.get("to_boundary"),
+                    "connected_equipment_lines": ["comp_discharge_branch", "cooler_inlet"],
+                    "description": "TC ünite sıcak basma branşmanlarının toplandığı ve Gaz Soğutucuya bağlanan ünite basma header'ı.",
+                },
                 "station_discharge_header": {
                     "key": "station_discharge_header",
                     "name": "Station Discharge Header (Ana İstasyon Basma Header'ı)",
-                    "line_keys": ["discharge_header"],
-                    "tags": ["L-109"],
+                    "line_keys": ["unit_discharge_header", "discharge_header"],
+                    "tags": ["L-109A", "L-109"],
                     "nominal_size_in": disch_hdr.get("nominal_size_in"),
+                    "individual_nominal_size_in": disch_hdr.get("individual_nominal_size_in"),
+                    "acceptable_nominals": disch_hdr.get("acceptable_nominals"),
                     "od_mm": disch_hdr.get("od_mm"),
                     "from_boundary": "Turbo-Kompresör (TC) Ünite Basma Çıkış Hatlarının Bağlandığı Header Başlangıcı",
                     "to_boundary": "Çıkış Pig Atıcı Kovanı (PIG-L) Giriş İzolasyon Vanası (MOV/ESDV)",
@@ -651,6 +891,9 @@ class PipeSizingService:
                         "comp_discharge_branch",
                         "cooler_inlet",
                         "cooler_bay_risers",
+                        "cooler_bay_inlet_header",
+                        "cooler_bay_outlet_header",
+                        "cooler_bay_outlet_risers",
                         "cooler_bypass",
                         "cooler_outlet",
                         "station_recycle",
@@ -677,6 +920,7 @@ class PipeSizingService:
             "design_factor_F": design_factor_F,
             "pipe_standard": standard_code,
             "psl_level": str(psl_level or "PSL2"),
+            "max_velocity_ms": round(v_limit_ms, 2),
             "eos_model": eos_key if gas_obj is not None else "approx_correlation",
             "total_lines_sized": len(lines),
             "average_network_velocity_ms": round(avg_velocity, 2),

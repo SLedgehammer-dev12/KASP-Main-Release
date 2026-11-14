@@ -45,6 +45,9 @@ def station_with_user_safety_inputs():
             "esd_duty_count": 2,
             "esd_allowable_dp_bar": 0.35,
             "esd_valve_type": "full_bore_ball",
+            "esd_hp_volume_m3": 60.0,
+            "esd_lp_volume_m3": 45.0,
+            "bdv_depressurization_time_min": 15.0,
         }
     )
     return calculate_station_process_model(inputs)
@@ -89,7 +92,8 @@ def test_esd_sizing_separates_duty_count_and_calculates_diameter(station_with_us
 
     for valve in (suction, discharge):
         assert valve["duty_count"] == 2
-        assert valve["flow_per_valve_kgs"] == pytest.approx(auto["mass_flow_total_kgs"] / 2.0, rel=1e-2)
+        assert valve["blowdown_mass_flow_total_kgs"] > 0
+        assert valve["flow_per_valve_kgs"] == pytest.approx(valve["blowdown_mass_flow_total_kgs"] / 2.0, rel=1e-2)
         assert valve["required_cv"] > 0
         assert valve["required_cv_total"] == pytest.approx(valve["required_cv"] * 2.0, rel=1e-2)
         assert valve["calculated_size_in"] > 0

@@ -103,31 +103,49 @@ export function computeStandardGasDensityKgm3(gasComp, condition = "iso") {
   return (STD_PRESS_PA * mwKgMol) / (R_UNIVERSAL_J_MOL_K * STD_TEMP_ISO_K);
 }
 
-export function convertPressureToBarA(val, unit = "bar(a)") {
+export function altitudeToAmbientPressureKpa(altitudeM = 0) {
+  const alt = parseFloat(altitudeM);
+  if (!Number.isFinite(alt) || alt <= 0) return 101.325;
+  return 101.325 * Math.pow(Math.max(0.05, 1.0 - 2.25577e-5 * alt), 5.25588);
+}
+
+export function resolveAmbientBarA(ambientPressureKpa = 101.325) {
+  const raw = parseFloat(ambientPressureKpa);
+  if (!Number.isFinite(raw) || raw <= 0) return 1.01325;
+  if (raw <= 5.0) return raw;
+  if (raw <= 200.0) return raw / 100.0;
+  return raw / 1000.0;
+}
+
+export function convertPressureToBarA(val, unit = "bar(a)", ambientPressureKpa = 101.325) {
   const num = parseFloat(val);
   if (!Number.isFinite(num)) return 0;
+  const pAtmBar = resolveAmbientBarA(ambientPressureKpa);
+  const pAtmPsia = pAtmBar * 14.5037738;
   const u = String(unit || "bar(a)").trim();
-  if (u === "bar(g)") return num + 1.01325;
+  if (u === "bar(g)") return num + pAtmBar;
   if (u === "kPa") return num / 100.0;
   if (u === "MPa") return num * 10.0;
   if (u === "Pa") return num / 100000.0;
   if (u === "psi" || u === "psia") return num / 14.5037738;
-  if (u === "psig") return (num + 14.6959488) / 14.5037738;
+  if (u === "psig") return (num + pAtmPsia) / 14.5037738;
   if (u === "atm") return num * 1.01325;
   return num;
 }
 
-export function convertPressureUnit(val, fromU, toU) {
+export function convertPressureUnit(val, fromU, toU, ambientPressureKpa = 101.325) {
   const num = parseFloat(val);
   if (!Number.isFinite(num) || fromU === toU) return val;
-  const barA = convertPressureToBarA(num, fromU);
+  const pAtmBar = resolveAmbientBarA(ambientPressureKpa);
+  const pAtmPsia = pAtmBar * 14.5037738;
+  const barA = convertPressureToBarA(num, fromU, ambientPressureKpa);
   let res = barA;
   const u = String(toU || "bar(a)").trim();
-  if (u === "bar(g)") res = Math.max(-1.0, barA - 1.01325);
+  if (u === "bar(g)") res = Math.max(-1.0, barA - pAtmBar);
   else if (u === "kPa") res = barA * 100.0;
   else if (u === "MPa") res = barA / 10.0;
   else if (u === "psi" || u === "psia") res = barA * 14.5037738;
-  else if (u === "psig") res = Math.max(-14.5, barA * 14.5037738 - 14.6959488);
+  else if (u === "psig") res = Math.max(-14.5, barA * 14.5037738 - pAtmPsia);
   return Math.round(res * 100) / 100;
 }
 
@@ -226,6 +244,7 @@ const PROCESS_CACHE_INVALIDATION_FIELDS = new Set([
   "intercooler_t",
   "intercooler_dp_pct",
   "ambient_temp",
+  "ambient_pressure",
   "altitude",
   "humidity",
 ]);
@@ -632,9 +651,9 @@ export function recalculateGasTotal() {
 }
 
 export function recalculateLiveMetrics() {
-  const { p_in, p_in_unit, p_out, p_out_unit } = projectStore.getState().inputs;
-  const pInBar = convertPressureToBarA(p_in, p_in_unit);
-  const pOutBar = convertPressureToBarA(p_out, p_out_unit);
+  const { p_in, p_in_unit, p_out, p_out_unit, ambient_pressure } = projectStore.getState().inputs;
+  const pInBar = convertPressureToBarA(p_in, p_in_unit, ambient_pressure);
+  const pOutBar = convertPressureToBarA(p_out, p_out_unit, ambient_pressure);
 
   if (pInBar > 0 && pOutBar > 0) {
     const pr = Math.round((pOutBar / pInBar) * 1000) / 1000;
